@@ -1531,6 +1531,8 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return &CommandResult{Messages: []string{"[Self-training coming soon.]"}} // TODO: train self at +1 cost
 	case "UNLEARN":
 		return e.doUnlearn(ctx, player, args)
+	case "LEARN":
+    		return e.doLearn(ctx, player, args)
 	case "ANOINT":
 		return e.doAnoint(ctx, player, args)
 	case "TRAP":
@@ -1706,7 +1708,7 @@ var allVerbs = []string{
 	"NOCK", "LOAD", "SPECIALIZE",
 	// Skill-based (TODO: implement)
 	"DISARM", "STEAL", "FILCH", "ROB", "STALK",
-	"TEACH", "SELFTRAIN", "UNLEARN",
+	"TEACH", "SELFTRAIN", "UNLEARN", "LEARN",
 	"ANOINT", "POISON", "TRAP",
 	"SURVEY", "SPLIT",
 	// Racial (TODO: implement)
@@ -3672,45 +3674,63 @@ func (e *GameEngine) doGuard(player *Player, args []string) *CommandResult {
 
 // doChant handles the CHANT command — scroll activation.
 func (e *GameEngine) doChant(ctx context.Context, player *Player, args []string) *CommandResult {
-	if len(args) == 0 {
-		return &CommandResult{Messages: []string{"Chant what?"}}
-	}
-	target := strings.ToLower(strings.Join(args, " "))
-	// Strip "my " prefix
-	target = strings.TrimPrefix(target, "my ")
-	target, ordSkip := parseOrdinal(target)
-	skip := ordSkip
+    if len(args) == 0 {
+        return &CommandResult{Messages: []string{"Chant what?"}}
+    }
+    target := strings.ToLower(strings.Join(args, " "))
+    target = strings.TrimPrefix(target, "my ")
+    target, ordSkip := parseOrdinal(target)
+    skip := ordSkip
 
-	for i, ii := range player.Inventory {
-		itemDef := e.items[ii.Archetype]
-		if itemDef == nil {
-			continue
-		}
-		if !strings.Contains(strings.ToUpper(itemDef.Type), "SCROLL") {
-			continue
-		}
-		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			// Remove the scroll from inventory
-			player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
-			player.RoundTimeExpiry = time.Now().Add(3 * time.Second)
-			e.SavePlayer(ctx, player)
-			return &CommandResult{
-				Messages: []string{
-					fmt.Sprintf("As you chant the scroll, it crumbles into dust..."),
-					"You feel the power of the scroll flow into you.",
-					"[Round: 3 sec]",
-				},
-				RoomBroadcast: []string{fmt.Sprintf("%s chants from %s which crumbles into dust.", player.FirstName, fullName)},
-			}
-		}
-	}
-	return &CommandResult{Messages: []string{"You don't have that."}}
+    for i, ii := range player.Inventory {
+        itemDef := e.items[ii.Archetype]
+        if itemDef == nil {
+            continue
+        }
+        if !strings.Contains(strings.ToUpper(itemDef.Type), "SCROLL") {
+            continue
+        }
+        name := e.getItemNounName(itemDef)
+        if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+            continue
+        }
+        if skip > 0 {
+            skip--
+            continue
+        }
+
+        spellNum := ii.Val3
+        if spellNum == 0 {
+            return &CommandResult{Messages: []string{"This scroll holds no magical inscription."}}
+        }
+
+        spell := FindSpellByID(spellNum)
+        if spell == nil {
+            return &CommandResult{Messages: []string{"The scroll's magic is indecipherable."}}
+        }
+
+        fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
+
+        // Consume the scroll
+        player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
+
+        // Prepare the spell — match the field name used by doPrepareSpell
+        player.PreparedSpell = spellNum   // ← adjust field name to match your Player struct
+
+        player.RoundTimeExpiry = time.Now().Add(3 * time.Second)
+        e.SavePlayer(ctx, player)
+        return &CommandResult{
+            Messages: []string{
+                fmt.Sprintf("As you chant %s, it crumbles into dust...", fullName),
+                fmt.Sprintf("The power of %s flows into you. The spell is prepared.", spell.Name),
+                "[Round: 3 sec]",
+            },
+            RoomBroadcast: []string{
+                fmt.Sprintf("%s chants from %s which crumbles into dust.", player.FirstName, fullName),
+            },
+        }
+    }
+    return &CommandResult{Messages: []string{"You don't have that."}}
 }
 
 // doFollow handles the FOLLOW command — join a group.
