@@ -2365,11 +2365,27 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 				displayName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
 				return &CommandResult{Messages: []string{fmt.Sprintf("You see nothing noteworthy %s %s.", strings.ToLower(prefix), displayName)}}
 			}
-			return &CommandResult{Messages: []string{fmt.Sprintf("You look at your %s.", name)}}
+			msgs := []string{fmt.Sprintf("You look at your %s.", name)}
+			if sm := e.scrollLookMsg(ii.Archetype, ii.Val3); sm != "" {
+			    msgs = append(msgs, sm)
+			}
+			return &CommandResult{Messages: msgs}
 		}
 	}
 
 	return &CommandResult{Messages: []string{"You don't see that here."}}
+}
+
+// scrollLookMsg returns a description line if the item is a scroll, empty string otherwise.
+func (e *GameEngine) scrollLookMsg(archetype int, val3 int) string {
+    if archetype != 168 {
+        return ""
+    }
+    spell := FindSpellByID(val3)
+    if spell != nil {
+        return fmt.Sprintf("The scroll contains the spell '%s' (spell #%d).", spell.Name, val3)
+    }
+    return fmt.Sprintf("The scroll contains spell #%d.", val3)
 }
 
 // findPlayerInRoom finds an online player in the same room by name (first name match).
