@@ -287,6 +287,8 @@ func schoolSkillID(school string) int {
         return 14
     case "druidic":
         return 17
+    case "general":
+        return 23 // Spellcraft
     case "necromancy":
         return 30
     default:
