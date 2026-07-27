@@ -1788,6 +1788,12 @@ EXIT SE 291
 EXIT SW 290
 EXIT ABOVE 2152
 ITEM 0 68 ADJ1=25 ADJ2=192 VAL2=2605
+IFTOUCH 0
+    ECHO OTHERS %N touches the black metal gate...
+    ECHO PLAYER You touch the black metal gate...
+    DAMAGE ELECTRIC 15 %N is struck by an arc of lightning from the gate!
+    CLEARVERB
+ENDIF
 ;
 NUMBER 290
 NAME Poor Quarter
