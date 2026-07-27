@@ -1753,7 +1753,7 @@ CALL 33
 ITEM 9 693 ADJ1=10
 
 *DESCRIPTION_START
-BoardsA have been nailed across the door of the old Temple of Kaliban, preventing entry. Small particles of wood and sawdust lie at the base of a sawed-off stump. There is a small sign tacked up across the boards.
+Boards have been nailed across the door of the old Temple of Kaliban, preventing entry. Small particles of wood and sawdust lie at the base of a sawed-off stump. There is a small sign tacked up across the boards.
 *DESCRIPTION_END
 EXIT W 288
 EXIT SE 291

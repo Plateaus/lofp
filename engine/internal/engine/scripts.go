@@ -748,20 +748,41 @@ func (sc *ScriptContext) getVar(name string) int {
 		}
 		return 0
 	// Player stats
-	case "STR", "STRT":
+	// case "STR" returns the base strength, while "STRT" returns the effective strength after modifiers.
+	case "STR":
 		return sc.Player.Strength
-	case "AGI", "AGIT":
+	case "STRT":
+		return sc.Player.EffectiveStat(StatStrength)
+
+	case "AGI":
 		return sc.Player.Agility
-	case "CON", "CONT":
+	case "AGIT":
+		return sc.Player.EffectiveStat(StatAgility)
+
+	case "CON":
 		return sc.Player.Constitution
-	case "QUI", "QUIT":
+	case "CONT":
+		return sc.Player.EffectiveStat(StatConstitution)
+
+	case "QUI":
 		return sc.Player.Quickness
-	case "WIL", "WILT":
+	case "QUIT":
+		return sc.Player.EffectiveStat(StatQuickness)
+
+	case "WIL":
 		return sc.Player.Willpower
-	case "PER", "PERT":
+	case "WILT":
+		return sc.Player.EffectiveStat(StatWillpower)
+
+	case "PER":
 		return sc.Player.Perception
-	case "EMP", "EMPT":
+	case "PERT":
+		return sc.Player.EffectiveStat(StatPerception)
+
+	case "EMP":
 		return sc.Player.Empathy
+	case "EMPT":
+		return sc.Player.EffectiveStat(StatEmpathy)
 	// Player resources
 	case "BODYPOINTS":
 		return sc.Player.BodyPoints

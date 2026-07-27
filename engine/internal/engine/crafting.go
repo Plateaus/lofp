@@ -63,7 +63,7 @@ func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandRes
 	}
 
 	// Success chance: base 30% + mining*5 + STR/10
-	chance := 30 + miningSkill*5 + player.Strength/10
+	chance := 30 + miningSkill*5 + player.EffectiveStat(StatStrength)/10
 	if chance > 90 {
 		chance = 90
 	}
@@ -481,30 +481,30 @@ func (e *GameEngine) doWork(ctx context.Context, player *Player, args []string) 
 
 		// Search inventory for the material
 		for j, ii := range player.Inventory {
-		    mDef := e.items[ii.Archetype]
-		    if mDef == nil {
-		        continue
-		    }
+			mDef := e.items[ii.Archetype]
+			if mDef == nil {
+				continue
+			}
 
-		    // Check if it's a material for Weaponsmithing (Skill 8)
-		    if (mDef.Type == "MATERIAL" || mDef.Type == "MATERIAL2" || mDef.Type == "MISC") && (mDef.Parameter2 == 8 || mDef.Parameter2 == 0) {
-        
-		        // Get the names for comparison
-		        mNoun := strings.ToLower(e.getItemNounName(mDef)) // e.g., "metal"
-		        instAdj := strings.ToLower(e.getAdjName(ii.Adj1)) // e.g., "copper"
-      
-		        // FLEXIBLE MATCHING:
-		        // Check if the user's input matches the adjective, the noun, or the combined name
-		        fullItemName := instAdj + " " + mNoun // e.g., "copper metal"
-     
-		        if metal == instAdj || metal == mNoun || metal == fullItemName || 
-		           strings.Contains(fullItemName, metal) {
-            
-		            materialIdx = j
-		            materialAdj = ii.Adj1
-		            break
-		        }
-		    }
+			// Check if it's a material for Weaponsmithing (Skill 8)
+			if (mDef.Type == "MATERIAL" || mDef.Type == "MATERIAL2" || mDef.Type == "MISC") && (mDef.Parameter2 == 8 || mDef.Parameter2 == 0) {
+
+				// Get the names for comparison
+				mNoun := strings.ToLower(e.getItemNounName(mDef)) // e.g., "metal"
+				instAdj := strings.ToLower(e.getAdjName(ii.Adj1)) // e.g., "copper"
+
+				// FLEXIBLE MATCHING:
+				// Check if the user's input matches the adjective, the noun, or the combined name
+				fullItemName := instAdj + " " + mNoun // e.g., "copper metal"
+
+				if metal == instAdj || metal == mNoun || metal == fullItemName ||
+					strings.Contains(fullItemName, metal) {
+
+					materialIdx = j
+					materialAdj = ii.Adj1
+					break
+				}
+			}
 		}
 		if materialIdx < 0 {
 			// Also accept the metal name directly as a known metal type

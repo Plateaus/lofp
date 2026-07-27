@@ -1234,7 +1234,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		// Bare SEARCH: scan the area for hidden players
 		player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
 		msgs := []string{"You search the area.", "[Round: 5 sec]"}
-		perceptionCheck := player.Perception + player.Skills[33]*5 // Stealth skill helps detection
+		perceptionCheck := player.EffectiveStat(StatPerception) + player.Skills[33]*5 // Stealth skill helps detection
 		var revealed []string
 		if e.sessions != nil {
 			for _, p := range e.sessions.OnlinePlayers() {
