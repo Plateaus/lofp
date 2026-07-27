@@ -1753,13 +1753,22 @@ CALL 33
 ITEM 9 693 ADJ1=10
 
 *DESCRIPTION_START
-Boards have been nailed across the door of the old Temple of Kaliban, preventing entry. Small particles of wood and sawdust lie at the base of a sawed-off stump. There is a small sign tacked up across the boards.
+BoardsA have been nailed across the door of the old Temple of Kaliban, preventing entry. Small particles of wood and sawdust lie at the base of a sawed-off stump. There is a small sign tacked up across the boards.
 *DESCRIPTION_END
 EXIT W 288
 EXIT SE 291
 EXIT SW 290
 EXIT ABOVE 2152
 ITEM 0 68 ADJ1=25 ADJ2=192 VAL2=2605
+ITEM 0 168 ADJ1=292 VAL1=10000 VAL3=105
+IFVERB TOUCH 0
+  RANDOM DUMMY1 10
+  ADD DUMMY1 1
+  STRCVT 0 DUMMY1
+  ECHO PLAYER A bolt of lightning leaps from the black gate and strikes you for %0 damage!
+  ECHO OTHERS A bolt of lightning leaps from the black gate and strikes %N!
+  DAMAGEPLR ELECTRIC DUMMY1
+ENDIF
 ;
 NUMBER 290
 NAME Poor Quarter

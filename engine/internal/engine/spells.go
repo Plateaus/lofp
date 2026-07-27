@@ -15,7 +15,7 @@ type SpellDef struct {
 	School   string
 	Level    int
 	ManaCost int
-	CastTime int // seconds
+	CastTime int    // seconds
 	Effect   string // "damage", "heal", "defense", "buff", "utility"
 	DmgMin   int
 	DmgMax   int
@@ -72,9 +72,9 @@ func init() {
 		{ID: 200, Name: "Fear", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "utility"},
 		{ID: 201, Name: "Charm", School: "Enchantment", Level: 3, ManaCost: 8, CastTime: 3, Effect: "utility"},
 		{ID: 202, Name: "Enchantment I", School: "Enchantment", Level: 5, ManaCost: 10, CastTime: 4, Effect: "buff"},
-		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff"},
-		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff"},
-		{ID: 209, Name: "Strength III", School: "Enchantment", Level: 16, ManaCost: 18, CastTime: 3, Effect: "buff"},
+		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10},
+		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 20},
+		{ID: 209, Name: "Strength III", School: "Enchantment", Level: 16, ManaCost: 18, CastTime: 3, Effect: "buff", DefBonus: 30},
 		{ID: 210, Name: "Haste", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "buff"},
 		{ID: 211, Name: "Slow", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "utility"},
 		{ID: 216, Name: "Slumber I", School: "Enchantment", Level: 2, ManaCost: 4, CastTime: 3, Effect: "utility"},
@@ -127,9 +127,9 @@ func init() {
 		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff"},
 		{ID: 511, Name: "Carapace", School: "Druidic", Level: 8, ManaCost: 10, CastTime: 3, Effect: "defense", DefBonus: 20},
 		{ID: 512, Name: "True Aim", School: "Druidic", Level: 15, ManaCost: 18, CastTime: 3, Effect: "buff"},
-		{ID: 513, Name: "Agility I", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff"},
-		{ID: 514, Name: "Agility II", School: "Druidic", Level: 11, ManaCost: 12, CastTime: 3, Effect: "buff"},
-		{ID: 515, Name: "Agility III", School: "Druidic", Level: 16, ManaCost: 20, CastTime: 3, Effect: "buff"},
+		{ID: 513, Name: "Agility I", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10},
+		{ID: 514, Name: "Agility II", School: "Druidic", Level: 11, ManaCost: 12, CastTime: 3, Effect: "buff", DefBonus: 20},
+		{ID: 515, Name: "Agility III", School: "Druidic", Level: 16, ManaCost: 20, CastTime: 3, Effect: "buff", DefBonus: 30},
 		{ID: 519, Name: "Sunray", School: "Druidic", Level: 13, ManaCost: 18, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 35, DmgType: "heat"},
 		{ID: 520, Name: "Night Vision", School: "Druidic", Level: 1, ManaCost: 2, CastTime: 2, Effect: "utility"},
 		{ID: 521, Name: "Camouflage", School: "Druidic", Level: 7, ManaCost: 8, CastTime: 3, Effect: "buff"},
@@ -379,7 +379,7 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	// Base 25% + EMP/10 + spellcraft*5%, max 95%.
 	// Roll > 98 = fumble. Roll <= 2 = spectacular success (double effect).
 	spellcraftSkill := player.Skills[23]
-	castChance := 25 + player.Empathy/10 + spellcraftSkill*5
+	castChance := 25 + player.EffectiveStat(StatEmpathy)/10 + spellcraftSkill*5
 	if castChance > 95 {
 		castChance = 95
 	}
@@ -420,7 +420,7 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		result = e.castDamageSpell(player, spell, args, spectacularSuccess)
 	case "heal":
 		result = e.castHealSpell(ctx, player, spell, args)
-	case "defense":
+	case "defense": //todo: add defensive spell effects to player stats
 		player.DefenseBonus += spell.DefBonus
 		result.Messages = []string{fmt.Sprintf("You gesture and %s takes effect! (+%d defense)", spell.Name, spell.DefBonus)}
 		result.RoomBroadcast = []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)}
@@ -587,6 +587,10 @@ func (e *GameEngine) castHealSpell(ctx context.Context, player *Player, spell *S
 
 func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []string) *CommandResult {
 	msg := fmt.Sprintf("You gesture and cast %s.", spell.Name)
+
+	//fixed duration right now
+	buffDuration := 5 * time.Minute
+
 	switch spell.ID {
 	case 202: // Enchantment I — enchant a weapon in inventory
 		if len(args) == 0 {
@@ -616,15 +620,19 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 		}
 		return &CommandResult{Messages: []string{"You don't have a weapon matching that."}}
 	case 207: // Strength I
-		player.Strength += 10
+		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatStrength, spell.DefBonus, buffDuration)
+		//player.Strength += 10
 		msg = fmt.Sprintf("You gesture and cast %s. You feel stronger! (+10 STR)", spell.Name)
 	case 208: // Strength II
-		player.Strength += 20
+		//player.Strength += 20
+		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatStrength, spell.DefBonus, buffDuration)
 		msg = fmt.Sprintf("You gesture and cast %s. You feel much stronger! (+20 STR)", spell.Name)
 	case 209: // Strength III
-		player.Strength += 30
+		//player.Strength += 30
+		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatStrength, spell.DefBonus, buffDuration)
 		msg = fmt.Sprintf("You gesture and cast %s. Immense strength surges through you! (+30 STR)", spell.Name)
 	case 210: // Haste
+		player.ApplyStatEffect(spell.ID, EffectSourceSpell, HasteBuff, spell.DefBonus, buffDuration)
 		msg = fmt.Sprintf("You gesture and cast %s. The world seems to slow down around you.", spell.Name)
 	case 224: // Fly
 		player.CanFly = true
@@ -633,13 +641,13 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 		player.Invisible = true
 		msg = fmt.Sprintf("You gesture and cast %s. You fade from sight.", spell.Name)
 	case 513: // Agility I
-		player.Agility += 10
+		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatAgility, spell.DefBonus, buffDuration)
 		msg = fmt.Sprintf("You gesture and cast %s. You feel more agile! (+10 AGI)", spell.Name)
 	case 514: // Agility II
-		player.Agility += 20
+		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatAgility, spell.DefBonus, buffDuration)
 		msg = fmt.Sprintf("You gesture and cast %s. You feel much more agile! (+20 AGI)", spell.Name)
 	case 515: // Agility III
-		player.Agility += 30
+		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatAgility, spell.DefBonus, buffDuration)
 		msg = fmt.Sprintf("You gesture and cast %s. Incredible agility flows through you! (+30 AGI)", spell.Name)
 	}
 	return &CommandResult{
