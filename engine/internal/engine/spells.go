@@ -192,6 +192,110 @@ func spellSchoolSkill(school string) int {
 	}
 }
 
+// doLearn handles the LEARN command — learn a spell from a scroll.
+// The scroll's Val3 holds the spell number. The player must have the
+// appropriate magic school skill at a sufficient level.
+func (e *GameEngine) doLearn(ctx context.Context, player *Player, args []string) *CommandResult {
+    if len(args) == 0 {
+        return &CommandResult{Messages: []string{"Learn from what?"}}
+    }
+    target := strings.ToLower(strings.Join(args, " "))
+    target = strings.TrimPrefix(target, "my ")
+    target, ordSkip := parseOrdinal(target)
+    skip := ordSkip
+
+    for i, ii := range player.Inventory {
+        itemDef := e.items[ii.Archetype]
+        if itemDef == nil {
+            continue
+        }
+        if !strings.Contains(strings.ToUpper(itemDef.Type), "SCROLL") {
+            continue
+        }
+        name := e.getItemNounName(itemDef)
+        if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+            continue
+        }
+        if skip > 0 {
+            skip--
+            continue
+        }
+
+        spellNum := ii.Val3
+        if spellNum == 0 {
+            return &CommandResult{Messages: []string{"This scroll holds no magical inscription."}}
+        }
+
+        spell := FindSpellByID(spellNum)
+        if spell == nil {
+            return &CommandResult{Messages: []string{"The scroll's magic is beyond comprehension."}}
+        }
+
+        // Check if already known
+        if player.KnownSpells != nil {
+            if _, known := player.KnownSpells[spellNum]; known {
+                return &CommandResult{Messages: []string{fmt.Sprintf("You already know %s.", spell.Name)}}
+            }
+        }
+
+        // Map spell school name to required skill ID
+        requiredSkill := schoolSkillID(spell.School)
+        if requiredSkill < 0 {
+            return &CommandResult{Messages: []string{"You cannot learn spells of that school."}}
+        }
+
+        // Player must have the school skill at a level >= spell level
+        playerSkillLevel := player.Skills[requiredSkill]
+        if playerSkillLevel < spell.Level {
+            return &CommandResult{Messages: []string{
+                fmt.Sprintf("You need %s rank %d to learn %s (you have rank %d).",
+                    SkillNames[requiredSkill], spell.Level, spell.Name, playerSkillLevel),
+            }}
+        }
+
+        // Consume the scroll and add the spell
+        fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
+        player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
+        if player.KnownSpells == nil {
+            player.KnownSpells = make(map[int]bool)
+        }
+        player.KnownSpells[spellNum] = true
+
+        player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
+        e.SavePlayer(ctx, player)
+        return &CommandResult{
+            Messages: []string{
+                fmt.Sprintf("You study %s carefully...", fullName),
+                fmt.Sprintf("You learn %s! The scroll crumbles to dust.", spell.Name),
+                "[Round: 5 sec]",
+            },
+            RoomBroadcast: []string{
+                fmt.Sprintf("%s studies a scroll, which crumbles away.", player.FirstName),
+            },
+        }
+    }
+    return &CommandResult{Messages: []string{"You don't have that."}}
+}
+
+// schoolSkillID returns the skill ID required for a given magic school name.
+// Returns -1 if the school is unknown.
+func schoolSkillID(school string) int {
+    switch strings.ToLower(school) {
+    case "conjuration":
+        return 7
+    case "enchantment":
+        return 14
+    case "druidic":
+        return 17
+    case "general":
+        return 23 // Spellcraft
+    case "necromancy":
+        return 30
+    default:
+        return -1
+    }
+}
+
 // doPrepareSpell handles PREPARE/INVOKE <spell>.
 func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
