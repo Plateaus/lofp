@@ -6526,6 +6526,7 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 		}
 
 		inst.Skinned = true
+		e.monsterMgr.MarkSkinned(inst.ID)
 		e.SavePlayer(ctx, player)
 		return &CommandResult{
 			Messages:      skinMsgs,
