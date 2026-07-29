@@ -280,6 +280,8 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 		sc.doRandom(action.Args)
 	case "DAMAGEPLR":
 		sc.doDamagePlr(action.Args)
+	case "HEALPLR":
+		sc.doHealPlr(action.Args)
 	case "STRCVT":
 		sc.doStrCvt(action.Args)
 	case "STRCPY":
@@ -1221,35 +1223,6 @@ func (sc *ScriptContext) doRandom(args []string) {
 	sc.setVar(varName, rand.Intn(max))
 }
 
-// doDamagePlr applies damage to the player.
-/*
-func (sc *ScriptContext) doDamagePlr(args []string) {
-	if len(args) < 2 {
-		return
-	}
-	// DAMAGEPLR BODYONLY <amount> <text...>
-	// or DAMAGEPLR <amount> <text...>
-	idx := 0
-	if strings.ToUpper(args[0]) == "BODYONLY" {
-		idx = 1
-	}
-	if idx >= len(args) {
-		return
-	}
-	amount, err := strconv.Atoi(args[idx])
-	if err != nil {
-		return
-	}
-	sc.Player.BodyPoints -= amount
-	if sc.Player.BodyPoints < 0 {
-		sc.Player.BodyPoints = 0
-	}
-	if idx+1 < len(args) {
-		text := strings.Join(args[idx+1:], " ")
-		sc.Messages = append(sc.Messages, sc.expandScriptText(text))
-	}
-} */
-
 func (sc *ScriptContext) doDamagePlr(args []string) {
 	if len(args) < 1 {
 		return
@@ -1281,12 +1254,6 @@ func (sc *ScriptContext) doDamagePlr(args []string) {
 		return
 	}
 
-	/*amount, err := strconv.Atoi(args[idx])
-	if err != nil {
-		return
-	}
-	idx++  */
-
 	amount := sc.resolveNumericArg(args[idx])
 	idx++
 
@@ -1307,6 +1274,32 @@ func (sc *ScriptContext) doDamagePlr(args []string) {
 
 	if idx < len(args) {
 		text := strings.Join(args[idx:], " ")
+		sc.Messages = append(sc.Messages, sc.expandScriptText(text))
+	}
+}
+
+func (sc *ScriptContext) doHealPlr(args []string) {
+	if len(args) < 1 {
+		return
+	}
+
+	amount := sc.resolveNumericArg(args[0])
+	if amount < 0 {
+		amount = 0
+	}
+
+	oldBP := sc.Player.BodyPoints
+
+	sc.Player.BodyPoints += amount
+	if sc.Player.BodyPoints > sc.Player.MaxBodyPoints {
+		sc.Player.BodyPoints = sc.Player.MaxBodyPoints
+	}
+
+	actualHeal := sc.Player.BodyPoints - oldBP
+
+	if len(args) > 1 {
+		text := strings.Join(args[1:], " ")
+		text = strings.ReplaceAll(text, "%D", strconv.Itoa(actualHeal))
 		sc.Messages = append(sc.Messages, sc.expandScriptText(text))
 	}
 }
