@@ -1223,6 +1223,11 @@ func (sc *ScriptContext) doRandom(args []string) {
 	sc.setVar(varName, rand.Intn(max))
 }
 
+<<<<<<< HEAD
+=======
+// doDamagePlr applies damage to the player.
+/*
+>>>>>>> main
 func (sc *ScriptContext) doDamagePlr(args []string) {
 	if len(args) < 1 {
 		return
@@ -1276,6 +1281,92 @@ func (sc *ScriptContext) doDamagePlr(args []string) {
 		text := strings.Join(args[idx:], " ")
 		sc.Messages = append(sc.Messages, sc.expandScriptText(text))
 	}
+} */
+
+func (sc *ScriptContext) doDamagePlr(args []string) {
+	if len(args) < 1 {
+		return
+	}
+
+	idx := 0
+	bodyOnly := false
+	damageType := ""
+
+	// Optional BODYONLY keyword.
+	if strings.EqualFold(args[idx], "BODYONLY") {
+		bodyOnly = true
+		idx++
+	}
+
+	if idx >= len(args) {
+		return
+	}
+
+	// Support both:
+	// DAMAGEPLR 15 message...
+	// DAMAGEPLR ELECTRIC 15 message...
+	if _, err := strconv.Atoi(args[idx]); err != nil {
+		damageType = strings.ToUpper(args[idx])
+		idx++
+	}
+
+	if idx >= len(args) {
+		return
+	}
+
+	/*amount, err := strconv.Atoi(args[idx])
+	if err != nil {
+		return
+	}
+	idx++  */
+
+	amount := sc.resolveNumericArg(args[idx])
+	idx++
+
+	finalDamage := amount
+
+	if !bodyOnly && damageType != "" {
+		finalDamage = sc.applyPlayerResistance(damageType, amount)
+	}
+
+	if finalDamage < 0 {
+		finalDamage = 0
+	}
+
+	sc.Player.BodyPoints -= finalDamage
+	if sc.Player.BodyPoints < 0 {
+		sc.Player.BodyPoints = 0
+	}
+
+	if idx < len(args) {
+		text := strings.Join(args[idx:], " ")
+		sc.Messages = append(sc.Messages, sc.expandScriptText(text))
+	}
+}
+
+func (sc *ScriptContext) applyPlayerResistance(damageType string, amount int) int {
+	resistance := 0
+
+	switch strings.ToUpper(damageType) {
+	case "BURN", "FIRE":
+		resistance = 0 //todo: sc.Player.FireResistance
+	case "ELECTRIC", "LIGHTNING":
+		resistance = 0 //todo sc.Player.ElectricResistance
+	case "COLD", "ICE":
+		resistance = 0 //todo: sc.Player.ColdResistance
+	case "POISON":
+		resistance = 0 //todo: sc.Player.PoisonResistance
+	}
+
+	// Assuming resistance is a percentage from 0 to 100.
+	if resistance < 0 {
+		resistance = 0
+	}
+	if resistance > 100 {
+		resistance = 100
+	}
+
+	return amount * (100 - resistance) / 100
 }
 
 func (sc *ScriptContext) doHealPlr(args []string) {
