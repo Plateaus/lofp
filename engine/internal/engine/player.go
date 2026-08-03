@@ -449,3 +449,26 @@ func (p *Player) ApplyStatEffect(
 		ExpiresAt: expiresAt,
 	})
 }
+
+func (p *Player) HasItem(archetype int, adj int) bool {
+	for _, ii := range p.Inventory {
+		if ii.Archetype == archetype && (adj < 0 || ii.Adj1 == adj) {
+			return true
+		}
+	}
+
+	for _, ii := range p.Worn {
+		if ii.Archetype == archetype && (adj < 0 || ii.Adj1 == adj) {
+			return true
+		}
+	}
+
+	if p.Wielded != nil {
+		if p.Wielded.Archetype == archetype &&
+			(adj < 0 || p.Wielded.Adj1 == adj) {
+			return true
+		}
+	}
+
+	return false
+}
