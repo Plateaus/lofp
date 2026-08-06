@@ -448,6 +448,7 @@ func (p *Player) ApplyStatEffect(
 		Modifier:  modifier,
 		ExpiresAt: expiresAt,
 	})
+
 }
 
 func (p *Player) HasItem(archetype int, adj int) bool {

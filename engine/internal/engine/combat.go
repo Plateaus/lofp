@@ -109,6 +109,20 @@ func recalcBuildPoints(player *Player) (leveledUp bool) {
 	if player.BuildPoints < 0 {
 		player.BuildPoints = 0
 	}
+
+	// Add permanent gains for any missing levels.
+	if lvl > oldLevel {
+		for level := oldLevel + 1; level <= lvl; level++ {
+			player.MaxBodyPoints += player.Constitution / 10
+			player.BodyPoints = player.MaxBodyPoints
+			player.MaxFatigue += player.Constitution / 15
+			player.Fatigue = player.MaxFatigue
+			player.MaxMana += (player.Willpower + player.Empathy) / 15
+			player.Mana = player.MaxMana
+			player.MaxPsi += player.Willpower / 10
+			player.Psi = player.MaxPsi
+		}
+	}
 	player.Level = lvl
 
 	return player.Level > oldLevel
@@ -1328,6 +1342,7 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 		killer.Mana = killer.MaxMana
 		killer.MaxPsi += killer.Willpower / 10
 		killer.Psi = killer.MaxPsi
+
 		xpMsgs = append(xpMsgs, fmt.Sprintf("Congratulations! You have advanced to level %d!", killer.Level))
 		if e.roomBroadcast != nil {
 			e.roomBroadcast(killer.RoomNumber, []string{

@@ -22,7 +22,9 @@ type SpellDef struct {
 	HealMin  int
 	HealMax  int
 	DefBonus int
-	DmgType  string // "heat", "cold", "electric", "crushing", ""
+	DmgType  string        // "heat", "cold", "electric", "crushing", ""
+	Duration time.Duration // seconds; 0 = instant/permanent
+	Family   string        // "", "agility", "strength", "armor", etc.
 }
 
 // spellRegistry holds all defined spells.
@@ -72,11 +74,11 @@ func init() {
 		{ID: 200, Name: "Fear", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "utility"},
 		{ID: 201, Name: "Charm", School: "Enchantment", Level: 3, ManaCost: 8, CastTime: 3, Effect: "utility"},
 		{ID: 202, Name: "Enchantment I", School: "Enchantment", Level: 5, ManaCost: 10, CastTime: 4, Effect: "buff"},
-		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10},
-		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 20},
-		{ID: 209, Name: "Strength III", School: "Enchantment", Level: 16, ManaCost: 18, CastTime: 3, Effect: "buff", DefBonus: 30},
-		{ID: 210, Name: "Haste", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "buff"},
-		{ID: 211, Name: "Slow", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "utility"},
+		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "strength"},
+		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "strength"},
+		{ID: 209, Name: "Strength III", School: "Enchantment", Level: 16, ManaCost: 18, CastTime: 3, Effect: "buff", DefBonus: 30, Duration: 60 * time.Minute, Family: "strength"},
+		{ID: 210, Name: "Haste", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "buff", Duration: 60 * time.Minute, Family: "haste"},
+		{ID: 211, Name: "Slow", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "utility", Duration: 60 * time.Minute, Family: "slow"},
 		{ID: 216, Name: "Slumber I", School: "Enchantment", Level: 2, ManaCost: 4, CastTime: 3, Effect: "utility"},
 		{ID: 219, Name: "Silence", School: "Enchantment", Level: 7, ManaCost: 10, CastTime: 3, Effect: "utility"},
 		{ID: 224, Name: "Fly", School: "Enchantment", Level: 11, ManaCost: 15, CastTime: 3, Effect: "buff"},
@@ -125,11 +127,11 @@ func init() {
 		{ID: 505, Name: "Freedom", School: "Druidic", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility"},
 		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff"},
 		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff"},
-		{ID: 511, Name: "Carapace", School: "Druidic", Level: 8, ManaCost: 10, CastTime: 3, Effect: "defense", DefBonus: 20},
+		{ID: 511, Name: "Carapace", School: "Druidic", Level: 8, ManaCost: 10, CastTime: 3, Effect: "defense", DefBonus: 20, Duration: 45 * time.Minute},
 		{ID: 512, Name: "True Aim", School: "Druidic", Level: 15, ManaCost: 18, CastTime: 3, Effect: "buff"},
-		{ID: 513, Name: "Agility I", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10},
-		{ID: 514, Name: "Agility II", School: "Druidic", Level: 11, ManaCost: 12, CastTime: 3, Effect: "buff", DefBonus: 20},
-		{ID: 515, Name: "Agility III", School: "Druidic", Level: 16, ManaCost: 20, CastTime: 3, Effect: "buff", DefBonus: 30},
+		{ID: 513, Name: "Agility I", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "agility"},
+		{ID: 514, Name: "Agility II", School: "Druidic", Level: 11, ManaCost: 12, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "agility"},
+		{ID: 515, Name: "Agility III", School: "Druidic", Level: 16, ManaCost: 20, CastTime: 3, Effect: "buff", DefBonus: 30, Duration: 60 * time.Minute, Family: "agility"},
 		{ID: 519, Name: "Sunray", School: "Druidic", Level: 13, ManaCost: 18, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 35, DmgType: "heat"},
 		{ID: 520, Name: "Night Vision", School: "Druidic", Level: 1, ManaCost: 2, CastTime: 2, Effect: "utility"},
 		{ID: 521, Name: "Camouflage", School: "Druidic", Level: 7, ManaCost: 8, CastTime: 3, Effect: "buff"},
@@ -588,8 +590,26 @@ func (e *GameEngine) castHealSpell(ctx context.Context, player *Player, spell *S
 func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []string) *CommandResult {
 	msg := fmt.Sprintf("You gesture and cast %s.", spell.Name)
 
-	//fixed duration right now
-	buffDuration := 5 * time.Minute
+	buffDuration := spell.Duration
+	if buffDuration == 0 {
+		buffDuration = 30 * time.Minute
+	}
+
+	// Check for existing spell family effect
+	if !prepareSpellFamilyEffect(player, spell) {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You gesture and cast %s, but a stronger %s spell is already affecting you.",
+					spell.Name,
+					spell.Family,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+			},
+		}
+	}
 
 	switch spell.ID {
 	case 202: // Enchantment I — enchant a weapon in inventory
@@ -647,6 +667,7 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatAgility, spell.DefBonus, buffDuration)
 		msg = fmt.Sprintf("You gesture and cast %s. Incredible agility flows through you! (+30 AGI)", spell.Name)
 	}
+
 	return &CommandResult{
 		Messages:      []string{msg},
 		RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)},
@@ -682,4 +703,41 @@ func spellDmgNoun(dmgType string) string {
 	default:
 		return "blast"
 	}
+}
+
+func prepareSpellFamilyEffect(player *Player, spell *SpellDef) bool {
+	if spell.Family == "" {
+		return true
+	}
+
+	for i := len(player.ActiveStatEffects) - 1; i >= 0; i-- {
+		effect := player.ActiveStatEffects[i]
+
+		if effect.Source != EffectSourceSpell {
+			continue
+		}
+
+		existingSpell := FindSpellByID(effect.EffectID)
+		if existingSpell == nil || existingSpell.Family != spell.Family {
+			continue
+		}
+
+		// Do not let a weaker spell replace a stronger one.
+		if existingSpell.Level > spell.Level {
+			return false
+		}
+
+		// Same spell stays in place so ApplyStatEffect refreshes it.
+		if existingSpell.ID == spell.ID {
+			return true
+		}
+
+		// Stronger incoming spell replaces the weaker family member.
+		player.ActiveStatEffects = append(
+			player.ActiveStatEffects[:i],
+			player.ActiveStatEffects[i+1:]...,
+		)
+	}
+
+	return true
 }
