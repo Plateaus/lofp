@@ -1381,10 +1381,19 @@ func (e *GameEngine) doFlee(ctx context.Context, player *Player) *CommandResult 
 	}
 	var exits []exitInfo
 	for dir, dest := range room.Exits {
+
+		upperDir := strings.ToUpper(dir)
+
+		// Don't flee upward unless the player can fly.
+		if (upperDir == "U" || upperDir == "UP" || upperDir == "ABOVE") && !player.CanFly {
+			continue
+		}
+
 		if dest > 0 {
 			exits = append(exits, exitInfo{dir, dest})
 		}
 	}
+
 	if len(exits) == 0 {
 		return &CommandResult{Messages: []string{"There is nowhere to flee!"}}
 	}

@@ -1873,6 +1873,10 @@ func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *Co
 	if player.Immobilized {
 		return &CommandResult{Messages: []string{"You are immobilized and cannot move!"}}
 	}
+
+	if player.CombatTarget != nil {
+		return &CommandResult{Messages: []string{"You are engaged in combat! Try FLEE."}}
+	}
 	// Normal movement reveals hidden players (but not Ethereal Projection — that's psi-maintained)
 	if player.Hidden && !player.EtherealActive {
 		player.Hidden = false
@@ -1929,7 +1933,8 @@ func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *Co
 
 	player.RoomNumber = destNum
 	player.Submitting = false // moving clears submit state
-	e.disengageCombat(player) // moving clears combat
+
+	//e.disengageCombat(player) // moving clears combat
 
 	// Moving away from leader breaks follow
 	if player.Following != "" {
