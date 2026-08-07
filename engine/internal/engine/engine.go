@@ -1356,7 +1356,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return &CommandResult{Messages: []string{"You land."}, RoomBroadcast: []string{fmt.Sprintf("%s lands.", player.FirstName)}}
 	// === ITEM INTERACTION ===
 	case "PUT", "PLACE":
-		return &CommandResult{Messages: []string{"[PUT system coming soon.]"}} // TODO: implement item placement
+		return e.doPut(ctx, player, args)
 	case "FILL":
 		return e.doFill(ctx, player, args)
 	case "MARK":
@@ -2171,6 +2171,10 @@ func (e *GameEngine) doLook(player *Player) *CommandResult {
 
 	// List visible items
 	for _, ri := range room.Items {
+
+		if ri.IsPut {
+			continue
+		}
 		// Coin piles
 		if ri.State == "MONEY" {
 			result.Items = append(result.Items, "some coins")
@@ -2312,147 +2316,326 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 		room := e.rooms[player.RoomNumber]
 		if room != nil {
 			destNum, hasExit := room.Exits[dir]
+
 			if !hasExit && dir == "U" {
 				destNum, hasExit = room.Exits["ABOVE"]
 			}
 			if !hasExit && dir == "D" {
 				destNum, hasExit = room.Exits["BELOW"]
 			}
+
 			if hasExit {
 				if dest := e.rooms[destNum]; dest != nil {
 					msgs := []string{fmt.Sprintf("[%s]", dest.Name)}
+
 					if dest.Description != "" {
 						msgs = append(msgs, descriptionToMessages(dest.Description)...)
 					}
-					// Show players in that room
+
+					// Show players in that room.
 					if e.sessions != nil {
 						var playersHere []string
+
 						for _, p := range e.sessions.OnlinePlayers() {
-							if p.RoomNumber == destNum && !p.Hidden && !p.Invisible && !p.GMInvis {
+							if p.RoomNumber == destNum &&
+								!p.Hidden &&
+								!p.Invisible &&
+								!p.GMInvis {
+
 								playersHere = append(playersHere, p.FirstName)
 							}
 						}
+
 						if len(playersHere) > 0 {
-							msgs = append(msgs, fmt.Sprintf("You see %s.", strings.Join(playersHere, ", ")))
+							msgs = append(
+								msgs,
+								fmt.Sprintf("You see %s.", strings.Join(playersHere, ", ")),
+							)
 						}
 					}
-					// Show room items
+
+					// Show top-level room items only.
 					for _, ri := range dest.Items {
+						if ri.IsPut {
+							continue
+						}
+
 						itemDef := e.items[ri.Archetype]
 						if itemDef == nil {
 							continue
 						}
-						itemName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
-						msgs = append(msgs, fmt.Sprintf("You see %s.", itemName))
+
+						itemName := e.formatItemName(
+							itemDef,
+							ri.Adj1,
+							ri.Adj2,
+							ri.Adj3,
+						)
+
+						msgs = append(
+							msgs,
+							fmt.Sprintf("You see %s.", itemName),
+						)
 					}
-					// Show monsters
+
+					// Show monsters.
 					monLines := e.MonsterLookLines(destNum)
 					msgs = append(msgs, monLines...)
-					return &CommandResult{Messages: msgs}
+
+					return &CommandResult{
+						Messages: msgs,
+					}
 				}
 			}
-			return &CommandResult{Messages: []string{"You see nothing of interest in that direction."}}
+
+			return &CommandResult{
+				Messages: []string{
+					"You see nothing of interest in that direction.",
+				},
+			}
 		}
 	}
 
-	// "look at me/myself" → examine self
+	// Look at self.
 	if target == "me" || target == "myself" || target == "self" {
 		return e.examinePlayer(player, player)
 	}
 
-	// Check if target is a player (online, in same room)
+	// Look at another player.
 	if found := e.findPlayerInRoom(player, target); found != nil {
 		return e.examinePlayer(player, found)
 	}
 
-	// Check if target is a monster in the room
+	// Look at a monster.
 	if _, monDef := e.findMonsterInRoom(player, target); monDef != nil {
 		return e.examineMonster(monDef)
 	}
 
-	// Check IN/ON/UNDER prefixes
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"You see nothing."},
+		}
+	}
+
+	// Check IN / ON / UNDER / BEHIND prefixes.
 	prefix := ""
 	remaining := target
-	for _, p := range []string{"in ", "on ", "under ", "behind "} {
+
+	for _, p := range []string{
+		"in ",
+		"on ",
+		"under ",
+		"behind ",
+	} {
 		if strings.HasPrefix(target, p) {
 			prefix = strings.ToUpper(strings.TrimSpace(p))
 			remaining = strings.TrimPrefix(target, p)
 			break
 		}
 	}
+
 	remaining, ordSkip := parseOrdinal(remaining)
 	skip := ordSkip
 
-	room := e.rooms[player.RoomNumber]
-	if room == nil {
-		return &CommandResult{Messages: []string{"You see nothing."}}
-	}
-
 	isContainer := func(def *gameworld.ItemDef) bool {
-		return def.Type == "CONTAINER" || containsFlag(def.Flags, "CONTAINER") ||
-			def.Container == "IN" || def.Container == "ON"
+		return def.Type == "CONTAINER" ||
+			containsFlag(def.Flags, "CONTAINER") ||
+			def.Container == "IN" ||
+			def.Container == "ON"
 	}
 
-	// Search room items
+	// Search room items.
 	for _, ri := range room.Items {
+		// Don't let contained items appear as ordinary room objects.
+		if ri.IsPut {
+			continue
+		}
+
 		itemDef := e.items[ri.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, remaining, e.getAdjName(ri.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			if prefix == "IN" && isContainer(itemDef) {
-				displayName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
-				if ri.State == "OPEN" || ri.State == "" {
-					return &CommandResult{Messages: []string{fmt.Sprintf("You look in %s. It is empty.", displayName)}}
-				}
-				return &CommandResult{Messages: []string{fmt.Sprintf("You'll need to open %s first.", displayName)}}
-			}
-			if prefix != "" {
-				return e.lookPrefixRoomItem(room, itemDef, &ri, prefix)
-			}
-			return e.examineRoomItem(player, room, itemDef, &ri)
+
+		if !matchesTarget(
+			name,
+			remaining,
+			e.getAdjName(ri.Adj1),
+		) {
+			continue
 		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		// LOOK IN <container>
+		if prefix == "IN" && isContainer(itemDef) {
+			displayName := e.formatItemName(
+				itemDef,
+				ri.Adj1,
+				ri.Adj2,
+				ri.Adj3,
+			)
+
+			if ri.State != "OPEN" && ri.State != "" {
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You'll need to open %s first.",
+							displayName,
+						),
+					},
+				}
+			}
+
+			msgs := []string{
+				fmt.Sprintf("You look in %s.", displayName),
+			}
+
+			found := false
+
+			for _, child := range room.Items {
+				if !child.IsPut || child.PutIn != ri.Ref {
+					continue
+				}
+
+				childDef := e.items[child.Archetype]
+				if childDef == nil {
+					continue
+				}
+
+				childName := e.formatItemName(
+					childDef,
+					child.Adj1,
+					child.Adj2,
+					child.Adj3,
+				)
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf("You see %s.", childName),
+				)
+
+				found = true
+			}
+
+			if !found {
+				msgs = append(msgs, "It is empty.")
+			}
+
+			return &CommandResult{
+				Messages: msgs,
+			}
+		}
+
+		// Existing ON / UNDER / BEHIND handling.
+		if prefix != "" {
+			return e.lookPrefixRoomItem(
+				room,
+				itemDef,
+				&ri,
+				prefix,
+			)
+		}
+
+		return e.examineRoomItem(
+			player,
+			room,
+			itemDef,
+			&ri,
+		)
 	}
 
-	// Search all player items (inventory + worn + wielded)
-	allItems := make([]InventoryItem, 0, len(player.Inventory)+len(player.Worn)+1)
+	// Search all player items (inventory + worn + wielded).
+	allItems := make(
+		[]InventoryItem,
+		0,
+		len(player.Inventory)+len(player.Worn)+1,
+	)
+
 	allItems = append(allItems, player.Inventory...)
 	allItems = append(allItems, player.Worn...)
+
 	if player.Wielded != nil {
 		allItems = append(allItems, *player.Wielded)
 	}
+
 	for _, ii := range allItems {
 		itemDef := e.items[ii.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, remaining, e.getAdjName(ii.Adj1)) || matchesTarget(name, remaining, e.getAdjName(ii.Adj3)) {
-			if skip > 0 {
-				skip--
-				continue
+
+		if !matchesTarget(
+			name,
+			remaining,
+			e.getAdjName(ii.Adj1),
+		) &&
+			!matchesTarget(
+				name,
+				remaining,
+				e.getAdjName(ii.Adj3),
+			) {
+
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		if prefix == "IN" && isContainer(itemDef) {
+			return e.lookInContainer(
+				player,
+				itemDef,
+				&ii,
+			)
+		}
+
+		if prefix != "" {
+			displayName := e.formatItemName(
+				itemDef,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You see nothing noteworthy %s %s.",
+						strings.ToLower(prefix),
+						displayName,
+					),
+				},
 			}
-			if prefix == "IN" && isContainer(itemDef) {
-				return e.lookInContainer(player, itemDef, &ii)
-			}
-			if prefix != "" {
-				displayName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-				return &CommandResult{Messages: []string{fmt.Sprintf("You see nothing noteworthy %s %s.", strings.ToLower(prefix), displayName)}}
-			}
-			msgs := []string{fmt.Sprintf("You look at your %s.", name)}
-			if sm := e.scrollLookMsg(ii.Archetype, ii.Val3); sm != "" {
-				msgs = append(msgs, sm)
-			}
-			return &CommandResult{Messages: msgs}
+		}
+
+		msgs := []string{
+			fmt.Sprintf("You look at your %s.", name),
+		}
+
+		if sm := e.scrollLookMsg(ii.Archetype, ii.Val3); sm != "" {
+			msgs = append(msgs, sm)
+		}
+
+		return &CommandResult{
+			Messages: msgs,
 		}
 	}
 
-	return &CommandResult{Messages: []string{"You don't see that here."}}
+	return &CommandResult{
+		Messages: []string{
+			"You don't see that here.",
+		},
+	}
 }
 
 // scrollLookMsg returns a description line if the item is a scroll, empty string otherwise.
@@ -3089,6 +3272,12 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 		}
 	}
 
+	raw := strings.ToLower(strings.Join(args, " "))
+
+	if strings.Contains(raw, " from ") {
+		return e.doGetFromContainer(ctx, player, raw)
+	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
@@ -3101,6 +3290,9 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 	}
 
 	for i, ri := range room.Items {
+		if ri.IsPut {
+			continue
+		}
 		// Handle coin piles that may not have a valid archetype.
 		if ri.State == "MONEY" &&
 			(target == "coins" ||
@@ -3354,6 +3546,451 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 
 	return &CommandResult{
 		Messages: []string{"You don't see that here."},
+	}
+}
+
+func (e *GameEngine) doGetFromContainer(
+	ctx context.Context,
+	player *Player,
+	raw string,
+) *CommandResult {
+
+	parts := strings.SplitN(raw, " from ", 2)
+	if len(parts) != 2 {
+		return &CommandResult{
+			Messages: []string{"Get what from what?"},
+		}
+	}
+
+	itemTarget := strings.TrimSpace(parts[0])
+	containerTarget := strings.TrimSpace(parts[1])
+
+	if itemTarget == "" || containerTarget == "" {
+		return &CommandResult{
+			Messages: []string{"Get what from what?"},
+		}
+	}
+
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"You can't do that here."},
+		}
+	}
+
+	// Find the container.
+	var container *gameworld.RoomItem
+	var containerDef *gameworld.ItemDef
+
+	for i := range room.Items {
+		ri := &room.Items[i]
+
+		// Containers themselves must be top-level room items.
+		if ri.IsPut {
+			continue
+		}
+
+		def := e.items[ri.Archetype]
+		if def == nil {
+			continue
+		}
+
+		name := e.getItemNounName(def)
+
+		if !matchesTarget(
+			name,
+			containerTarget,
+			e.getAdjName(ri.Adj1),
+		) {
+			continue
+		}
+
+		if def.Container != "IN" &&
+			def.Type != "CONTAINER" &&
+			!containsFlag(def.Flags, "CONTAINER") {
+			return &CommandResult{
+				Messages: []string{"That isn't a container."},
+			}
+		}
+
+		container = ri
+		containerDef = def
+		break
+	}
+
+	if container == nil {
+		return &CommandResult{
+			Messages: []string{"You don't see that container here."},
+		}
+	}
+
+	containerName := e.formatItemName(
+		containerDef,
+		container.Adj1,
+		container.Adj2,
+		container.Adj3,
+	)
+
+	if container.State != "OPEN" && container.State != "" {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("You'll need to open %s first.", containerName),
+			},
+		}
+	}
+
+	// Allow ordinals: GET SECOND SCROLL FROM BIN
+	itemTarget, ordSkip := parseOrdinal(itemTarget)
+	skip := ordSkip
+
+	// Find only items PUT inside this specific container.
+	for i, ri := range room.Items {
+		if !ri.IsPut || ri.PutIn != container.Ref {
+			continue
+		}
+
+		itemDef := e.items[ri.Archetype]
+		if itemDef == nil {
+			continue
+		}
+
+		name := e.getItemNounName(itemDef)
+
+		if !matchesTarget(
+			name,
+			itemTarget,
+			e.getAdjName(ri.Adj1),
+		) {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		// Handle money inside containers.
+		if itemDef.Type == "MONEY" || ri.State == "MONEY" {
+			coins := ri.Val1
+			if coins <= 0 {
+				coins = 1
+			}
+
+			room.Items = append(
+				room.Items[:i],
+				room.Items[i+1:]...,
+			)
+
+			player.Copper += coins
+			player.Silver += player.Copper / 10
+			player.Copper %= 10
+			player.Gold += player.Silver / 10
+			player.Silver %= 10
+
+			e.SavePlayer(ctx, player)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You take %d coins from %s.",
+						coins,
+						containerName,
+					),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s takes some coins from %s.",
+						player.FirstName,
+						containerName,
+					),
+				},
+			}
+		}
+
+		pickedUp := ri
+
+		// Run the normal GET preverb scripts on the item.
+		sc := e.RunPreverbScripts(
+			player,
+			room,
+			"GET",
+			&pickedUp,
+			itemDef,
+		)
+
+		result := &CommandResult{
+			Messages:      append([]string{}, sc.Messages...),
+			RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+			GMBroadcast:   append([]string{}, sc.GMMsgs...),
+		}
+
+		if sc.Blocked {
+			if len(result.Messages) == 0 {
+				result.Messages = []string{"You can't get that."}
+			}
+
+			e.SavePlayer(ctx, player)
+			return result
+		}
+
+		player.Inventory = append(
+			player.Inventory,
+			InventoryItem{
+				Archetype: pickedUp.Archetype,
+				Adj1:      pickedUp.Adj1,
+				Adj2:      pickedUp.Adj2,
+				Adj3:      pickedUp.Adj3,
+				Val1:      pickedUp.Val1,
+				Val2:      pickedUp.Val2,
+				Val3:      pickedUp.Val3,
+				Val4:      pickedUp.Val4,
+				Val5:      pickedUp.Val5,
+				State:     pickedUp.State,
+			},
+		)
+
+		/*
+			The GET script may modify room.Items, so locate the exact
+			PUT item again before removing it.
+		*/
+		removeIndex := -1
+
+		for j := range room.Items {
+			candidate := room.Items[j]
+
+			if candidate.IsPut &&
+				candidate.PutIn == pickedUp.PutIn &&
+				candidate.Ref == pickedUp.Ref &&
+				candidate.Archetype == pickedUp.Archetype &&
+				candidate.Adj1 == pickedUp.Adj1 &&
+				candidate.Adj2 == pickedUp.Adj2 &&
+				candidate.Adj3 == pickedUp.Adj3 {
+
+				removeIndex = j
+				break
+			}
+		}
+
+		if removeIndex >= 0 {
+			room.Items = append(
+				room.Items[:removeIndex],
+				room.Items[removeIndex+1:]...,
+			)
+		}
+
+		e.SavePlayer(ctx, player)
+
+		fullName := e.formatItemName(
+			itemDef,
+			pickedUp.Adj1,
+			pickedUp.Adj2,
+			pickedUp.Adj3,
+		)
+
+		result.Messages = append(
+			result.Messages,
+			fmt.Sprintf(
+				"You take %s from %s.",
+				fullName,
+				containerName,
+			),
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			fmt.Sprintf(
+				"%s takes %s from %s.",
+				player.FirstName,
+				fullName,
+				containerName,
+			),
+		)
+
+		return result
+	}
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf("You don't see that in %s.", containerName),
+		},
+	}
+}
+
+func (e *GameEngine) doPut(
+	ctx context.Context,
+	player *Player,
+	args []string,
+) *CommandResult {
+	if len(args) < 3 {
+		return &CommandResult{
+			Messages: []string{"Put what in what?"},
+		}
+	}
+
+	raw := strings.ToLower(strings.Join(args, " "))
+
+	// For now support: PUT <item> IN <container>
+	inIdx := strings.Index(raw, " in ")
+	if inIdx < 0 {
+		return &CommandResult{
+			Messages: []string{"Put what in what?"},
+		}
+	}
+
+	itemTarget := strings.TrimSpace(raw[:inIdx])
+	containerTarget := strings.TrimSpace(raw[inIdx+4:])
+
+	if itemTarget == "" || containerTarget == "" {
+		return &CommandResult{
+			Messages: []string{"Put what in what?"},
+		}
+	}
+
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"You can't do that here."},
+		}
+	}
+
+	// Find the room container.
+	containerIndex := -1
+	for i, ri := range room.Items {
+		if ri.IsPut {
+			continue
+		}
+
+		def := e.items[ri.Archetype]
+		if def == nil {
+			continue
+		}
+
+		name := e.getItemNounName(def)
+
+		if matchesTarget(name, containerTarget, e.getAdjName(ri.Adj1)) {
+			if def.Container != "IN" &&
+				def.Type != "CONTAINER" &&
+				!containsFlag(def.Flags, "CONTAINER") {
+
+				return &CommandResult{
+					Messages: []string{"You can't put anything in that."},
+				}
+			}
+
+			containerIndex = i
+			break
+		}
+	}
+
+	if containerIndex < 0 {
+		return &CommandResult{
+			Messages: []string{"You don't see that container here."},
+		}
+	}
+
+	container := &room.Items[containerIndex]
+	containerDef := e.items[container.Archetype]
+
+	if container.State != "OPEN" && container.State != "" {
+		displayName := e.formatItemName(
+			containerDef,
+			container.Adj1,
+			container.Adj2,
+			container.Adj3,
+		)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("You'll need to open %s first.", displayName),
+			},
+		}
+	}
+
+	// Find item in player's inventory.
+	itemIndex := -1
+
+	for i, ii := range player.Inventory {
+		def := e.items[ii.Archetype]
+		if def == nil {
+			continue
+		}
+
+		name := e.getItemNounName(def)
+
+		if matchesTarget(name, itemTarget, e.getAdjName(ii.Adj1)) ||
+			matchesTarget(name, itemTarget, e.getAdjName(ii.Adj3)) {
+
+			itemIndex = i
+			break
+		}
+	}
+
+	if itemIndex < 0 {
+		return &CommandResult{
+			Messages: []string{"You aren't carrying that."},
+		}
+	}
+
+	ii := player.Inventory[itemIndex]
+	itemDef := e.items[ii.Archetype]
+
+	// Move inventory item into room as a PUT item.
+	putItem := gameworld.RoomItem{
+		Ref:       container.Ref,
+		Archetype: ii.Archetype,
+		Adj1:      ii.Adj1,
+		Adj2:      ii.Adj2,
+		Adj3:      ii.Adj3,
+		Val1:      ii.Val1,
+		Val2:      ii.Val2,
+		Val3:      ii.Val3,
+		Val4:      ii.Val4,
+		Val5:      ii.Val5,
+		State:     ii.State,
+		IsPut:     true,
+		PutIn:     container.Ref,
+	}
+
+	room.Items = append(room.Items, putItem)
+
+	// Remove from inventory.
+	player.Inventory = append(
+		player.Inventory[:itemIndex],
+		player.Inventory[itemIndex+1:]...,
+	)
+
+	e.SavePlayer(ctx, player)
+
+	itemName := e.formatItemName(
+		itemDef,
+		ii.Adj1,
+		ii.Adj2,
+		ii.Adj3,
+	)
+
+	containerName := e.formatItemName(
+		containerDef,
+		container.Adj1,
+		container.Adj2,
+		container.Adj3,
+	)
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf(
+				"You put %s in %s.",
+				itemName,
+				containerName,
+			),
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf(
+				"%s puts %s in %s.",
+				player.FirstName,
+				itemName,
+				containerName,
+			),
+		},
 	}
 }
 
