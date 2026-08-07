@@ -1689,6 +1689,11 @@ func (e *GameEngine) monsterFlee(inst *MonsterInstance, def *gameworld.MonsterDe
 	var exits []exitInfo
 	for dir, dest := range room.Exits {
 		if dest > 0 {
+			//only avians can fly?  Dont see a fly setting so sticking with that for now.  If we add a fly setting to monsters, we can change this to check that instead of body type.
+			upperDir := strings.ToUpper(dir)
+			if (upperDir == "U" || upperDir == "UP" || upperDir == "ABOVE") && def.BodyType != "AVINE" {
+				continue
+			}
 			exits = append(exits, exitInfo{dir, dest})
 		}
 	}
