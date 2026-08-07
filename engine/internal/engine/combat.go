@@ -1715,6 +1715,8 @@ func (e *GameEngine) monsterFlee(inst *MonsterInstance, def *gameworld.MonsterDe
 		e.localRoomBroadcast(inst.RoomNumber, []string{fmt.Sprintf("%s%s flees %s!", capArticle(article), name, dirName)})
 	}
 
+	e.disengageMonster(inst)
+
 	inst.Target = ""
 	e.monsterMgr.moveMonster(e.monsterMgr.indexOfID(inst.ID), chosen.destID)
 }
@@ -1788,4 +1790,25 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (e *GameEngine) disengageMonster(inst *MonsterInstance) {
+	inst.Target = ""
+
+	if e.sessions == nil {
+		return
+	}
+
+	for _, player := range e.sessions.OnlinePlayers() {
+		if player.CombatTarget == nil {
+			continue
+		}
+
+		if player.CombatTarget.IsMonster &&
+			player.CombatTarget.MonsterID == inst.ID {
+
+			player.CombatTarget = nil
+			player.Joined = false
+		}
+	}
 }
