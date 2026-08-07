@@ -1381,10 +1381,19 @@ func (e *GameEngine) doFlee(ctx context.Context, player *Player) *CommandResult 
 	}
 	var exits []exitInfo
 	for dir, dest := range room.Exits {
+
+		upperDir := strings.ToUpper(dir)
+
+		// Don't flee upward unless the player can fly.
+		if (upperDir == "U" || upperDir == "UP" || upperDir == "ABOVE") && !player.CanFly {
+			continue
+		}
+
 		if dest > 0 {
 			exits = append(exits, exitInfo{dir, dest})
 		}
 	}
+
 	if len(exits) == 0 {
 		return &CommandResult{Messages: []string{"There is nowhere to flee!"}}
 	}
@@ -1680,6 +1689,11 @@ func (e *GameEngine) monsterFlee(inst *MonsterInstance, def *gameworld.MonsterDe
 	var exits []exitInfo
 	for dir, dest := range room.Exits {
 		if dest > 0 {
+			//only avians can fly?  Dont see a fly setting so sticking with that for now.  If we add a fly setting to monsters, we can change this to check that instead of body type.
+			upperDir := strings.ToUpper(dir)
+			if (upperDir == "U" || upperDir == "UP" || upperDir == "ABOVE") && def.BodyType != "AVINE" {
+				continue
+			}
 			exits = append(exits, exitInfo{dir, dest})
 		}
 	}
