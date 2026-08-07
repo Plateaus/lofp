@@ -3465,6 +3465,28 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 			return result
 		}
 
+		///get containers
+		var contents []InventoryItem
+
+		for _, child := range room.Items {
+			if !child.IsPut || child.PutIn != pickedUp.Ref {
+				continue
+			}
+
+			contents = append(contents, InventoryItem{
+				Archetype: child.Archetype,
+				Adj1:      child.Adj1,
+				Adj2:      child.Adj2,
+				Adj3:      child.Adj3,
+				Val1:      child.Val1,
+				Val2:      child.Val2,
+				Val3:      child.Val3,
+				Val4:      child.Val4,
+				Val5:      child.Val5,
+				State:     child.State,
+			})
+		}
+
 		// Move the selected room item into the player's inventory.
 		player.Inventory = append(
 			player.Inventory,
@@ -3478,8 +3500,24 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 				Val3:      pickedUp.Val3,
 				Val4:      pickedUp.Val4,
 				Val5:      pickedUp.Val5,
+				Contents:  contents, //add any contents if this is a container
 			},
 		)
+
+		//remove any items that were inside the container from the room
+		if len(contents) > 0 {
+			filtered := room.Items[:0]
+
+			for _, item := range room.Items {
+				if item.IsPut && item.PutIn == pickedUp.Ref {
+					continue
+				}
+
+				filtered = append(filtered, item)
+			}
+
+			room.Items = filtered
+		}
 
 		/*
 			NEWPUT may have appended a replacement item while the script
@@ -3549,11 +3587,7 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 	}
 }
 
-func (e *GameEngine) doGetFromContainer(
-	ctx context.Context,
-	player *Player,
-	raw string,
-) *CommandResult {
+func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw string) *CommandResult {
 
 	parts := strings.SplitN(raw, " from ", 2)
 	if len(parts) != 2 {
@@ -3619,6 +3653,181 @@ func (e *GameEngine) doGetFromContainer(
 	}
 
 	if container == nil {
+		// Try a container the player is carrying.
+		for ci := range player.Inventory {
+			invContainer := &player.Inventory[ci]
+
+			def := e.items[invContainer.Archetype]
+			if def == nil {
+				continue
+			}
+
+			name := e.getItemNounName(def)
+
+			if !matchesTarget(
+				name,
+				containerTarget,
+				e.getAdjName(invContainer.Adj1),
+			) &&
+				!matchesTarget(
+					name,
+					containerTarget,
+					e.getAdjName(invContainer.Adj3),
+				) {
+
+				continue
+			}
+
+			if def.Container != "IN" &&
+				def.Type != "CONTAINER" &&
+				!containsFlag(def.Flags, "CONTAINER") {
+
+				return &CommandResult{
+					Messages: []string{"That isn't a container."},
+				}
+			}
+
+			containerName := e.formatItemName(
+				def,
+				invContainer.Adj1,
+				invContainer.Adj2,
+				invContainer.Adj3,
+			)
+
+			if invContainer.State != "OPEN" && invContainer.State != "" {
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You'll need to open %s first.",
+							containerName,
+						),
+					},
+				}
+			}
+
+			// Allow: GET SECOND SCROLL FROM SACK
+			itemTarget, ordSkip := parseOrdinal(itemTarget)
+			skip := ordSkip
+
+			for ii := range invContainer.Contents {
+				child := invContainer.Contents[ii]
+
+				childDef := e.items[child.Archetype]
+				if childDef == nil {
+					continue
+				}
+
+				childName := e.getItemNounName(childDef)
+
+				if !matchesTarget(
+					childName,
+					itemTarget,
+					e.getAdjName(child.Adj1),
+				) &&
+					!matchesTarget(
+						childName,
+						itemTarget,
+						e.getAdjName(child.Adj3),
+					) {
+
+					continue
+				}
+
+				if skip > 0 {
+					skip--
+					continue
+				}
+
+				// MONEY inside a carried container.
+				if childDef.Type == "MONEY" || child.State == "MONEY" {
+					coins := child.Val1
+					if coins <= 0 {
+						coins = 1
+					}
+
+					invContainer.Contents = append(
+						invContainer.Contents[:ii],
+						invContainer.Contents[ii+1:]...,
+					)
+
+					player.Copper += coins
+
+					player.Silver += player.Copper / 10
+					player.Copper %= 10
+
+					player.Gold += player.Silver / 10
+					player.Silver %= 10
+
+					e.SavePlayer(ctx, player)
+
+					return &CommandResult{
+						Messages: []string{
+							fmt.Sprintf(
+								"You take %d coins from %s.",
+								coins,
+								containerName,
+							),
+						},
+						RoomBroadcast: []string{
+							fmt.Sprintf(
+								"%s takes some coins from %s.",
+								player.FirstName,
+								containerName,
+							),
+						},
+					}
+				}
+
+				// Remove it from the container first.
+				invContainer.Contents = append(
+					invContainer.Contents[:ii],
+					invContainer.Contents[ii+1:]...,
+				)
+
+				// Then add it to ordinary inventory.
+				player.Inventory = append(
+					player.Inventory,
+					child,
+				)
+
+				e.SavePlayer(ctx, player)
+
+				fullName := e.formatItemName(
+					childDef,
+					child.Adj1,
+					child.Adj2,
+					child.Adj3,
+				)
+
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You take %s from %s.",
+							fullName,
+							containerName,
+						),
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf(
+							"%s takes %s from %s.",
+							player.FirstName,
+							fullName,
+							containerName,
+						),
+					},
+				}
+			}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You don't see that in %s.",
+						containerName,
+					),
+				},
+			}
+		}
+
 		return &CommandResult{
 			Messages: []string{"You don't see that container here."},
 		}
@@ -3816,11 +4025,7 @@ func (e *GameEngine) doGetFromContainer(
 	}
 }
 
-func (e *GameEngine) doPut(
-	ctx context.Context,
-	player *Player,
-	args []string,
-) *CommandResult {
+func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) < 3 {
 		return &CommandResult{
 			Messages: []string{"Put what in what?"},
@@ -3883,9 +4088,12 @@ func (e *GameEngine) doPut(
 	}
 
 	if containerIndex < 0 {
-		return &CommandResult{
-			Messages: []string{"You don't see that container here."},
-		}
+		return e.doPutInInventoryContainer(
+			ctx,
+			player,
+			itemTarget,
+			containerTarget,
+		)
 	}
 
 	container := &room.Items[containerIndex]
@@ -3994,11 +4202,161 @@ func (e *GameEngine) doPut(
 	}
 }
 
-func (e *GameEngine) doDrop(
-	ctx context.Context,
-	player *Player,
-	args []string,
-) *CommandResult {
+func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Player, itemTarget string, containerTarget string) *CommandResult {
+
+	for containerIndex := range player.Inventory {
+		container := &player.Inventory[containerIndex]
+
+		containerDef := e.items[container.Archetype]
+		if containerDef == nil {
+			continue
+		}
+
+		containerNoun := e.getItemNounName(containerDef)
+
+		if !matchesTarget(
+			containerNoun,
+			containerTarget,
+			e.getAdjName(container.Adj1),
+		) &&
+			!matchesTarget(
+				containerNoun,
+				containerTarget,
+				e.getAdjName(container.Adj3),
+			) {
+			continue
+		}
+
+		if containerDef.Container != "IN" &&
+			containerDef.Type != "CONTAINER" &&
+			!containsFlag(containerDef.Flags, "CONTAINER") {
+
+			return &CommandResult{
+				Messages: []string{
+					"You can't put anything in that.",
+				},
+			}
+		}
+
+		containerName := e.formatItemName(
+			containerDef,
+			container.Adj1,
+			container.Adj2,
+			container.Adj3,
+		)
+
+		if container.State != "OPEN" && container.State != "" {
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You'll need to open %s first.",
+						containerName,
+					),
+				},
+			}
+		}
+
+		// Find the item being placed into the container.
+		itemIndex := -1
+
+		for i := range player.Inventory {
+			// Don't allow putting a container into itself.
+			if i == containerIndex {
+				continue
+			}
+
+			item := &player.Inventory[i]
+
+			itemDef := e.items[item.Archetype]
+			if itemDef == nil {
+				continue
+			}
+
+			itemNoun := e.getItemNounName(itemDef)
+
+			if matchesTarget(
+				itemNoun,
+				itemTarget,
+				e.getAdjName(item.Adj1),
+			) ||
+				matchesTarget(
+					itemNoun,
+					itemTarget,
+					e.getAdjName(item.Adj3),
+				) {
+
+				itemIndex = i
+				break
+			}
+		}
+
+		if itemIndex < 0 {
+			return &CommandResult{
+				Messages: []string{
+					"You aren't carrying that.",
+				},
+			}
+		}
+
+		item := player.Inventory[itemIndex]
+		itemDef := e.items[item.Archetype]
+
+		/*
+			Remove the item before modifying the container.
+
+			Removing from player.Inventory can shift the container's
+			index, so adjust it if necessary.
+		*/
+		player.Inventory = append(
+			player.Inventory[:itemIndex],
+			player.Inventory[itemIndex+1:]...,
+		)
+
+		if itemIndex < containerIndex {
+			containerIndex--
+		}
+
+		player.Inventory[containerIndex].Contents = append(
+			player.Inventory[containerIndex].Contents,
+			item,
+		)
+
+		e.SavePlayer(ctx, player)
+
+		itemName := e.formatItemName(
+			itemDef,
+			item.Adj1,
+			item.Adj2,
+			item.Adj3,
+		)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You put %s in %s.",
+					itemName,
+					containerName,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s puts %s in %s.",
+					player.FirstName,
+					itemName,
+					containerName,
+				),
+			},
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{
+			"You don't see that container here.",
+		},
+	}
+}
+
+func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{
 			Messages: []string{"Drop what?"},
@@ -4098,6 +4456,7 @@ func (e *GameEngine) doDrop(
 			Val3:      ii.Val3,
 			Val4:      ii.Val4,
 			Val5:      ii.Val5,
+			State:     ii.State,
 		}
 
 		room.Items = append(room.Items, droppedItem)
@@ -4107,6 +4466,33 @@ func (e *GameEngine) doDrop(
 			Type:       "item_add",
 			Item:       &droppedItem,
 		})
+
+		// Restore any carried container contents as PUT items in the room.
+		for _, child := range ii.Contents {
+			putItem := gameworld.RoomItem{
+				Ref:       droppedItem.Ref,
+				Archetype: child.Archetype,
+				Adj1:      child.Adj1,
+				Adj2:      child.Adj2,
+				Adj3:      child.Adj3,
+				Val1:      child.Val1,
+				Val2:      child.Val2,
+				Val3:      child.Val3,
+				Val4:      child.Val4,
+				Val5:      child.Val5,
+				State:     child.State,
+				IsPut:     true,
+				PutIn:     droppedItem.Ref,
+			}
+
+			room.Items = append(room.Items, putItem)
+
+			e.notifyRoomChange(RoomChange{
+				RoomNumber: player.RoomNumber,
+				Type:       "item_add",
+				Item:       &putItem,
+			})
+		}
 
 		player.Inventory = append(
 			player.Inventory[:i],
@@ -7486,11 +7872,62 @@ func (e *GameEngine) getAdjName(adjID int) string {
 	return ""
 }
 
-func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii *InventoryItem) *CommandResult {
-	name := e.formatItemName(def, ii.Adj1, ii.Adj2, ii.Adj3)
-	return &CommandResult{Messages: []string{fmt.Sprintf("You look in %s. It is empty.", name)}}
-}
+func (e *GameEngine) lookInContainer(
+	player *Player,
+	def *gameworld.ItemDef,
+	ii *InventoryItem,
+) *CommandResult {
 
+	name := e.formatItemName(
+		def,
+		ii.Adj1,
+		ii.Adj2,
+		ii.Adj3,
+	)
+
+	if ii.State != "OPEN" && ii.State != "" {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("You'll need to open %s first.", name),
+			},
+		}
+	}
+
+	msgs := []string{
+		fmt.Sprintf("You look in %s.", name),
+	}
+
+	found := false
+
+	for _, child := range ii.Contents {
+		childDef := e.items[child.Archetype]
+		if childDef == nil {
+			continue
+		}
+
+		childName := e.formatItemName(
+			childDef,
+			child.Adj1,
+			child.Adj2,
+			child.Adj3,
+		)
+
+		msgs = append(
+			msgs,
+			fmt.Sprintf("You see %s.", childName),
+		)
+
+		found = true
+	}
+
+	if !found {
+		msgs = append(msgs, "It is empty.")
+	}
+
+	return &CommandResult{
+		Messages: msgs,
+	}
+}
 func (e *GameEngine) examineRoomItem(player *Player, room *gameworld.Room, def *gameworld.ItemDef, ri *gameworld.RoomItem) *CommandResult {
 	result := &CommandResult{}
 

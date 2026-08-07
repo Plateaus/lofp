@@ -246,17 +246,18 @@ type Player struct {
 
 // InventoryItem is an instance of an item held by a player.
 type InventoryItem struct {
-	Archetype int    `bson:"archetype" json:"archetype"`
-	Adj1      int    `bson:"adj1,omitempty" json:"adj1,omitempty"`
-	Adj2      int    `bson:"adj2,omitempty" json:"adj2,omitempty"`
-	Adj3      int    `bson:"adj3,omitempty" json:"adj3,omitempty"`
-	Val1      int    `bson:"val1,omitempty" json:"val1,omitempty"`
-	Val2      int    `bson:"val2,omitempty" json:"val2,omitempty"`
-	Val3      int    `bson:"val3,omitempty" json:"val3,omitempty"`
-	Val4      int    `bson:"val4,omitempty" json:"val4,omitempty"`
-	Val5      int    `bson:"val5,omitempty" json:"val5,omitempty"`
-	State     string `bson:"state,omitempty" json:"state,omitempty"`
-	WornSlot  string `bson:"wornSlot,omitempty" json:"wornSlot,omitempty"`
+	Archetype int             `bson:"archetype" json:"archetype"`
+	Adj1      int             `bson:"adj1,omitempty" json:"adj1,omitempty"`
+	Adj2      int             `bson:"adj2,omitempty" json:"adj2,omitempty"`
+	Adj3      int             `bson:"adj3,omitempty" json:"adj3,omitempty"`
+	Val1      int             `bson:"val1,omitempty" json:"val1,omitempty"`
+	Val2      int             `bson:"val2,omitempty" json:"val2,omitempty"`
+	Val3      int             `bson:"val3,omitempty" json:"val3,omitempty"`
+	Val4      int             `bson:"val4,omitempty" json:"val4,omitempty"`
+	Val5      int             `bson:"val5,omitempty" json:"val5,omitempty"`
+	State     string          `bson:"state,omitempty" json:"state,omitempty"`
+	WornSlot  string          `bson:"wornSlot,omitempty" json:"wornSlot,omitempty"`
+	Contents  []InventoryItem `bson:"contents,omitempty" json:"contents,omitempty"`
 }
 
 type StatEffect struct {
