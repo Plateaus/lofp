@@ -58,8 +58,6 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 		dropChance = 60
 	}
 
-	dropChance = 100
-
 	if rand.Intn(100) < dropChance {
 		// Determine drop type — all tiers available from treasure level 1
 		roll := rand.Intn(100)
@@ -94,7 +92,7 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 				}
 			}
 
-		case roll < 101:
+		case roll < 55:
 			// Locked container — for rogues to practice lockpicking.
 			if item := e.randomChestDrop(treasureLevel); item != nil {
 				ref := len(room.Items)
