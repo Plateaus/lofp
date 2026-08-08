@@ -2508,6 +2508,20 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 					continue
 				}
 
+				if childDef.Type == "MONEY" {
+					switch childDef.Parameter1 {
+					case 1:
+						msgs = append(msgs, "You see some gold coins.")
+					case 2:
+						msgs = append(msgs, "You see some silver coins.")
+					case 3:
+						msgs = append(msgs, "You see some copper coins.")
+					default:
+						msgs = append(msgs, "You see some coins.")
+					}
+					continue
+				}
+
 				childName := e.formatItemName(
 					childDef,
 					child.Adj1,
@@ -3500,6 +3514,7 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 				Val3:      pickedUp.Val3,
 				Val4:      pickedUp.Val4,
 				Val5:      pickedUp.Val5,
+				State:     pickedUp.State,
 				Contents:  contents, //add any contents if this is a container
 			},
 		)
@@ -5370,6 +5385,19 @@ func (e *GameEngine) doOpen(player *Player, args []string) *CommandResult {
 			if !containsFlag(itemDef.Flags, "OPENABLE") {
 				return &CommandResult{Messages: []string{"You can't open that."}}
 			}
+
+			if ii.State == "LOCKED" {
+				return &CommandResult{
+					Messages: []string{"It's locked."},
+				}
+			}
+
+			if ii.State == "LATCHED" {
+				return &CommandResult{
+					Messages: []string{"It's latched shut."},
+				}
+			}
+
 			player.Inventory[i].State = "OPEN"
 			fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
 			return &CommandResult{Messages: []string{fmt.Sprintf("You open %s.", fullName)}}
