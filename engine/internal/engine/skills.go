@@ -509,7 +509,7 @@ func (e *GameEngine) doPick(ctx context.Context, player *Player, args []string) 
 			}
 
 			// For now PICK only supports containers.
-			if def.Container == "" {
+			if !containsFlag(def.Flags, "LOCKABLE") {
 				continue
 			}
 
