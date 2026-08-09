@@ -1045,6 +1045,8 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doYell(player, args, input)
 	case "GIVE":
 		return e.doGive(ctx, player, args)
+	case "PICK", "LOCKPICK":
+		return e.doPick(ctx, player, args)
 	case "EAT":
 		return e.doEat(ctx, player, args)
 	case "SPEECH":
@@ -1152,7 +1154,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		"HULA", "JIG", "MOAN", "MASSAGE", "PINCH",
 		"PURR", "ROAR", "SNARL", "SNUGGLE", "WAG", "WAIT", "WRITE",
 		"YOWL", "STOMP", "APPLAUD", "PEER", "GRUNT", "DIP",
-		"HANDRAISE", "HANDSHAKE", "HEADSHAKE", "PICK", "GESTURE",
+		"HANDRAISE", "HANDSHAKE", "HEADSHAKE", "GESTURE",
 		// Additional self-emotes
 		"FUME", "SQUINT", "HUM", "SNIFFLE", "SLOUCH", "SNORE", "SNEEZE",
 		"STARE", "PUCKER", "CRACK", "BOUNCE", "STRIKE", "CLUTCH",
@@ -7900,11 +7902,7 @@ func (e *GameEngine) getAdjName(adjID int) string {
 	return ""
 }
 
-func (e *GameEngine) lookInContainer(
-	player *Player,
-	def *gameworld.ItemDef,
-	ii *InventoryItem,
-) *CommandResult {
+func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii *InventoryItem) *CommandResult {
 
 	name := e.formatItemName(
 		def,
@@ -7933,6 +7931,22 @@ func (e *GameEngine) lookInContainer(
 			continue
 		}
 
+		if childDef.Type == "MONEY" {
+			switch childDef.Parameter1 {
+			case MoneyGold:
+				msgs = append(msgs, "You see some gold coins.")
+			case MoneySilver:
+				msgs = append(msgs, "You see some silver coins.")
+			case MoneyCopper:
+				msgs = append(msgs, "You see some copper coins.")
+			default:
+				msgs = append(msgs, "You see some coins.")
+			}
+
+			found = true
+			continue
+		}
+
 		childName := e.formatItemName(
 			childDef,
 			child.Adj1,
@@ -7956,6 +7970,7 @@ func (e *GameEngine) lookInContainer(
 		Messages: msgs,
 	}
 }
+
 func (e *GameEngine) examineRoomItem(player *Player, room *gameworld.Room, def *gameworld.ItemDef, ri *gameworld.RoomItem) *CommandResult {
 	result := &CommandResult{}
 
