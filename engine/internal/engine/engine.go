@@ -4755,53 +4755,15 @@ func (e *GameEngine) doHealth(player *Player) *CommandResult {
 	}}
 }
 
-/*
-	func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string) *CommandResult {
-		if len(args) == 0 {
-			return &CommandResult{Messages: []string{"Wield what?"}}
-		}
-		target := strings.ToLower(strings.Join(args, " "))
-		target, ordSkip := parseOrdinal(target)
-		skip := ordSkip
-		for i, ii := range player.Inventory {
-			itemDef := e.items[ii.Archetype]
-			if itemDef == nil {
-				continue
-			}
-			name := e.getItemNounName(itemDef)
-			if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
-				continue
-			}
-			if skip > 0 {
-				skip--
-				continue
-			}
-			// Shields are worn, not wielded — route to WEAR
-			if itemDef.Type == "SHIELD" || (itemDef.WornSlot != "" && !isWeapon(itemDef.Type)) {
-				return e.doWear(ctx, player, args)
-			}
-			if !isWeapon(itemDef.Type) {
-				return &CommandResult{Messages: []string{"You can't wield that."}}
-			}
-			if player.Wielded != nil {
-				player.Inventory = append(player.Inventory, *player.Wielded)
-			}
-			wielded := player.Inventory[i]
-			player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
-			player.Wielded = &wielded
-			e.SavePlayer(ctx, player)
-			fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You wield %s.", fullName)},
-				RoomBroadcast: []string{fmt.Sprintf("%s wields %s.", player.FirstName, fullName)},
-			}
-		}
-		return &CommandResult{Messages: []string{"You don't have that."}}
-	}
-*/
 func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Wield what?"}}
+	}
+
+	if player.WolfForm {
+		return &CommandResult{
+			Messages: []string{"You can't wield anything while in wolf form."},
+		}
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
@@ -4963,6 +4925,12 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player) *CommandResu
 		}
 	}
 
+	if player.WolfForm {
+		return &CommandResult{
+			Messages: []string{"You can't do that while in wolf form."},
+		}
+	}
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
 		return &CommandResult{
@@ -5039,49 +5007,16 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player) *CommandResu
 	return result
 }
 
-/*
-func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) *CommandResult {
-	if len(args) == 0 {
-		return &CommandResult{Messages: []string{"Wear what?"}}
-	}
-	target := strings.ToLower(strings.Join(args, " "))
-	target, ordSkip := parseOrdinal(target)
-	skip := ordSkip
-	for i, ii := range player.Inventory {
-		itemDef := e.items[ii.Archetype]
-		if itemDef == nil {
-			continue
-		}
-		if itemDef.WornSlot == "" {
-			continue
-		}
-		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			worn := player.Inventory[i]
-			worn.WornSlot = itemDef.WornSlot
-			player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
-			player.Worn = append(player.Worn, worn)
-			e.SavePlayer(ctx, player)
-			fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You put on %s.", fullName)},
-				RoomBroadcast: []string{fmt.Sprintf("%s puts on %s.", player.FirstName, fullName)},
-			}
-		}
-	}
-	return &CommandResult{Messages: []string{"You don't have that."}}
-}
-*/
-
 func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Wear what?"}}
 	}
 
+	if player.WolfForm {
+		return &CommandResult{
+			Messages: []string{"You can't wear anything while in wolf form."},
+		}
+	}
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
@@ -5150,6 +5085,30 @@ func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) 
 			return result
 		}
 
+		for _, wi := range player.Worn {
+			if wi.WornSlot == itemDef.WornSlot {
+				wornDef := e.items[wi.Archetype]
+
+				wornName := "something"
+				if wornDef != nil {
+					wornName = e.formatItemName(
+						wornDef,
+						wi.Adj1,
+						wi.Adj2,
+						wi.Adj3,
+					)
+				}
+
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You are already wearing %s there.",
+							wornName,
+						),
+					},
+				}
+			}
+		}
 		worn := player.Inventory[i]
 		worn.WornSlot = itemDef.WornSlot
 
@@ -5187,44 +5146,15 @@ func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) 
 	}
 }
 
-/*
 func (e *GameEngine) doRemove(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Remove what?"}}
 	}
-	target := strings.ToLower(strings.Join(args, " "))
-	target, ordSkip := parseOrdinal(target)
-	skip := ordSkip
-	for i, ii := range player.Worn {
-		itemDef := e.items[ii.Archetype]
-		if itemDef == nil {
-			continue
-		}
-		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			removed := player.Worn[i]
-			removed.WornSlot = ""
-			player.Worn = append(player.Worn[:i], player.Worn[i+1:]...)
-			player.Inventory = append(player.Inventory, removed)
-			e.SavePlayer(ctx, player)
-			fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You remove %s.", fullName)},
-				RoomBroadcast: []string{fmt.Sprintf("%s removes %s.", player.FirstName, fullName)},
-			}
-		}
-	}
-	return &CommandResult{Messages: []string{"You aren't wearing that."}}
-}
-*/
 
-func (e *GameEngine) doRemove(ctx context.Context, player *Player, args []string) *CommandResult {
-	if len(args) == 0 {
-		return &CommandResult{Messages: []string{"Remove what?"}}
+	if player.WolfForm {
+		return &CommandResult{
+			Messages: []string{"You can't do that while in wolf form."},
+		}
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
