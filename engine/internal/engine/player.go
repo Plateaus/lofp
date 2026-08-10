@@ -170,6 +170,7 @@ type Player struct {
 	// Inventory
 	Inventory []InventoryItem `bson:"inventory" json:"inventory"`
 	Wielded   *InventoryItem  `bson:"wielded,omitempty" json:"wielded,omitempty"`
+	Offhand   *InventoryItem  `bson:"offhand,omitempty" json:"offhand,omitempty"`
 	Worn      []InventoryItem `bson:"worn" json:"worn"`
 
 	// Currency (carried)

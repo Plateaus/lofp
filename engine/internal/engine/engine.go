@@ -928,7 +928,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "WIELD":
 		return e.doWield(ctx, player, args)
 	case "UNWIELD":
-		return e.doUnwield(ctx, player)
+		return e.doUnwield(ctx, player, args)
 	case "WEAR":
 		return e.doWear(ctx, player, args)
 	case "REMOVE":
@@ -3622,6 +3622,11 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 		}
 	}
 
+	// Support:
+	// GET COIN FROM CHEST 2
+	// GET COIN FROM SECOND CHEST
+	containerTarget, containerOrdSkip := parseOrdinal(containerTarget)
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
 		return &CommandResult{
@@ -3629,9 +3634,14 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 		}
 	}
 
-	// Find the container.
+	// ------------------------------------------------------------
+	// Find a matching room container.
+	// ------------------------------------------------------------
+
 	var container *gameworld.RoomItem
 	var containerDef *gameworld.ItemDef
+
+	containerSkip := containerOrdSkip
 
 	for i := range room.Items {
 		ri := &room.Items[i]
@@ -3652,16 +3662,25 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			name,
 			containerTarget,
 			e.getAdjName(ri.Adj1),
-		) {
+		) &&
+			!matchesTarget(
+				name,
+				containerTarget,
+				e.getAdjName(ri.Adj3),
+			) {
 			continue
 		}
 
+		// Only count actual containers toward the ordinal.
 		if def.Container != "IN" &&
 			def.Type != "CONTAINER" &&
 			!containsFlag(def.Flags, "CONTAINER") {
-			return &CommandResult{
-				Messages: []string{"That isn't a container."},
-			}
+			continue
+		}
+
+		if containerSkip > 0 {
+			containerSkip--
+			continue
 		}
 
 		container = ri
@@ -3669,8 +3688,13 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 		break
 	}
 
+	// ------------------------------------------------------------
+	// If no room container matched, try carried containers.
+	// ------------------------------------------------------------
+
 	if container == nil {
-		// Try a container the player is carrying.
+		containerSkip = containerOrdSkip
+
 		for ci := range player.Inventory {
 			invContainer := &player.Inventory[ci]
 
@@ -3691,17 +3715,18 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 					containerTarget,
 					e.getAdjName(invContainer.Adj3),
 				) {
-
 				continue
 			}
 
 			if def.Container != "IN" &&
 				def.Type != "CONTAINER" &&
 				!containsFlag(def.Flags, "CONTAINER") {
+				continue
+			}
 
-				return &CommandResult{
-					Messages: []string{"That isn't a container."},
-				}
+			if containerSkip > 0 {
+				containerSkip--
+				continue
 			}
 
 			containerName := e.formatItemName(
@@ -3722,8 +3747,9 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 				}
 			}
 
-			// Allow: GET SECOND SCROLL FROM SACK
-			itemTarget, ordSkip := parseOrdinal(itemTarget)
+			// Support:
+			// GET SECOND SCROLL FROM SACK
+			parsedItemTarget, ordSkip := parseOrdinal(itemTarget)
 			skip := ordSkip
 
 			for ii := range invContainer.Contents {
@@ -3738,15 +3764,14 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 
 				if !matchesTarget(
 					childName,
-					itemTarget,
+					parsedItemTarget,
 					e.getAdjName(child.Adj1),
 				) &&
 					!matchesTarget(
 						childName,
-						itemTarget,
+						parsedItemTarget,
 						e.getAdjName(child.Adj3),
 					) {
-
 					continue
 				}
 
@@ -3795,13 +3820,13 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 					}
 				}
 
-				// Remove it from the container first.
+				// Remove from container.
 				invContainer.Contents = append(
 					invContainer.Contents[:ii],
 					invContainer.Contents[ii+1:]...,
 				)
 
-				// Then add it to ordinary inventory.
+				// Add to ordinary inventory.
 				player.Inventory = append(
 					player.Inventory,
 					child,
@@ -3850,6 +3875,10 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 		}
 	}
 
+	// ------------------------------------------------------------
+	// Room container found.
+	// ------------------------------------------------------------
+
 	containerName := e.formatItemName(
 		containerDef,
 		container.Adj1,
@@ -3860,13 +3889,17 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 	if container.State != "OPEN" && container.State != "" {
 		return &CommandResult{
 			Messages: []string{
-				fmt.Sprintf("You'll need to open %s first.", containerName),
+				fmt.Sprintf(
+					"You'll need to open %s first.",
+					containerName,
+				),
 			},
 		}
 	}
 
-	// Allow ordinals: GET SECOND SCROLL FROM BIN
-	itemTarget, ordSkip := parseOrdinal(itemTarget)
+	// Support:
+	// GET SECOND SCROLL FROM BIN
+	parsedItemTarget, ordSkip := parseOrdinal(itemTarget)
 	skip := ordSkip
 
 	// Find only items PUT inside this specific container.
@@ -3884,9 +3917,14 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 
 		if !matchesTarget(
 			name,
-			itemTarget,
+			parsedItemTarget,
 			e.getAdjName(ri.Adj1),
-		) {
+		) &&
+			!matchesTarget(
+				name,
+				parsedItemTarget,
+				e.getAdjName(ri.Adj3),
+			) {
 			continue
 		}
 
@@ -3935,7 +3973,7 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 
 		pickedUp := ri
 
-		// Run the normal GET preverb scripts on the item.
+		// Run normal GET preverb scripts on the item.
 		sc := e.RunPreverbScripts(
 			player,
 			room,
@@ -4037,7 +4075,10 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 
 	return &CommandResult{
 		Messages: []string{
-			fmt.Sprintf("You don't see that in %s.", containerName),
+			fmt.Sprintf(
+				"You don't see that in %s.",
+				containerName,
+			),
 		},
 	}
 }
@@ -4221,6 +4262,9 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Player, itemTarget string, containerTarget string) *CommandResult {
 
+	containerTarget, ordSkip := parseOrdinal(containerTarget)
+	skip := ordSkip
+
 	for containerIndex := range player.Inventory {
 		container := &player.Inventory[containerIndex]
 
@@ -4247,12 +4291,15 @@ func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Play
 		if containerDef.Container != "IN" &&
 			containerDef.Type != "CONTAINER" &&
 			!containsFlag(containerDef.Flags, "CONTAINER") {
+			continue
+		}
 
-			return &CommandResult{
-				Messages: []string{
-					"You can't put anything in that.",
-				},
-			}
+		// Ordinal support:
+		// PUT CLAW IN CHEST 2
+		// PUT CLAW IN SECOND CHEST
+		if skip > 0 {
+			skip--
+			continue
 		}
 
 		containerName := e.formatItemName(
@@ -4274,6 +4321,8 @@ func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Play
 		}
 
 		// Find the item being placed into the container.
+		itemTargetParsed, itemOrdSkip := parseOrdinal(itemTarget)
+		itemSkip := itemOrdSkip
 		itemIndex := -1
 
 		for i := range player.Inventory {
@@ -4291,20 +4340,26 @@ func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Play
 
 			itemNoun := e.getItemNounName(itemDef)
 
-			if matchesTarget(
+			if !matchesTarget(
 				itemNoun,
-				itemTarget,
+				itemTargetParsed,
 				e.getAdjName(item.Adj1),
-			) ||
-				matchesTarget(
+			) &&
+				!matchesTarget(
 					itemNoun,
-					itemTarget,
+					itemTargetParsed,
 					e.getAdjName(item.Adj3),
 				) {
-
-				itemIndex = i
-				break
+				continue
 			}
+
+			if itemSkip > 0 {
+				itemSkip--
+				continue
+			}
+
+			itemIndex = i
+			break
 		}
 
 		if itemIndex < 0 {
@@ -4542,35 +4597,90 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 		Messages: []string{"You aren't carrying that."},
 	}
 }
+
 func (e *GameEngine) doInventory(player *Player) *CommandResult {
 	var msgs []string
+
 	msgs = append(msgs, "You are carrying:")
-	if len(player.Inventory) == 0 && len(player.Worn) == 0 && player.Wielded == nil {
+
+	if len(player.Inventory) == 0 &&
+		len(player.Worn) == 0 &&
+		player.Wielded == nil &&
+		player.Offhand == nil {
+
 		msgs = append(msgs, "  Nothing.")
 		return &CommandResult{Messages: msgs}
 	}
 
+	// Main hand.
 	if player.Wielded != nil {
 		itemDef := e.items[player.Wielded.Archetype]
 		if itemDef != nil {
-			name := e.formatItemName(itemDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3)
-			msgs = append(msgs, fmt.Sprintf("  %s (wielded)", name))
+			name := e.formatItemName(
+				itemDef,
+				player.Wielded.Adj1,
+				player.Wielded.Adj2,
+				player.Wielded.Adj3,
+			)
+
+			msgs = append(
+				msgs,
+				fmt.Sprintf("  %s (wielded)", name),
+			)
 		}
 	}
 
+	// Off hand.
+	if player.Offhand != nil {
+		itemDef := e.items[player.Offhand.Archetype]
+		if itemDef != nil {
+			name := e.formatItemName(
+				itemDef,
+				player.Offhand.Adj1,
+				player.Offhand.Adj2,
+				player.Offhand.Adj3,
+			)
+
+			msgs = append(
+				msgs,
+				fmt.Sprintf("  %s (off hand)", name),
+			)
+		}
+	}
+
+	// Worn equipment.
 	for _, ii := range player.Worn {
 		itemDef := e.items[ii.Archetype]
 		if itemDef != nil {
-			name := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			msgs = append(msgs, fmt.Sprintf("  %s (worn)", name))
+			name := e.formatItemName(
+				itemDef,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			)
+
+			msgs = append(
+				msgs,
+				fmt.Sprintf("  %s (worn)", name),
+			)
 		}
 	}
 
+	// Normal inventory.
 	for _, ii := range player.Inventory {
 		itemDef := e.items[ii.Archetype]
 		if itemDef != nil {
-			name := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			msgs = append(msgs, fmt.Sprintf("  %s", name))
+			name := e.formatItemName(
+				itemDef,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			)
+
+			msgs = append(
+				msgs,
+				fmt.Sprintf("  %s", name),
+			)
 		}
 	}
 
@@ -4617,7 +4727,7 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 		weaponDef = e.items[player.Wielded.Archetype]
 	}
 	atkRating := playerAttackRating(player, weaponDef)
-	defRating := playerDefenseRating(player)
+	defRating := e.playerDefenseRating(player)
 	stanceLabel := stanceNames[player.Stance]
 
 	msgs = append(msgs,
@@ -4791,11 +4901,134 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			continue
 		}
 
-		// Shields and other wearable non-weapons route to WEAR.
-		if itemDef.Type == "SHIELD" ||
-			(itemDef.WornSlot != "" && !isWeapon(itemDef.Type)) {
+		// Wearable non-weapons still route to WEAR.
+		// Shields are handled here because they occupy the offhand.
+		if !isShield(itemDef) &&
+			itemDef.WornSlot != "" &&
+			!isWeapon(itemDef.Type) {
 			return e.doWear(ctx, player, args)
 		}
+
+		// ------------------------------------------------------------
+		// SHIELD -> OFFHAND
+		// ------------------------------------------------------------
+
+		if isShield(itemDef) {
+			if player.Offhand != nil {
+				offDef := e.items[player.Offhand.Archetype]
+				offName := "something"
+
+				if offDef != nil {
+					offName = e.formatItemName(
+						offDef,
+						player.Offhand.Adj1,
+						player.Offhand.Adj2,
+						player.Offhand.Adj3,
+					)
+				}
+
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You are already wielding %s in your off hand.",
+							offName,
+						),
+					},
+				}
+			}
+
+			// Can't use a shield while wielding a two-handed weapon.
+			if player.Wielded != nil {
+				mainDef := e.items[player.Wielded.Archetype]
+
+				if isTwoHandedWeapon(mainDef) {
+					return &CommandResult{
+						Messages: []string{
+							"You can't wield a shield while using a two-handed weapon.",
+						},
+					}
+				}
+			}
+
+			// Run IFPREVERB WIELD script.
+			scriptItem := gameworld.RoomItem{
+				Ref:       -1,
+				Archetype: ii.Archetype,
+				Adj1:      ii.Adj1,
+				Adj2:      ii.Adj2,
+				Adj3:      ii.Adj3,
+				Val1:      ii.Val1,
+				Val2:      ii.Val2,
+				Val3:      ii.Val3,
+				Val4:      ii.Val4,
+				Val5:      ii.Val5,
+			}
+
+			sc := e.RunPreverbScripts(
+				player,
+				room,
+				"WIELD",
+				&scriptItem,
+				itemDef,
+			)
+
+			result := &CommandResult{
+				Messages:      append([]string{}, sc.Messages...),
+				RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+				GMBroadcast:   append([]string{}, sc.GMMsgs...),
+			}
+
+			if sc.Blocked {
+				if len(result.Messages) == 0 {
+					result.Messages = []string{"You can't wield that."}
+				}
+
+				e.SavePlayer(ctx, player)
+				return result
+			}
+
+			// Move shield from inventory to offhand.
+			shield := player.Inventory[i]
+
+			player.Inventory = append(
+				player.Inventory[:i],
+				player.Inventory[i+1:]...,
+			)
+
+			player.Offhand = &shield
+
+			e.SavePlayer(ctx, player)
+
+			fullName := e.formatItemName(
+				itemDef,
+				shield.Adj1,
+				shield.Adj2,
+				shield.Adj3,
+			)
+
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf(
+					"You wield %s in your off hand.",
+					fullName,
+				),
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s wields %s.",
+					player.FirstName,
+					fullName,
+				),
+			)
+
+			return result
+		}
+
+		// ------------------------------------------------------------
+		// NORMAL WEAPON
+		// ------------------------------------------------------------
 
 		if !isWeapon(itemDef.Type) {
 			return &CommandResult{
@@ -4803,12 +5036,18 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			}
 		}
 
+		// Two-handed weapons require an empty offhand.
+		if isTwoHandedWeapon(itemDef) && player.Offhand != nil {
+			return &CommandResult{
+				Messages: []string{
+					"You need both hands free to wield that.",
+				},
+			}
+		}
+
 		/*
 			Run the inventory item's IFPREVERB WIELD script before
 			performing the normal wield action.
-
-			RunPreverbScripts expects a RoomItem, so create a temporary
-			script representation of the inventory item.
 		*/
 		scriptItem := gameworld.RoomItem{
 			Ref:       -1,
@@ -4837,19 +5076,16 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			GMBroadcast:   append([]string{}, sc.GMMsgs...),
 		}
 
-		// CLEARVERB cancels the normal wield action.
 		if sc.Blocked {
 			if len(result.Messages) == 0 {
 				result.Messages = []string{"You can't wield that."}
 			}
 
-			// Persist any skill or variable changes made by the script.
 			e.SavePlayer(ctx, player)
-
 			return result
 		}
 
-		// Put the currently wielded weapon back into inventory.
+		// Put currently wielded weapon back into inventory.
 		if player.Wielded != nil {
 			player.Inventory = append(
 				player.Inventory,
@@ -4857,7 +5093,7 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			)
 		}
 
-		// Move the selected inventory item into the wielded slot.
+		// Move selected weapon into main hand.
 		wielded := player.Inventory[i]
 
 		player.Inventory = append(
@@ -4871,9 +5107,9 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 
 		fullName := e.formatItemName(
 			itemDef,
-			ii.Adj1,
-			ii.Adj2,
-			ii.Adj3,
+			wielded.Adj1,
+			wielded.Adj2,
+			wielded.Adj3,
 		)
 
 		result.Messages = append(
@@ -4898,36 +5134,38 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 	}
 }
 
-/*
-func (e *GameEngine) doUnwield(ctx context.Context, player *Player) *CommandResult {
-	if player.Wielded == nil {
-		return &CommandResult{Messages: []string{"You aren't wielding anything."}}
-	}
-	itemDef := e.items[player.Wielded.Archetype]
-	wepName := "their weapon"
-	if itemDef != nil {
-		wepName = e.formatItemName(itemDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3)
-	}
-	player.Inventory = append(player.Inventory, *player.Wielded)
-	player.Wielded = nil
-	e.SavePlayer(ctx, player)
-	return &CommandResult{
-		Messages:      []string{"You put away your weapon."},
-		RoomBroadcast: []string{fmt.Sprintf("%s puts away %s.", player.FirstName, wepName)},
-	}
+func isShield(def *gameworld.ItemDef) bool {
+	return def != nil && def.Type == "SHIELD"
 }
-*/
 
-func (e *GameEngine) doUnwield(ctx context.Context, player *Player) *CommandResult {
-	if player.Wielded == nil {
-		return &CommandResult{
-			Messages: []string{"You aren't wielding anything."},
-		}
+func isTwoHandedWeapon(def *gameworld.ItemDef) bool {
+	if def == nil {
+		return false
 	}
+
+	switch def.Type {
+	case "BOW_WEAPON",
+		"POLE_WEAPON",
+		"POLETHROWN",
+		"TWOHAND_WEAPON",
+		"DRAKIN_POLE":
+		return true
+	}
+
+	return false
+}
+
+func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []string) *CommandResult {
 
 	if player.WolfForm {
 		return &CommandResult{
 			Messages: []string{"You can't do that while in wolf form."},
+		}
+	}
+
+	if player.Wielded == nil && player.Offhand == nil {
+		return &CommandResult{
+			Messages: []string{"You aren't wielding anything."},
 		}
 	}
 
@@ -4938,21 +5176,88 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player) *CommandResu
 		}
 	}
 
-	itemDef := e.items[player.Wielded.Archetype]
+	var item *InventoryItem
+	var itemDef *gameworld.ItemDef
+	isOffhand := false
 
-	// Run the wielded item's IFPREVERB UNWIELD script before
-	// performing the normal unwield action.
+	// ------------------------------------------------------------
+	// Determine which wielded item to remove.
+	// ------------------------------------------------------------
+
+	if len(args) > 0 {
+		target := strings.ToLower(strings.Join(args, " "))
+		target, _ = parseOrdinal(target)
+
+		// Check main hand.
+		if player.Wielded != nil {
+			def := e.items[player.Wielded.Archetype]
+
+			if def != nil {
+				name := e.getItemNounName(def)
+
+				if matchesTarget(
+					name,
+					target,
+					e.getAdjName(player.Wielded.Adj1),
+				) {
+					item = player.Wielded
+					itemDef = def
+				}
+			}
+		}
+
+		// If it wasn't the main hand, check offhand.
+		if item == nil && player.Offhand != nil {
+			def := e.items[player.Offhand.Archetype]
+
+			if def != nil {
+				name := e.getItemNounName(def)
+
+				if matchesTarget(
+					name,
+					target,
+					e.getAdjName(player.Offhand.Adj1),
+				) {
+					item = player.Offhand
+					itemDef = def
+					isOffhand = true
+				}
+			}
+		}
+
+		if item == nil {
+			return &CommandResult{
+				Messages: []string{"You aren't wielding that."},
+			}
+		}
+	} else {
+		// No target specified:
+		// main hand first, then offhand.
+		if player.Wielded != nil {
+			item = player.Wielded
+			itemDef = e.items[item.Archetype]
+		} else {
+			item = player.Offhand
+			itemDef = e.items[item.Archetype]
+			isOffhand = true
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Run IFPREVERB UNWIELD script.
+	// ------------------------------------------------------------
+
 	scriptItem := gameworld.RoomItem{
 		Ref:       -1,
-		Archetype: player.Wielded.Archetype,
-		Adj1:      player.Wielded.Adj1,
-		Adj2:      player.Wielded.Adj2,
-		Adj3:      player.Wielded.Adj3,
-		Val1:      player.Wielded.Val1,
-		Val2:      player.Wielded.Val2,
-		Val3:      player.Wielded.Val3,
-		Val4:      player.Wielded.Val4,
-		Val5:      player.Wielded.Val5,
+		Archetype: item.Archetype,
+		Adj1:      item.Adj1,
+		Adj2:      item.Adj2,
+		Adj3:      item.Adj3,
+		Val1:      item.Val1,
+		Val2:      item.Val2,
+		Val3:      item.Val3,
+		Val4:      item.Val4,
+		Val5:      item.Val5,
 	}
 
 	sc := e.RunPreverbScripts(
@@ -4969,7 +5274,6 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player) *CommandResu
 		GMBroadcast:   append([]string{}, sc.GMMsgs...),
 	}
 
-	// CLEARVERB cancels the normal unwield action.
 	if sc.Blocked {
 		if len(result.Messages) == 0 {
 			result.Messages = []string{"You can't put that away."}
@@ -4979,34 +5283,54 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player) *CommandResu
 		return result
 	}
 
-	wepName := "their weapon"
+	// ------------------------------------------------------------
+	// Format the item name before clearing the slot.
+	// ------------------------------------------------------------
+
+	itemName := "your weapon"
+
 	if itemDef != nil {
-		wepName = e.formatItemName(
+		itemName = e.formatItemName(
 			itemDef,
-			player.Wielded.Adj1,
-			player.Wielded.Adj2,
-			player.Wielded.Adj3,
+			item.Adj1,
+			item.Adj2,
+			item.Adj3,
 		)
 	}
 
-	player.Inventory = append(player.Inventory, *player.Wielded)
-	player.Wielded = nil
+	// ------------------------------------------------------------
+	// Move the item back to inventory.
+	// ------------------------------------------------------------
+
+	player.Inventory = append(
+		player.Inventory,
+		*item,
+	)
+
+	if isOffhand {
+		player.Offhand = nil
+	} else {
+		player.Wielded = nil
+	}
 
 	e.SavePlayer(ctx, player)
 
 	result.Messages = append(
 		result.Messages,
-		"You put away your weapon.",
+		fmt.Sprintf("You put away %s.", itemName),
 	)
 
 	result.RoomBroadcast = append(
 		result.RoomBroadcast,
-		fmt.Sprintf("%s puts away %s.", player.FirstName, wepName),
+		fmt.Sprintf(
+			"%s puts away %s.",
+			player.FirstName,
+			itemName,
+		),
 	)
 
 	return result
 }
-
 func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Wear what?"}}
