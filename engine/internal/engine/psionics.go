@@ -453,7 +453,7 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 		}
 	}
 
-	killed := e.damageMonster(inst.ID, dmg)
+	killed := e.damageMonster(player, inst.ID, dmg)
 	if killed {
 		deathText := def.TextOverrides["TEXD"]
 		deathMsg := fmt.Sprintf("A %s collapses, dead!", name)

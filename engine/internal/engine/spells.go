@@ -524,7 +524,7 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		flavorDmg = fmt.Sprintf("%s strike to %s. [%d Damage]", damageSeverity(dmg), randomBodyPart(def.BodyType), dmg)
 	}
 
-	killed := e.damageMonster(inst.ID, dmg)
+	killed := e.damageMonster(player, inst.ID, dmg)
 
 	var msgs, roomMsgs []string
 	msgs = append(msgs, fmt.Sprintf("You gesture at %s%s.", article, name))
