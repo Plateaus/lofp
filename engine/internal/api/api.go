@@ -790,9 +790,6 @@ func (s *Server) handleGameWS(w http.ResponseWriter, r *http.Request) {
 			ctx := context.Background()
 			playerRoom := session.Player.RoomNumber
 			result := s.engine.ProcessCommand(ctx, session.Player, cmd.Input)
-			// Expire timed effects
-			timerMessages := s.engine.UpdatePlayerTimers(session.Player)
-			result.Messages = append(result.Messages, timerMessages...)
 
 			result.PlayerState = session.Player
 			result.PromptIndicators = session.Player.PromptIndicators()

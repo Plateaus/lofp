@@ -1128,12 +1128,30 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 		// Monster poison/disease/fatigue on hit
 		if def.PoisonChance > 0 && rand.Intn(100) < def.PoisonChance {
 			player.Poisoned = true
+			player.ApplyStatEffect(def.Number,
+				EffectSourcePoison,
+				StatBodyPoint,
+				def.PoisonLevel,
+				time.Duration(def.PoisonLevel)*time.Minute)
 			playerMsgs = append(playerMsgs, " You feel poison coursing through your veins!")
 		}
 		if def.DiseaseChance > 0 && rand.Intn(100) < def.DiseaseChance {
 			player.Diseased = true
-			playerMsgs = append(playerMsgs, " You feel a sickness taking hold!")
+
+			player.ApplyStatEffect(
+				def.Number,
+				EffectSourceDisease,
+				StatFatigue,
+				-def.DiseaseLevel,
+				time.Duration(def.DiseaseLevel)*time.Minute,
+			)
+
+			playerMsgs = append(
+				playerMsgs,
+				" You feel a sickness taking hold!",
+			)
 		}
+
 		if def.FatigueChance > 0 && rand.Intn(100) < def.FatigueChance {
 			drain := def.FatigueLevel
 			if drain <= 0 {

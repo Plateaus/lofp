@@ -1493,8 +1493,8 @@ func (s *Server) telnetCommandLoop(ctx context.Context, session *Session, tc *te
 		result := s.engine.ProcessCommand(ctx, session.Player, input)
 
 		// Expire timed effects
-		timerMessages := s.engine.UpdatePlayerTimers(session.Player)
-		result.Messages = append(result.Messages, timerMessages...)
+		//timerMessages := s.engine.UpdatePlayerTimers(session.Player)
+		//result.Messages = append(result.Messages, timerMessages...)
 
 		result.PlayerState = session.Player
 		result.PromptIndicators = session.Player.PromptIndicators()

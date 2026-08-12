@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -48,6 +49,18 @@ const (
 	StatEmpathy
 	HasteBuff
 	SlowDebuff
+	StatBodyPoint
+	StatFatigue
+	StatMana
+	StatPsi
+)
+
+const (
+	PoisonMinor    = 5
+	PoisonModerate = 15
+	PoisonMajor    = 30
+	PoisonNerveGas = 40
+	PoisonLethal   = 60
 )
 
 type EffectSource int
@@ -421,6 +434,16 @@ func (p *Player) EffectiveStat(stat StatID) int {
 	}
 
 	return value
+}
+
+func formatEffectiveStat(player *Player, stat StatID, base int) string {
+	effective := player.EffectiveStat(stat)
+
+	if effective != base {
+		return fmt.Sprintf("%d*", effective)
+	}
+
+	return fmt.Sprintf("%d", effective)
 }
 
 func (p *Player) ApplyStatEffect(

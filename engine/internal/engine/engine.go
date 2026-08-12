@@ -596,6 +596,18 @@ func (e *GameEngine) StartCEventLoop() {
 		defer ticker.Stop()
 		for range ticker.C {
 			tick++
+
+			// Process player timers/status effects.
+			if e.sessions != nil {
+				for _, player := range e.sessions.OnlinePlayers() {
+					messages := e.UpdatePlayerTimers(player)
+
+					if len(messages) > 0 && e.sendToPlayer != nil {
+						e.sendToPlayer(player.FirstName, messages)
+					}
+				}
+			}
+
 			for _, ce := range e.cevents {
 				if ce.Cycles > 0 && tick%ce.Cycles == 0 {
 					room := e.rooms[ce.Room]
@@ -895,6 +907,8 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doClimb(ctx, player, args)
 	case "GET", "TAKE":
 		return e.doGet(ctx, player, args)
+	case "DOATEST":
+		return e.doATest(ctx, player)
 	case "DROP":
 		return e.doDrop(ctx, player, args)
 	case "INVENTORY":
@@ -1695,12 +1709,104 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 func (e *GameEngine) UpdatePlayerTimers(player *Player) []string {
 	var messages []string
 
+	messages = append(messages, e.ProcessPeriodicStatEffects(player)...)
 	messages = append(messages, e.RemoveExpiredStatEffects(player)...)
 
 	// Later:
 	// messages = append(messages, e.RemoveExpiredResistances(player)...)
-	// messages = append(messages, e.ProcessPoisonTicks(player)...)
 	// messages = append(messages, e.RemoveExpiredConditions(player)...)
+
+	return messages
+}
+
+func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
+	now := time.Now()
+
+	if len(player.ActiveStatEffects) == 0 {
+		return nil
+	}
+
+	var messages []string
+	active := player.ActiveStatEffects[:0]
+
+	for _, effect := range player.ActiveStatEffects {
+
+		if effect.Source != EffectSourcePoison &&
+			effect.Source != EffectSourceDisease {
+			active = append(active, effect)
+			continue
+		}
+
+		if effect.ExpiresAt.After(now) {
+			active = append(active, effect)
+			continue
+		}
+
+		switch effect.Source {
+		case EffectSourcePoison:
+			damage := -effect.Modifier
+
+			if damage > 0 {
+				player.BodyPoints -= damage
+				if player.BodyPoints < 0 {
+					player.BodyPoints = 0
+				}
+
+				messages = append(
+					messages,
+					fmt.Sprintf(
+						"Poison burns in your veins. [%d Damage]",
+						damage,
+					),
+				)
+			}
+
+		case EffectSourceDisease:
+			drain := -effect.Modifier
+
+			if drain > 0 {
+				player.Fatigue -= drain
+				if player.Fatigue < 0 {
+					player.Fatigue = 0
+				}
+
+				messages = append(
+					messages,
+					fmt.Sprintf(
+						"Disease saps your strength. [%d Fatigue]",
+						drain,
+					),
+				)
+			}
+		}
+
+		effect.Modifier++ // -5 -> -4
+
+		if effect.Modifier >= 0 {
+			switch effect.Source {
+			case EffectSourcePoison:
+				player.Poisoned = false
+				messages = append(
+					messages,
+					"The poison finally leaves your system.",
+				)
+
+			case EffectSourceDisease:
+				player.Diseased = false
+				messages = append(
+					messages,
+					"You finally recover from the disease.",
+				)
+			}
+
+			continue
+		}
+
+		effect.ExpiresAt = now.Add(time.Minute)
+		active = append(active, effect)
+	}
+
+	player.ActiveStatEffects = active
 
 	return messages
 }
@@ -1716,6 +1822,14 @@ func (e *GameEngine) RemoveExpiredStatEffects(player *Player) []string {
 	active := player.ActiveStatEffects[:0]
 
 	for _, effect := range player.ActiveStatEffects {
+
+		// Periodic effects are handled elsewhere.
+		if effect.Source == EffectSourcePoison ||
+			effect.Source == EffectSourceDisease {
+			active = append(active, effect)
+			continue
+		}
+
 		if effect.ExpiresAt.After(now) {
 			active = append(active, effect)
 			continue
@@ -1723,19 +1837,32 @@ func (e *GameEngine) RemoveExpiredStatEffects(player *Player) []string {
 
 		switch effect.Source {
 		case EffectSourceSpell:
-
 			if spell := FindSpellByID(effect.EffectID); spell != nil {
-				messages = append(messages,
-					fmt.Sprintf("The effects of %s wear off.", spell.Name))
+				messages = append(
+					messages,
+					fmt.Sprintf(
+						"The effects of %s wear off.",
+						spell.Name,
+					),
+				)
 			} else {
-				messages = append(messages, "A magical effect wears off.")
+				messages = append(
+					messages,
+					"A magical effect wears off.",
+				)
 			}
 
 		case EffectSourcePotion:
-			messages = append(messages, "The effects of a potion wear off.")
+			messages = append(
+				messages,
+				"The effects of a potion wear off.",
+			)
 
 		default:
-			messages = append(messages, "An effect wears off.")
+			messages = append(
+				messages,
+				"An effect wears off.",
+			)
 		}
 	}
 
@@ -3280,6 +3407,40 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 	return &CommandResult{Messages: []string{"You don't see that here."}}
 }
 
+func (e *GameEngine) doATest(ctx context.Context, player *Player) *CommandResult {
+	if !player.IsGM {
+		return &CommandResult{
+			Messages: []string{"Huh?"},
+		}
+	}
+
+	spell := FindSpellByID(513)
+	if spell == nil {
+		return &CommandResult{
+			Messages: []string{"TEST: Agility I spell not found."},
+		}
+	}
+
+	player.ApplyStatEffect(
+		spell.ID,
+		EffectSourceSpell,
+		StatAgility,
+		spell.DefBonus,
+		time.Minute,
+	)
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf(
+				"TEST: Agility base=%d effective=%d",
+				player.Agility,
+				player.EffectiveStat(StatAgility),
+			),
+		},
+		PlayerState: player,
+	}
+}
+
 func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *CommandResult {
 
 	if len(args) == 0 {
@@ -4702,8 +4863,18 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 
 	msgs = append(msgs,
 		fmt.Sprintf("Name: %s   Race: %s   Gender: %s   Level: %d", player.FullName(), player.RaceName(), genderName(player.Gender), player.Level),
-		fmt.Sprintf("Strength: %d   Agility: %d   Quickness: %d", player.EffectiveStat(StatStrength), player.EffectiveStat(StatAgility), player.EffectiveStat(StatQuickness)),
-		fmt.Sprintf("Constitution: %d   Perception: %d   Willpower: %d   Empathy: %d", player.EffectiveStat(StatConstitution), player.EffectiveStat(StatPerception), player.EffectiveStat(StatWillpower), player.EffectiveStat(StatEmpathy)),
+		//fmt.Sprintf("Strength: %d   Agility: %d   Quickness: %d", player.EffectiveStat(StatStrength), player.EffectiveStat(StatAgility), player.EffectiveStat(StatQuickness)),
+		//fmt.Sprintf("Constitution: %d   Perception: %d   Willpower: %d   Empathy: %d", player.EffectiveStat(StatConstitution), player.EffectiveStat(StatPerception), player.EffectiveStat(StatWillpower), player.EffectiveStat(StatEmpathy)),
+		fmt.Sprintf("Strength: %s   Agility: %s   Quickness: %s",
+			formatEffectiveStat(player, StatStrength, player.Strength),
+			formatEffectiveStat(player, StatAgility, player.Agility),
+			formatEffectiveStat(player, StatQuickness, player.Quickness)),
+
+		fmt.Sprintf("Constitution: %s   Perception: %s   Willpower: %s   Empathy: %s",
+			formatEffectiveStat(player, StatConstitution, player.Constitution),
+			formatEffectiveStat(player, StatPerception, player.Perception),
+			formatEffectiveStat(player, StatWillpower, player.Willpower),
+			formatEffectiveStat(player, StatEmpathy, player.Empathy)),
 	)
 
 	// Build points
@@ -4825,6 +4996,18 @@ func statName(stat StatID) string {
 		return "Willpower"
 	case StatEmpathy:
 		return "Empathy"
+	case HasteBuff:
+		return "Haste"
+	case SlowDebuff:
+		return "Slow"
+	case StatBodyPoint:
+		return "Body Points"
+	case StatFatigue:
+		return "Fatigue"
+	case StatMana:
+		return "Mana"
+	case StatPsi:
+		return "Psioncic Energy"
 	default:
 		return "Unknown Stat"
 	}
@@ -5675,9 +5858,11 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 1: // Needle, minor poison
 		msgs = append(msgs, "A needle springs out and pricks your finger!")
 		player.Poisoned = true
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMinor, time.Duration(PoisonMinor)*time.Minute)
 	case trapType == 2: // Gas, minor poison
 		msgs = append(msgs, "A cloud of noxious gas billows out!")
 		player.Poisoned = true
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonNerveGas, time.Duration(PoisonNerveGas)*time.Minute)
 	case trapType == 3: // Acid
 		dmg := 10 + rand.Intn(15)
 		player.BodyPoints -= dmg
@@ -5695,9 +5880,11 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 5: // Needle, moderate poison
 		msgs = append(msgs, "A poison-coated needle jabs into your hand!")
 		player.Poisoned = true
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute)
 	case trapType == 7: // Needle, major poison
 		msgs = append(msgs, "A large needle drives deep into your finger, delivering a potent venom!")
 		player.Poisoned = true
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMajor, time.Duration(PoisonMajor)*time.Minute)
 	case trapType == 8: // Explosive
 		dmg := 30 + rand.Intn(30)
 		player.BodyPoints -= dmg
@@ -5715,6 +5902,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 12: // Gas, moderate poison
 		msgs = append(msgs, "A thick cloud of poisonous gas engulfs you!")
 		player.Poisoned = true
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute)
 	case trapType == 13: // Black needle, lethal
 		dmg := 40 + rand.Intn(30)
 		player.BodyPoints -= dmg
@@ -5723,6 +5911,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 		}
 		msgs = append(msgs, fmt.Sprintf("A black needle strikes you, delivering a lethal toxin! [%d Damage]", dmg))
 		player.Poisoned = true
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonLethal, time.Duration(PoisonLethal)*time.Minute)
 	case trapType >= 1000: // Glyph traps (spell-based)
 		spellDmg := 20 + rand.Intn(40)
 		player.BodyPoints -= spellDmg
