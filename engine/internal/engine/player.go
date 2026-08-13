@@ -81,6 +81,16 @@ const (
 	GenderFemale = 1
 )
 
+type PendingStats struct {
+	Strength     int
+	Agility      int
+	Quickness    int
+	Constitution int
+	Perception   int
+	Willpower    int
+	Empathy      int
+}
+
 // Player represents a player's current state.
 type Player struct {
 	ID         bson.ObjectID `bson:"_id,omitempty" json:"id"`
@@ -215,6 +225,8 @@ type Player struct {
 	Flag2 int `bson:"-" json:"-"`
 	Flag3 int `bson:"-" json:"-"`
 	Flag4 int `bson:"-" json:"-"`
+
+	PendingStatReroll *PendingStats `bson:"-" json:"-"`
 
 	// Appearance / Description
 	DescLine1 string `bson:"descLine1,omitempty" json:"descLine1,omitempty"` // custom description lines (visible on EXAMINE)

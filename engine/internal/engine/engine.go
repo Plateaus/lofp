@@ -1038,6 +1038,8 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		}}
 	case "INFO":
 		return e.doInfo(player)
+	case "REROLL":
+		return e.doRerollStats(ctx, player, args)
 	case "TIME":
 		period := "day"
 		if IsNight() {
@@ -3224,6 +3226,139 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 	return result
 }
 
+func (e *GameEngine) doRerollStats(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	if player.Level >= 2 {
+		return &CommandResult{
+			Messages: []string{
+				"You may only reroll your attributes while you are level 1.",
+			},
+			PlayerState: player,
+		}
+	}
+
+	argString := strings.ToUpper(strings.Join(args, " "))
+
+	switch argString {
+
+	case "STATS":
+
+		if player.RoundTimeExpiry.After(time.Now()) {
+			remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("[Wait %d seconds...]", remaining),
+				},
+				PlayerState: player,
+			}
+		}
+
+		stats := rollStatsForRace(player.Race)
+		player.PendingStatReroll = &stats
+
+		player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
+
+		return &CommandResult{
+			Messages: []string{
+				"Potential new attributes:",
+				"",
+				fmt.Sprintf(
+					"Strength: %d   Agility: %d   Quickness: %d",
+					stats.Strength,
+					stats.Agility,
+					stats.Quickness,
+				),
+				fmt.Sprintf(
+					"Constitution: %d   Perception: %d   Willpower: %d   Empathy: %d",
+					stats.Constitution,
+					stats.Perception,
+					stats.Willpower,
+					stats.Empathy,
+				),
+				"",
+				"Type REROLL STATS to roll again.",
+				"Type REROLL STATS CONFIRM to accept these attributes.",
+				"[Reroll: 5 sec]",
+			},
+			PlayerState: player,
+		}
+
+	case "STATS CONFIRM":
+		if player.PendingStatReroll == nil {
+			return &CommandResult{
+				Messages: []string{
+					"You don't have a pending stat roll. Type REROLL STATS first.",
+				},
+				PlayerState: player,
+			}
+		}
+
+		stats := player.PendingStatReroll
+
+		player.Strength = stats.Strength
+		player.Agility = stats.Agility
+		player.Quickness = stats.Quickness
+		player.Constitution = stats.Constitution
+		player.Perception = stats.Perception
+		player.Willpower = stats.Willpower
+		player.Empathy = stats.Empathy
+
+		// Recalculate derived stats using the same formulas
+		// as character creation.
+		bodyPts := 20 + player.Constitution/2
+		fatigue := 20 + (player.Constitution+player.Strength)/3
+		mana := player.Empathy / 2
+		psi := player.Willpower / 2
+
+		player.BodyPoints = bodyPts
+		player.MaxBodyPoints = bodyPts
+
+		player.Fatigue = fatigue
+		player.MaxFatigue = fatigue
+
+		player.Mana = mana
+		player.MaxMana = mana
+
+		player.Psi = psi
+		player.MaxPsi = psi
+
+		player.PendingStatReroll = nil
+
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				"Your new attributes have been accepted.",
+				"",
+				fmt.Sprintf(
+					"Strength: %d   Agility: %d   Quickness: %d",
+					player.Strength,
+					player.Agility,
+					player.Quickness,
+				),
+				fmt.Sprintf(
+					"Constitution: %d   Perception: %d   Willpower: %d   Empathy: %d",
+					player.Constitution,
+					player.Perception,
+					player.Willpower,
+					player.Empathy,
+				),
+			},
+			PlayerState: player,
+		}
+
+	default:
+		return &CommandResult{
+			Messages: []string{
+				"Usage: REROLL STATS",
+				"       REROLL STATS CONFIRM",
+			},
+			PlayerState: player,
+		}
+	}
+}
+
 func (e *GameEngine) doClimb(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Climb what?"}}
@@ -3408,33 +3543,33 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 }
 
 func (e *GameEngine) doATest(ctx context.Context, player *Player) *CommandResult {
-	if !player.IsGM {
-		return &CommandResult{
-			Messages: []string{"Huh?"},
+	var weaponDef *gameworld.ItemDef
+	weaponDesc := "unarmed"
+
+	if player.Wielded != nil {
+		weaponDef = e.items[player.Wielded.Archetype]
+
+		if weaponDef != nil {
+			weaponDesc = fmt.Sprintf(
+				"%s (archetype %d)",
+				weaponDef.Type,
+				player.Wielded.Archetype,
+			)
 		}
+	} else if player.WolfForm {
+		weaponDesc = "natural claws (WolfForm)"
 	}
 
-	spell := FindSpellByID(513)
-	if spell == nil {
-		return &CommandResult{
-			Messages: []string{"TEST: Agility I spell not found."},
-		}
-	}
-
-	player.ApplyStatEffect(
-		spell.ID,
-		EffectSourceSpell,
-		StatAgility,
-		spell.DefBonus,
-		time.Minute,
-	)
+	rating := playerAttackRating(player, weaponDef)
 
 	return &CommandResult{
 		Messages: []string{
 			fmt.Sprintf(
-				"TEST: Agility base=%d effective=%d",
-				player.Agility,
-				player.EffectiveStat(StatAgility),
+				"TEST: weapon=%s WolfForm=%t Natural Weapons rank=%d actualAttackRating=%d",
+				weaponDesc,
+				player.WolfForm,
+				player.Skills[4],
+				rating,
 			),
 		},
 		PlayerState: player,
@@ -7810,19 +7945,16 @@ func (e *GameEngine) doHelp() *CommandResult {
 
 // CreateNewPlayer generates a fresh character and persists it to MongoDB.
 func (e *GameEngine) CreateNewPlayer(ctx context.Context, firstName, lastName string, race, gender int, accountID ...string) *Player {
-	ranges := RaceStatRanges[race]
-	rollStat := func(idx int) int {
-		r := ranges[idx]
-		return r[0] + rand.Intn(r[1]-r[0]+1)
-	}
 
-	str := rollStat(0)
-	agi := rollStat(1)
-	qui := rollStat(2)
-	con := rollStat(3)
-	per := rollStat(4)
-	wil := rollStat(5)
-	emp := rollStat(6)
+	stats := rollStatsForRace(race)
+
+	str := stats.Strength
+	agi := stats.Agility
+	qui := stats.Quickness
+	con := stats.Constitution
+	per := stats.Perception
+	wil := stats.Willpower
+	emp := stats.Empathy
 
 	bodyPts := 20 + con/2
 	fatigue := 20 + (con+str)/3
@@ -9251,4 +9383,23 @@ func (e *GameEngine) doTurnPage(ctx context.Context, player *Player, args []stri
 	}
 
 	return nil // fall through to item interaction
+}
+
+func rollStatsForRace(race int) PendingStats {
+	ranges := RaceStatRanges[race]
+
+	rollStat := func(idx int) int {
+		r := ranges[idx]
+		return r[0] + rand.Intn(r[1]-r[0]+1)
+	}
+
+	return PendingStats{
+		Strength:     rollStat(0),
+		Agility:      rollStat(1),
+		Quickness:    rollStat(2),
+		Constitution: rollStat(3),
+		Perception:   rollStat(4),
+		Willpower:    rollStat(5),
+		Empathy:      rollStat(6),
+	}
 }

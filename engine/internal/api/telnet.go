@@ -1341,8 +1341,8 @@ func (s *Server) telnetCharacterSelect(tc *telnetConn, ctx context.Context, acco
 
 func (s *Server) telnetCreateCharacter(tc *telnetConn, ctx context.Context, accountID string) *engine.Player {
 	existing, _ := s.engine.ListPlayersByAccount(ctx, accountID)
-	if len(existing) >= 8 {
-		tc.writeLine(ansiRed + "You can have at most 8 characters." + ansiReset)
+	if len(existing) >= 3 {
+		tc.writeLine(ansiRed + "You can have at most 3 characters." + ansiReset)
 		return nil
 	}
 

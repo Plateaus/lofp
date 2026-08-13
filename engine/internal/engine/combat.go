@@ -300,13 +300,18 @@ func calcToHit(attackRating, defenseRating int) int {
 func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef) int {
 	rating := 50
 	rating += player.Level * 3
+
 	if weaponDef != nil {
 		skillID := weaponSkillForType(weaponDef.Type)
-		rating += player.Skills[skillID] * 5 // +5 per weapon skill rank (from skills.txt)
+		rating += player.Skills[skillID] * 5
+	} else if player.WolfForm {
+		// Wolfling natural weapons
+		rating += player.Skills[4] * 5
 	} else {
-		// Unarmed: martial arts skill
-		rating += player.Skills[24] * 5 // Martial Arts +5 per rank
+		// Normal unarmed combat
+		rating += player.Skills[24] * 5
 	}
+
 	if weaponDef != nil && (weaponDef.Type == "BOW_WEAPON" || weaponDef.Type == "THROWN_WEAPON") {
 		rating += player.EffectiveStat(StatAgility) / 5
 	} else {
