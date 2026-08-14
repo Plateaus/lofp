@@ -426,7 +426,7 @@ func (p *fileParser) parseRoom(fields []string) {
 				room.Region, _ = strconv.Atoi(fields[1])
 			}
 		case "FORGE", "LOOM", "MINEA", "MINEB", "MINEC",
-			"BUY_ARMOR", "BUY_SKINS", "BUY_JEWELRY", "SUBMERGED",
+			"BUY_ARMOR", "BUY_SKINS", "BUY_JEWELRY", "SUBMERGED", "BANK",
 			"MOVEMENT_ASTRAL":
 			room.Modifiers = append(room.Modifiers, cmd)
 		case "IFVERB", "IFPREVERB", "IFVERB2", "IFPREVERB2",

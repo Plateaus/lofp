@@ -206,6 +206,9 @@ type Player struct {
 	BankSilver int `bson:"bankSilver,omitempty" json:"bankSilver,omitempty"`
 	BankCopper int `bson:"bankCopper,omitempty" json:"bankCopper,omitempty"`
 
+	//Bank inventory (items stored in the bank)
+	BankInventory []InventoryItem `bson:"bankInventory,omitempty" json:"bankInventory,omitempty"`
+
 	// Organization / Guild
 	Organization int `bson:"organization,omitempty" json:"organization,omitempty"` // ORG
 	OrgRank      int `bson:"orgRank,omitempty" json:"orgRank,omitempty"`           // ORGRANK

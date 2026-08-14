@@ -20,6 +20,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// MaxBankItems is the maximum number of items a player can store in their bank.
+const MaxBankItems = 25
+
 var validNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z'-]{2,19}$`) // min 3 chars total
 
 // reservedExactNames are blocked as whole-word matches only.
@@ -3543,33 +3546,16 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 }
 
 func (e *GameEngine) doATest(ctx context.Context, player *Player) *CommandResult {
-	var weaponDef *gameworld.ItemDef
-	weaponDesc := "unarmed"
-
-	if player.Wielded != nil {
-		weaponDef = e.items[player.Wielded.Archetype]
-
-		if weaponDef != nil {
-			weaponDesc = fmt.Sprintf(
-				"%s (archetype %d)",
-				weaponDef.Type,
-				player.Wielded.Archetype,
-			)
-		}
-	} else if player.WolfForm {
-		weaponDesc = "natural claws (WolfForm)"
-	}
-
-	rating := playerAttackRating(player, weaponDef)
+	room := e.rooms[player.RoomNumber]
 
 	return &CommandResult{
 		Messages: []string{
 			fmt.Sprintf(
-				"TEST: weapon=%s WolfForm=%t Natural Weapons rank=%d actualAttackRating=%d",
-				weaponDesc,
-				player.WolfForm,
-				player.Skills[4],
-				rating,
+				"TEST: room=%d name=%s modifiers=%v bank=%t",
+				player.RoomNumber,
+				room.Name,
+				room.Modifiers,
+				containsModifier(room.Modifiers, "BANK"),
 			),
 		},
 		PlayerState: player,
@@ -7464,15 +7450,34 @@ func (e *GameEngine) doRoomRecall(player *Player) *CommandResult {
 }
 
 func (e *GameEngine) doDeposit(ctx context.Context, player *Player, args []string) *CommandResult {
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil || !containsModifier(room.Modifiers, "BANK") {
 		return &CommandResult{Messages: []string{"There is no bank here."}}
 	}
+
 	if len(args) == 0 {
+		return &CommandResult{Messages: []string{"Deposit what?"}}
+	}
+
+	// If the first argument is a number, it's a money deposit.
+	if amount, err := strconv.Atoi(args[0]); err == nil {
+		return e.doDepositMoney(ctx, player, amount)
+	}
+
+	// Otherwise, treat it as an item.
+	return e.doDepositItem(ctx, player, args)
+}
+
+func (e *GameEngine) doDepositMoney(ctx context.Context, player *Player, amount int) *CommandResult {
+	room := e.rooms[player.RoomNumber]
+	if room == nil || !containsModifier(room.Modifiers, "BANK") {
+		return &CommandResult{Messages: []string{"There is no bank here."}}
+	}
+	if amount == 0 {
 		return &CommandResult{Messages: []string{"Deposit how much?"}}
 	}
-	amount := 0
-	fmt.Sscanf(args[0], "%d", &amount)
+
 	if amount <= 0 {
 		return &CommandResult{Messages: []string{"Invalid amount."}}
 	}
@@ -7510,16 +7515,165 @@ func (e *GameEngine) doDeposit(ctx context.Context, player *Player, args []strin
 	return &CommandResult{Messages: []string{fmt.Sprintf("You deposit %s.", formatPrice(amount))}}
 }
 
+func (e *GameEngine) doDepositItem(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Deposit what?"},
+		}
+	}
+
+	if len(player.BankInventory) >= MaxBankItems {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"Your safety deposit box is full. You may store up to %d items.",
+					MaxBankItems,
+				),
+			},
+			PlayerState: player,
+		}
+	}
+
+	target := strings.ToLower(strings.Join(args, " "))
+	target, ordSkip := parseOrdinal(target)
+	skip := ordSkip
+
+	for i, ii := range player.Inventory {
+		itemDef := e.items[ii.Archetype]
+		if itemDef == nil {
+			continue
+		}
+
+		name := e.getItemNounName(itemDef)
+
+		if !matchesTarget(
+			name,
+			target,
+			e.getAdjName(ii.Adj1),
+		) {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		// One gold crown = 100 copper.
+		const depositFee = 100
+
+		totalCopper := player.Gold*100 +
+			player.Silver*10 +
+			player.Copper
+
+		if totalCopper < depositFee {
+			return &CommandResult{
+				Messages: []string{
+					"You need one gold crown to deposit an item.",
+				},
+			}
+		}
+
+		// Deduct the 100-copper deposit fee.
+		remaining := depositFee
+
+		if player.Copper >= remaining {
+			player.Copper -= remaining
+			remaining = 0
+		} else {
+			remaining -= player.Copper
+			player.Copper = 0
+		}
+
+		if remaining > 0 {
+			sn := (remaining + 9) / 10
+
+			if player.Silver >= sn {
+				player.Silver -= sn
+				player.Copper += sn*10 - remaining
+				remaining = 0
+			} else {
+				remaining -= player.Silver * 10
+				player.Silver = 0
+			}
+		}
+
+		if remaining > 0 {
+			gn := (remaining + 99) / 100
+
+			player.Gold -= gn
+			player.Copper += gn*100 - remaining
+		}
+
+		// Preserve the full inventory item, including contents.
+		player.BankInventory = append(
+			player.BankInventory,
+			ii,
+		)
+
+		// Remove it from carried inventory.
+		player.Inventory = append(
+			player.Inventory[:i],
+			player.Inventory[i+1:]...,
+		)
+
+		e.SavePlayer(ctx, player)
+
+		fullName := e.formatItemName(
+			itemDef,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You hand the clerk a gold crown and place %s in your safety deposit box.",
+					fullName,
+				),
+			},
+			PlayerState: player,
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{"You aren't carrying that."},
+	}
+}
+
 func (e *GameEngine) doWithdraw(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	room := e.rooms[player.RoomNumber]
+	if room == nil || !containsModifier(room.Modifiers, "BANK") {
+		return &CommandResult{
+			Messages: []string{"There is no bank here."},
+		}
+	}
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Withdraw what?"},
+		}
+	}
+
+	if amount, err := strconv.Atoi(args[0]); err == nil {
+		return e.doWithdrawMoney(ctx, player, amount)
+	}
+
+	return e.doWithdrawItem(ctx, player, args)
+}
+
+func (e *GameEngine) doWithdrawMoney(ctx context.Context, player *Player, amount int) *CommandResult {
 	room := e.rooms[player.RoomNumber]
 	if room == nil || !containsModifier(room.Modifiers, "BANK") {
 		return &CommandResult{Messages: []string{"There is no bank here."}}
 	}
-	if len(args) == 0 {
+	if amount == 0 {
 		return &CommandResult{Messages: []string{"Withdraw how much?"}}
 	}
-	amount := 0
-	fmt.Sscanf(args[0], "%d", &amount)
+
 	if amount <= 0 {
 		return &CommandResult{Messages: []string{"Invalid amount."}}
 	}
@@ -7554,6 +7708,70 @@ func (e *GameEngine) doWithdraw(ctx context.Context, player *Player, args []stri
 	player.Copper += amount
 	e.SavePlayer(ctx, player)
 	return &CommandResult{Messages: []string{fmt.Sprintf("You withdraw %s.", formatPrice(amount))}}
+}
+
+func (e *GameEngine) doWithdrawItem(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Withdraw what?"},
+		}
+	}
+
+	target := strings.ToLower(strings.Join(args, " "))
+	target, ordSkip := parseOrdinal(target)
+	skip := ordSkip
+
+	for i, ii := range player.BankInventory {
+		itemDef := e.items[ii.Archetype]
+		if itemDef == nil {
+			continue
+		}
+
+		name := e.getItemNounName(itemDef)
+
+		if !matchesTarget(
+			name,
+			target,
+			e.getAdjName(ii.Adj1),
+		) {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		// Move the complete item back into carried inventory.
+		// Contents come with it automatically because they're
+		// stored inside the inventory item.
+		player.Inventory = append(
+			player.Inventory,
+			ii,
+		)
+
+		// Remove it from the safety deposit box.
+		player.BankInventory = append(
+			player.BankInventory[:i],
+			player.BankInventory[i+1:]...,
+		)
+
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				"You retrieve the item from your safety deposit box.",
+			},
+			PlayerState: player,
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{
+			"That item is not in your safety deposit box.",
+		},
+	}
 }
 
 func containsModifier(mods []string, mod string) bool {
@@ -7776,13 +7994,39 @@ func (e *GameEngine) doBalance(player *Player) *CommandResult {
 	if room == nil || !containsModifier(room.Modifiers, "BANK") {
 		return &CommandResult{Messages: []string{"You need to be at a bank to check your balance."}}
 	}
+
 	msgs := []string{"=== Bank Balance ==="}
+
 	total := player.BankGold*100 + player.BankSilver*10 + player.BankCopper
 	if total == 0 {
 		msgs = append(msgs, "Your account is empty.")
 	} else {
 		msgs = append(msgs, fmt.Sprintf("Balance: %s", formatPrice(total)))
 	}
+
+	// Safety deposit box
+	msgs = append(msgs, "", "Safety Deposit Box:")
+
+	if len(player.BankInventory) == 0 {
+		msgs = append(msgs, "  Empty.")
+	} else {
+		for _, ii := range player.BankInventory {
+			itemDef := e.items[ii.Archetype]
+			if itemDef == nil {
+				continue
+			}
+
+			fullName := e.formatItemName(
+				itemDef,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			)
+
+			msgs = append(msgs, "  "+fullName)
+		}
+	}
+
 	return &CommandResult{Messages: msgs}
 }
 
