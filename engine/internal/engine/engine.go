@@ -1696,6 +1696,8 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doSet(ctx, player, []string{"RPBRIEF"})
 	case "SET":
 		return e.doSet(ctx, player, args)
+	case "REPORTS":
+		return e.doReports(ctx, player, args)
 	case "SNIFF", "SMELL":
 		if len(args) > 0 {
 			return e.doItemInteraction(ctx, player, "SNIFF", args)
@@ -9645,5 +9647,103 @@ func rollStatsForRace(race int) PendingStats {
 		Perception:   rollStat(4),
 		Willpower:    rollStat(5),
 		Empathy:      rollStat(6),
+	}
+}
+
+func (e *GameEngine) doReports(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	if !player.IsGM {
+		return &CommandResult{
+			Messages:    []string{"You are not authorized to view reports."},
+			PlayerState: player,
+		}
+	}
+
+	if e.db == nil {
+		return &CommandResult{
+			Messages:    []string{"Database is unavailable."},
+			PlayerState: player,
+		}
+	}
+
+	limit := int64(25)
+
+	// Optional: REPORTS 50
+	if len(args) > 0 {
+		if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
+			if n > 100 {
+				n = 100
+			}
+			limit = int64(n)
+		}
+	}
+
+	coll := e.db.Collection("game_logs")
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "timestamp", Value: -1}}).
+		SetLimit(limit)
+
+	cursor, err := coll.Find(
+		ctx,
+		bson.M{"event": "report"},
+		opts,
+	)
+
+	if err != nil {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Unable to retrieve reports: %v", err),
+			},
+			PlayerState: player,
+		}
+	}
+	defer cursor.Close(ctx)
+
+	type reportLog struct {
+		Timestamp time.Time `bson:"timestamp"`
+		Player    string    `bson:"player"`
+		Details   string    `bson:"details"`
+		RoomNum   int       `bson:"roomNum"`
+	}
+
+	var reports []reportLog
+
+	if err := cursor.All(ctx, &reports); err != nil {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Unable to read reports: %v", err),
+			},
+			PlayerState: player,
+		}
+	}
+
+	if len(reports) == 0 {
+		return &CommandResult{
+			Messages:    []string{"No player reports found."},
+			PlayerState: player,
+		}
+	}
+
+	msgs := []string{
+		fmt.Sprintf("=== Player Reports (%d) ===", len(reports)),
+	}
+
+	for _, r := range reports {
+		msgs = append(
+			msgs,
+			fmt.Sprintf(
+				"%s | %s | Room %d",
+				r.Timestamp.Local().Format("2006-01-02 15:04"),
+				r.Player,
+				r.RoomNum,
+			),
+			fmt.Sprintf("  %s", r.Details),
+		)
+	}
+
+	return &CommandResult{
+		Messages:    msgs,
+		PlayerState: player,
 	}
 }
