@@ -909,13 +909,19 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "CLIMB":
 		return e.doClimb(ctx, player, args)
 	case "GET", "TAKE":
-		return e.doGet(ctx, player, args)
+		result := e.doGet(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "DOATEST":
 		return e.doATest(ctx, player)
 	case "DROP":
-		return e.doDrop(ctx, player, args)
+		result := e.doDrop(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "INVENTORY":
-		return e.doInventory(player)
+		result := e.doInventory(player)
+		e.RefreshEncumbrance(player)
+		return result
 	case "STATUS":
 		if len(args) > 0 {
 			t := strings.ToLower(strings.Join(args, " "))
@@ -943,13 +949,21 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		}
 		return e.doHealth(player)
 	case "WIELD":
-		return e.doWield(ctx, player, args)
+		result := e.doWield(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "UNWIELD":
-		return e.doUnwield(ctx, player, args)
+		result := e.doUnwield(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "WEAR":
-		return e.doWear(ctx, player, args)
+		result := e.doWear(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "REMOVE":
-		return e.doRemove(ctx, player, args)
+		result := e.doRemove(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "OPEN":
 		return e.doOpen(player, args)
 	case "CLOSE":
@@ -1069,11 +1083,15 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "YELL":
 		return e.doYell(player, args, input)
 	case "GIVE":
-		return e.doGive(ctx, player, args)
+		result := e.doGive(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "PICK", "LOCKPICK":
 		return e.doPick(ctx, player, args)
 	case "EAT":
-		return e.doEat(ctx, player, args)
+		result := e.doEat(ctx, player, args)
+		e.RefreshEncumbrance(player)
+		return result
 	case "SPEECH":
 		return &CommandResult{Messages: []string{"Speech patterns are set by gamemasters. Ask a GM if you'd like a custom speech style."}}
 	case "QUIT":
@@ -1841,6 +1859,12 @@ func (e *GameEngine) RemoveExpiredStatEffects(player *Player) []string {
 		// Periodic effects are handled elsewhere.
 		if effect.Source == EffectSourcePoison ||
 			effect.Source == EffectSourceDisease {
+			active = append(active, effect)
+			continue
+		}
+
+		// No expiration = persistent effect.
+		if effect.Permanent {
 			active = append(active, effect)
 			continue
 		}
@@ -2641,6 +2665,7 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			}
 
 			found := false
+			usedVolume := 0
 
 			for _, child := range room.Items {
 				if !child.IsPut || child.PutIn != ri.Ref {
@@ -2651,6 +2676,9 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 				if childDef == nil {
 					continue
 				}
+
+				// Count the item's volume toward the container's capacity.
+				usedVolume += childDef.Volume
 
 				if childDef.Type == "MONEY" {
 					switch childDef.Parameter1 {
@@ -2663,6 +2691,8 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 					default:
 						msgs = append(msgs, "You see some coins.")
 					}
+
+					found = true
 					continue
 				}
 
@@ -2679,6 +2709,13 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 				)
 
 				found = true
+			}
+
+			if itemDef.Interior > 0 {
+				msgs = append(
+					msgs,
+					fmt.Sprintf("Capacity: %d/%d", usedVolume, itemDef.Interior),
+				)
 			}
 
 			if !found {
@@ -4492,6 +4529,32 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	ii := player.Inventory[itemIndex]
 	itemDef := e.items[ii.Archetype]
 
+	// Item itself must be smaller than the container.
+	if itemDef.Volume >= containerDef.Volume {
+		return &CommandResult{
+			Messages: []string{"That item is too large to fit in the container."},
+		}
+	}
+
+	// Check remaining interior capacity.
+	usedVolume := 0
+
+	for _, ri := range room.Items {
+		if !ri.IsPut || ri.PutIn != container.Ref {
+			continue
+		}
+
+		if def := e.items[ri.Archetype]; def != nil {
+			usedVolume += def.Volume
+		}
+	}
+
+	if usedVolume+itemDef.Volume > containerDef.Interior {
+		return &CommandResult{
+			Messages: []string{"There isn't enough room in the container."},
+		}
+	}
+
 	// Move inventory item into room as a PUT item.
 	putItem := gameworld.RoomItem{
 		Ref:       container.Ref,
@@ -4664,6 +4727,36 @@ func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Play
 
 		item := player.Inventory[itemIndex]
 		itemDef := e.items[item.Archetype]
+
+		// ---------------------------------------------------------
+		// Container volume rules from original game docs.
+		// ---------------------------------------------------------
+
+		// Item itself must be smaller than the container's VOLUME.
+		if itemDef.Volume >= containerDef.Volume {
+			return &CommandResult{
+				Messages: []string{
+					"That item is too large to fit in the container.",
+				},
+			}
+		}
+
+		// Total contents may not exceed container INTERIOR.
+		usedVolume := 0
+
+		for _, child := range container.Contents {
+			if def := e.items[child.Archetype]; def != nil {
+				usedVolume += def.Volume
+			}
+		}
+
+		if usedVolume+itemDef.Volume > containerDef.Interior {
+			return &CommandResult{
+				Messages: []string{
+					"There isn't enough room in the container.",
+				},
+			}
+		}
 
 		/*
 			Remove the item before modifying the container.
@@ -5048,7 +5141,7 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 	activeEffectCount := 0
 
 	for _, effect := range player.ActiveStatEffects {
-		if !effect.ExpiresAt.After(now) {
+		if !effect.Permanent && !effect.ExpiresAt.After(now) {
 			continue
 		}
 
@@ -5073,8 +5166,25 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 			name = "Item Effect"
 		case EffectSourceScript:
 			name = "Scripted Effect"
+		case EffectSourceEncumbrance:
+			name = "Encumbered"
 		}
 
+		if effect.Permanent {
+			msgs = append(
+				msgs,
+				fmt.Sprintf(
+					"  %s: %s%d %s",
+					name,
+					modifierSign(effect.Modifier),
+					effect.Modifier,
+					statName(effect.Stat),
+				),
+			)
+
+			activeEffectCount++
+			continue
+		}
 		remaining := time.Until(effect.ExpiresAt)
 		if remaining < 0 {
 			remaining = 0
@@ -8750,6 +8860,7 @@ func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii 
 	}
 
 	found := false
+	usedVolume := 0
 
 	for _, child := range ii.Contents {
 		childDef := e.items[child.Archetype]
@@ -8780,12 +8891,21 @@ func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii 
 			child.Adj3,
 		)
 
+		usedVolume += childDef.Volume
+
 		msgs = append(
 			msgs,
 			fmt.Sprintf("You see %s.", childName),
 		)
 
 		found = true
+	}
+
+	if def.Interior > 0 {
+		msgs = append(
+			msgs,
+			fmt.Sprintf("Capacity: %d/%d", usedVolume, def.Interior),
+		)
 	}
 
 	if !found {
@@ -9212,6 +9332,7 @@ func xpUntilNextBuildPoint(player *Player) int {
 }
 
 // playerLoadWeight calculates total weight of carried items.
+/*
 func playerLoadWeight(player *Player, items map[int]*gameworld.ItemDef) int {
 	total := 0
 	for _, ii := range player.Inventory {
@@ -9219,6 +9340,32 @@ func playerLoadWeight(player *Player, items map[int]*gameworld.ItemDef) int {
 			total += def.Weight
 		}
 	}
+	return total
+}
+*/
+
+func inventoryItemWeight(item InventoryItem, items map[int]*gameworld.ItemDef) int {
+	total := 0
+
+	if def := items[item.Archetype]; def != nil {
+		total += def.Weight
+	}
+
+	for _, child := range item.Contents {
+		total += inventoryItemWeight(child, items)
+	}
+
+	return total
+}
+
+func playerLoadWeight(player *Player, items map[int]*gameworld.ItemDef) int {
+
+	total := 0
+
+	for _, item := range player.Inventory {
+		total += inventoryItemWeight(item, items)
+	}
+
 	return total
 }
 
@@ -9819,4 +9966,53 @@ func (e *GameEngine) doReportComplete(ctx context.Context, player *Player, args 
 		Messages:    []string{"Report marked complete."},
 		PlayerState: player,
 	}
+}
+
+func (e *GameEngine) RefreshEncumbrance(player *Player) {
+	// Remove previous encumbrance effects.
+	active := player.ActiveStatEffects[:0]
+
+	for _, effect := range player.ActiveStatEffects {
+		if effect.Source != EffectSourceEncumbrance {
+			active = append(active, effect)
+		}
+	}
+
+	player.ActiveStatEffects = active
+
+	load := playerLoadWeight(player, e.items)
+	strength := player.EffectiveStat(StatStrength)
+
+	penalty := 0
+
+	switch {
+	case load > strength*5/2:
+		penalty = -50
+
+	case load > strength*2:
+		penalty = -25
+
+	case load > strength+strength/2:
+		penalty = -10
+	}
+
+	if penalty == 0 {
+		return
+	}
+
+	player.ActiveStatEffects = append(
+		player.ActiveStatEffects,
+		StatEffect{
+			Source:    EffectSourceEncumbrance,
+			Stat:      StatAgility,
+			Modifier:  penalty,
+			Permanent: true,
+		},
+		StatEffect{
+			Source:    EffectSourceEncumbrance,
+			Stat:      StatQuickness,
+			Modifier:  penalty,
+			Permanent: true, // Encumbrance effects do not expire on their own
+		},
+	)
 }

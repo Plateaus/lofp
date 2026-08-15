@@ -73,6 +73,7 @@ const (
 	EffectSourceItem
 	EffectSourceGM
 	EffectSourceScript
+	EffectSourceEncumbrance
 )
 
 // Gender constants
@@ -290,11 +291,12 @@ type InventoryItem struct {
 }
 
 type StatEffect struct {
-	EffectID  int          `bson:"effectId" json:"effectId"` // Spell ID, Potion ID, etc.
-	Source    EffectSource `bson:"source" json:"source"`     // Spell, Potion, Item...
+	EffectID  int          `bson:"effectId" json:"effectId"`
+	Source    EffectSource `bson:"source" json:"source"`
 	Stat      StatID       `bson:"stat" json:"stat"`
 	Modifier  int          `bson:"modifier" json:"modifier"`
-	ExpiresAt time.Time    `bson:"expiresAt" json:"expiresAt"`
+	ExpiresAt time.Time    `bson:"expiresAt,omitempty" json:"expiresAt,omitempty"`
+	Permanent bool         `bson:"permanent,omitempty" json:"permanent,omitempty"`
 }
 
 // FullName returns the player's display name.
@@ -443,7 +445,7 @@ func (p *Player) EffectiveStat(stat StatID) int {
 			continue
 		}
 
-		if effect.ExpiresAt.After(now) {
+		if effect.Permanent || effect.ExpiresAt.After(now) {
 			value += effect.Modifier
 		}
 	}
