@@ -1033,10 +1033,16 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		spentBP := playerBPSpent(player)
 		totalBP := player.BuildPoints + spentBP
 		xpUntilNext := xpUntilNextBuildPoint(player)
+
+		// Build points
+		//	totalBP := player.BuildPoints
+		//	spentBP := playerBPSpent(player)
+		unspentBP := totalBP - spentBP
+
 		return &CommandResult{Messages: []string{
 			fmt.Sprintf("Experience: %d", player.Experience),
 			fmt.Sprintf("Build Points to date: %d", totalBP),
-			fmt.Sprintf("Unspent Build Points: %d", player.BuildPoints),
+			fmt.Sprintf("Unspent Build Points: %d", unspentBP),
 			fmt.Sprintf("Experience Points until next Build Point: %d", xpUntilNext),
 		}}
 	case "INFO":
@@ -1698,6 +1704,8 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doSet(ctx, player, args)
 	case "REPORTS":
 		return e.doReports(ctx, player, args)
+	case "REPORTCOMPLETE":
+		return e.doReportComplete(ctx, player, args)
 	case "SNIFF", "SMELL":
 		if len(args) > 0 {
 			return e.doItemInteraction(ctx, player, "SNIFF", args)
@@ -5000,13 +5008,10 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 			formatEffectiveStat(player, StatEmpathy, player.Empathy)),
 	)
 
-	// Build points
-	totalBP := player.BuildPoints
 	spentBP := playerBPSpent(player)
-	unspentBP := totalBP - spentBP
-	if unspentBP < 0 {
-		unspentBP = 0
-	}
+	unspentBP := player.BuildPoints
+	totalBP := unspentBP + spentBP
+
 	xpUntilNextBP := xpUntilNextBuildPoint(player)
 
 	msgs = append(msgs,
@@ -9180,7 +9185,7 @@ func xpUntilNextBuildPoint(player *Player) int {
 		return 0
 	}
 	// Walk XP through levels to find leftover in current level
-	bp := 20
+	bp := 30
 	lvl := 1
 	xpRemaining := player.Experience
 
@@ -9701,10 +9706,11 @@ func (e *GameEngine) doReports(ctx context.Context, player *Player, args []strin
 	defer cursor.Close(ctx)
 
 	type reportLog struct {
-		Timestamp time.Time `bson:"timestamp"`
-		Player    string    `bson:"player"`
-		Details   string    `bson:"details"`
-		RoomNum   int       `bson:"roomNum"`
+		ID        bson.ObjectID `bson:"_id"`
+		Timestamp time.Time     `bson:"timestamp"`
+		Player    string        `bson:"player"`
+		Details   string        `bson:"details"`
+		RoomNum   int           `bson:"roomNum"`
 	}
 
 	var reports []reportLog
@@ -9733,10 +9739,11 @@ func (e *GameEngine) doReports(ctx context.Context, player *Player, args []strin
 		msgs = append(
 			msgs,
 			fmt.Sprintf(
-				"%s | %s | Room %d",
+				"%s | %s | Room %d | ID: %s",
 				r.Timestamp.Local().Format("2006-01-02 15:04"),
 				r.Player,
 				r.RoomNum,
+				r.ID.Hex(),
 			),
 			fmt.Sprintf("  %s", r.Details),
 		)
@@ -9744,6 +9751,72 @@ func (e *GameEngine) doReports(ctx context.Context, player *Player, args []strin
 
 	return &CommandResult{
 		Messages:    msgs,
+		PlayerState: player,
+	}
+}
+
+func (e *GameEngine) doReportComplete(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	if !player.IsGM {
+		return &CommandResult{
+			Messages:    []string{"You are not authorized to complete reports."},
+			PlayerState: player,
+		}
+	}
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages:    []string{"Usage: REPORTCOMPLETE <report id>"},
+			PlayerState: player,
+		}
+	}
+
+	if e.db == nil {
+		return &CommandResult{
+			Messages:    []string{"Database is unavailable."},
+			PlayerState: player,
+		}
+	}
+
+	id, err := bson.ObjectIDFromHex(args[0])
+	if err != nil {
+		return &CommandResult{
+			Messages:    []string{"Invalid report ID."},
+			PlayerState: player,
+		}
+	}
+
+	result, err := e.db.Collection("game_logs").UpdateOne(
+		ctx,
+		bson.M{
+			"_id":   id,
+			"event": "report",
+		},
+		bson.M{
+			"$set": bson.M{
+				"event": "reportcomplete",
+			},
+		},
+	)
+
+	if err != nil {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Unable to complete report: %v", err),
+			},
+			PlayerState: player,
+		}
+	}
+
+	if result.MatchedCount == 0 {
+		return &CommandResult{
+			Messages:    []string{"Report not found."},
+			PlayerState: player,
+		}
+	}
+
+	return &CommandResult{
+		Messages:    []string{"Report marked complete."},
 		PlayerState: player,
 	}
 }

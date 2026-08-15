@@ -1136,7 +1136,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 			player.ApplyStatEffect(def.Number,
 				EffectSourcePoison,
 				StatBodyPoint,
-				def.PoisonLevel,
+				-def.PoisonLevel,
 				time.Duration(def.PoisonLevel)*time.Minute)
 			playerMsgs = append(playerMsgs, " You feel poison coursing through your veins!")
 		}
