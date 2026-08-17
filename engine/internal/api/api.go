@@ -347,6 +347,18 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/admin/characters/deleted", s.handleAdminListDeletedCharacters).Methods("GET")
 	api.HandleFunc("/admin/characters/{firstName}/recover", s.handleAdminRecoverCharacter).Methods("PUT")
 
+	gmPagesDir := "/app/gm-pages"
+
+	if info, err := os.Stat(gmPagesDir); err == nil && info.IsDir() {
+		s.router.PathPrefix("/gm-pages/").Handler(
+			http.StripPrefix(
+				"/gm-pages/",
+				http.FileServer(http.Dir(gmPagesDir)),
+			),
+		)
+
+		log.Printf("Serving GM pages from %s", gmPagesDir)
+	}
 	// Serve static frontend files in production (if /app/static exists)
 	staticDir := os.Getenv("LOFP_STATIC_DIR")
 	if staticDir == "" {

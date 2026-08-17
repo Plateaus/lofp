@@ -594,7 +594,9 @@ EXIT W 243
 EXIT E 230
 EXIT ABOVE 2152
 ITEM 9 693 ADJ1=10
-
+IFVERB LISTEN -1
+	ECHO PLAYER You can hear an acolyte of Shemri and a Priestess of Amilor fighting like a badly matched husband and wife.
+ENDIF
 ;
 NUMBER 241
 NAME Church Street

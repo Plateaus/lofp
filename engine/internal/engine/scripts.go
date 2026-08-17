@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jonradoff/lofp/internal/gameworld"
 )
@@ -68,6 +69,91 @@ func (e *GameEngine) RunSayScripts(player *Player, room *gameworld.Room, text st
 
 // RunPreverbScripts executes IFPREVERB blocks for a specific verb and item ref.
 // Returns the script context. Check sc.Blocked to see if the action should be cancelled.
+func (e *GameEngine) RunPreverbScripts(
+	player *Player,
+	room *gameworld.Room,
+	verb string,
+	ri *gameworld.RoomItem,
+	def *gameworld.ItemDef,
+	ri2 ...*gameworld.RoomItem,
+) *ScriptContext {
+
+	sc := &ScriptContext{
+		Player:  player,
+		Room:    room,
+		Engine:  e,
+		ItemRef: ri, // PRIMARY ITEM -- e.g. the dust
+		ItemDef: def,
+	}
+
+	verb = strings.ToUpper(verb)
+
+	// ------------------------------------------------------------
+	// IFPREVERB -- primary item
+	// ------------------------------------------------------------
+
+	refStr := fmt.Sprintf("%d", ri.Ref)
+
+	for _, block := range room.Scripts {
+		if block.Type == "IFPREVERB" && len(block.Args) >= 2 {
+			if strings.ToUpper(block.Args[0]) == verb &&
+				block.Args[1] == refStr {
+
+				sc.execBlock(block)
+			}
+		}
+	}
+
+	for _, block := range def.Scripts {
+		if block.Type == "IFPREVERB" && len(block.Args) >= 1 {
+			if strings.ToUpper(block.Args[0]) == verb {
+				if len(block.Args) < 2 || block.Args[1] == "-1" {
+					sc.execBlock(block)
+				}
+			}
+		}
+	}
+
+	// ------------------------------------------------------------
+	// IFPREVERB2 -- second item
+	// ------------------------------------------------------------
+
+	if len(ri2) > 0 && ri2[0] != nil {
+
+		secondItem := ri2[0]
+		secondRefStr := fmt.Sprintf("%d", secondItem.Ref)
+
+		// Room-level IFPREVERB2
+		for _, block := range room.Scripts {
+			if block.Type == "IFPREVERB2" && len(block.Args) >= 2 {
+				if strings.ToUpper(block.Args[0]) == verb &&
+					block.Args[1] == secondRefStr {
+
+					sc.execBlock(block)
+				}
+			}
+		}
+
+		// Item-level IFPREVERB2
+		secondDef := e.items[secondItem.Archetype]
+
+		if secondDef != nil {
+			for _, block := range secondDef.Scripts {
+				if block.Type == "IFPREVERB2" && len(block.Args) >= 1 {
+					if strings.ToUpper(block.Args[0]) == verb {
+						if len(block.Args) < 2 || block.Args[1] == "-1" {
+							sc.execBlock(block)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return sc
+}
+
+/*
 func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, verb string, ri *gameworld.RoomItem, def *gameworld.ItemDef) *ScriptContext {
 	sc := &ScriptContext{
 		Player:  player,
@@ -99,9 +185,29 @@ func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, ver
 			}
 		}
 	}
+	// Check room-level IFPREVERB2 scripts
+	for _, block := range room.Scripts {
+		if block.Type == "IFPREVERB2" && len(block.Args) >= 2 {
+			if strings.ToUpper(block.Args[0]) == verb && block.Args[1] == refStr {
+				sc.execBlock(block)
+			}
+		}
+	}
+
+	// Check item-level IFPREVERB2 scripts
+	for _, block := range def.Scripts {
+		if block.Type == "IFPREVERB2" && len(block.Args) >= 1 {
+			if strings.ToUpper(block.Args[0]) == verb {
+				if len(block.Args) < 2 || block.Args[1] == "-1" {
+					sc.execBlock(block)
+				}
+			}
+		}
+	}
 
 	return sc
 }
+*/
 
 // RunVerbScripts executes IFVERB blocks for a specific verb and item.
 // RunItemScripts runs all root-level conditional blocks on an item definition
@@ -171,7 +277,7 @@ func (sc *ScriptContext) execBlock(block gameworld.ScriptBlock) {
 	case "IFENTRY":
 		sc.execChildren(block)
 
-	case "IFPREVERB", "IFVERB":
+	case "IFPREVERB", "IFVERB", "IFPREVERB2":
 		sc.execChildren(block)
 
 	case "IFVAR":
@@ -256,6 +362,8 @@ func (sc *ScriptContext) execChildren(block gameworld.ScriptBlock) {
 // execAction executes a single script action.
 func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 	switch action.Command {
+	case "SPELL":
+		sc.doSpell(action.Args)
 	case "ECHO":
 		sc.doEcho(action.Args)
 	case "EQUAL":
@@ -361,7 +469,7 @@ func (sc *ScriptContext) doEcho(args []string) {
 	switch target {
 	case "PLAYER":
 		sc.Messages = append(sc.Messages, text)
-	case "ALL":
+	case "ALL", "GROUP":
 		sc.Messages = append(sc.Messages, text)
 		sc.RoomMsgs = append(sc.RoomMsgs, text)
 	case "OTHERS":
@@ -477,6 +585,7 @@ func (sc *ScriptContext) doMove(args []string) {
 	dest := sc.resolveNumericArg(args[0])
 	if dest > 0 {
 		sc.MoveTo = dest
+		//	e.movePlayerToRoom(ctx, player, sc.MoveTo, result)
 	}
 }
 
@@ -1612,4 +1721,48 @@ func (sc *ScriptContext) expandScriptText(text string) string {
 		}
 	}
 	return text
+}
+func (sc *ScriptContext) doSpell(args []string) {
+	if len(args) == 0 {
+		return
+	}
+
+	spellID, err := strconv.Atoi(args[0])
+	if err != nil {
+		return
+	}
+
+	spell := FindSpellByID(spellID)
+	if spell == nil {
+		return
+	}
+
+	switch spell.Effect {
+	case "buff":
+		var result *CommandResult
+
+		if len(args) >= 2 {
+			duration, err := strconv.Atoi(args[1])
+			if err != nil {
+				return
+			}
+
+			spell.Duration = time.Duration(duration) * time.Minute
+
+			result = sc.Engine.castBuffSpell(
+				sc.Player,
+				spell,
+				nil,
+			)
+		} else {
+			result = sc.Engine.castBuffSpell(
+				sc.Player,
+				spell,
+				nil,
+			)
+		}
+
+		_ = result
+		// instant heal/damage/etc. can use their existing handlers here later
+	}
 }

@@ -1206,6 +1206,10 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		// Race-specific emotes (handled by race check in processEmote)
 		"FLICK", "BARE", "SPREAD", "FOLD", "SWISH",
 		"RUBEARS", "PULLBEARD", "SCENT", "WHINE", "DROOP", "CHASE":
+
+		if len(args) > 0 {
+			return e.doItemInteraction(ctx, player, verb, args)
+		}
 		return e.processEmote(player, verb, args)
 	case "ACT":
 		if len(args) == 0 {
@@ -1566,7 +1570,6 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doProjectPsi(ctx, player, args)
 	case "CHANT":
 		return e.doChant(ctx, player, args)
-
 	case "COMMAND":
 		return &CommandResult{Messages: []string{"[Summoned creature commands coming soon.]"}}
 	case "MASTER":
@@ -1726,15 +1729,27 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doReportComplete(ctx, player, args)
 	case "SNIFF", "SMELL":
 		if len(args) > 0 {
-			return e.doItemInteraction(ctx, player, "SNIFF", args)
+			return e.doItemInteraction(ctx, player, "SMELL", args)
 		}
-		return e.processEmote(player, "SNIFF", args)
+		return e.processEmote(player, verb, args)
 	case "LISTEN":
 		if len(args) > 0 {
 			return e.doItemInteraction(ctx, player, "LISTEN", args)
 		}
+
+		// Check for room-level IFVERB LISTEN -1 first.
+		if result := e.doRoomScriptVerb(ctx, player, "LISTEN"); result != nil {
+			return result
+		}
+
+		// No room script, use normal emote.
 		return e.processEmote(player, "LISTEN", args)
 	default:
+		// Run room-level IFVERB <verb> -1 scripts first.
+		// Example: IFVERB PAY -1
+		if result := e.doRoomScriptVerb(ctx, player, verb); result != nil {
+			return result
+		}
 		return &CommandResult{Messages: []string{fmt.Sprintf("I don't understand \"%s\". Type HELP for commands.", strings.ToLower(input))}}
 	}
 }
@@ -1929,7 +1944,7 @@ var allVerbs = []string{
 	// Movement/stealth
 	"HIDE", "SNEAK", "FLY", "ASCEND", "DESCEND", "LAND",
 	// Interaction
-	"PUT", "PLACE", "FILL", "MARK", "UNDRESS", "SKIN",
+	"PUT", "PLACE", "FILL", "MARK", "UNDRESS", "SKIN", "PAY",
 	// Info
 	"BALANCE", "SPELL", "BRIEF", "FULL", "PROMPT", "UNPROMPT", "VERSION", "CREDITS",
 	// Communication
@@ -3103,92 +3118,363 @@ func (e *GameEngine) examinePlayer(observer *Player, target *Player) *CommandRes
 }
 
 func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *CommandResult {
+
 	if len(args) == 0 {
-		return &CommandResult{Messages: []string{"Go where?"}}
-	}
-	if player.Position != 0 && player.Position != 4 {
-		posNames := map[int]string{1: "sitting", 2: "laying down", 3: "kneeling"}
-		posName := posNames[player.Position]
-		if posName == "" {
-			posName = "not standing"
+		return &CommandResult{
+			Messages: []string{"Go where?"},
 		}
-		return &CommandResult{Messages: []string{fmt.Sprintf("You can't move while %s! Try STANDing first.", posName)}}
+	}
+
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"You can't go that way."},
+		}
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
-	room := e.rooms[player.RoomNumber]
-	if room == nil {
-		return &CommandResult{Error: "You are nowhere!"}
-	}
-
-	// Try direction first
-	dirMap := map[string]string{
-		"north": "N", "south": "S", "east": "E", "west": "W",
-		"northeast": "NE", "northwest": "NW", "southeast": "SE", "southwest": "SW",
-		"up": "U", "down": "D", "out": "O",
-	}
-	if dir, ok := dirMap[target]; ok {
-		return e.doMove(ctx, player, dir)
-	}
-
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
 
-	// Try portals (doors, trails, arches, etc.)
+	// ------------------------------------------------------------
+	// 1. Normal directional exits.
+	// ------------------------------------------------------------
+
+	directionAliases := map[string]string{
+		"n":         "N",
+		"north":     "N",
+		"s":         "S",
+		"south":     "S",
+		"e":         "E",
+		"east":      "E",
+		"w":         "W",
+		"west":      "W",
+		"ne":        "NE",
+		"northeast": "NE",
+		"nw":        "NW",
+		"northwest": "NW",
+		"se":        "SE",
+		"southeast": "SE",
+		"sw":        "SW",
+		"southwest": "SW",
+		"u":         "U",
+		"up":        "U",
+		"d":         "D",
+		"down":      "D",
+		"o":         "O",
+		"out":       "O",
+		"above":     "ABOVE",
+		"below":     "BELOW",
+	}
+
+	if dir, ok := directionAliases[target]; ok {
+		if destNum, exists := room.Exits[dir]; exists {
+			dest := e.rooms[destNum]
+			if dest == nil {
+				return &CommandResult{
+					Messages: []string{"You can't go that way."},
+				}
+			}
+
+			oldRoom := player.RoomNumber
+
+			player.RoomNumber = destNum
+			e.SavePlayer(ctx, player)
+
+			result := e.doLook(player)
+
+			result.OldRoom = oldRoom
+			result.OldRoomMsg = []string{
+				fmt.Sprintf("%s leaves.", player.FirstName),
+			}
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf("%s arrives.", player.FirstName),
+			)
+
+			e.applyEntryScripts(ctx, player, dest, result)
+
+			return result
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 2. GO <item>
+	//
+	// Handles real portals and scripted items such as paths,
+	// ladders, arches, trees, etc.
+	// ------------------------------------------------------------
+
 	for i, ri := range room.Items {
+		if ri.IsPut {
+			continue
+		}
+
 		itemDef := e.items[ri.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if !matchesTarget(name, target, e.getAdjName(ri.Adj1)) {
+
+		// Match the noun against any of the item's adjectives.
+		if !matchesTarget(name, target, e.getAdjName(ri.Adj1)) &&
+			!matchesTarget(name, target, e.getAdjName(ri.Adj2)) &&
+			!matchesTarget(name, target, e.getAdjName(ri.Adj3)) {
 			continue
 		}
+
 		if skip > 0 {
 			skip--
 			continue
 		}
+
+		// --------------------------------------------------------
+		// Real portal.
+		// --------------------------------------------------------
+
 		if isPortal(itemDef.Type) {
-			return e.doGoPortal(ctx, player, room, &room.Items[i], itemDef)
+			return e.doGoPortal(
+				ctx,
+				player,
+				room,
+				&room.Items[i],
+				itemDef,
+			)
 		}
-		// Non-portal item matched — run IFPREVERB GO scripts (e.g., stairways, ladders)
-		sc := e.RunPreverbScripts(player, room, "GO", &room.Items[i], itemDef)
+
+		// --------------------------------------------------------
+		// Scripted non-portal item.
+		// --------------------------------------------------------
+
 		result := &CommandResult{}
-		result.Messages = append(result.Messages, sc.Messages...)
-		result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
-		result.GMBroadcast = append(result.GMBroadcast, sc.GMMsgs...)
-		if sc.Blocked && sc.MoveTo == 0 {
-			// CLEARVERB without MOVE — block the action
-			if len(result.Messages) == 0 {
-				result.Messages = []string{"You can't go that way."}
-			}
+		originalRoom := player.RoomNumber
+
+		// --------------------------------------------------------
+		// First: IFPREVERB GO
+		// --------------------------------------------------------
+
+		pre := e.RunPreverbScripts(
+			player,
+			room,
+			"GO",
+			&room.Items[i],
+			itemDef,
+		)
+
+		result.Messages = append(
+			result.Messages,
+			pre.Messages...,
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			pre.RoomMsgs...,
+		)
+
+		result.GMBroadcast = append(
+			result.GMBroadcast,
+			pre.GMMsgs...,
+		)
+
+		if e.applyGoScriptResult(
+			ctx,
+			player,
+			originalRoom,
+			pre,
+			result,
+		) {
 			return result
 		}
-		if sc.MoveTo > 0 {
-			dest := e.rooms[sc.MoveTo]
-			if dest != nil {
-				oldRoom := player.RoomNumber
-				player.RoomNumber = sc.MoveTo
-				e.SavePlayer(ctx, player)
-				lookResult := e.doLook(player)
-				result.Messages = append(result.Messages, lookResult.Messages...)
-				result.RoomName = lookResult.RoomName
-				result.RoomDesc = lookResult.RoomDesc
-				result.Exits = lookResult.Exits
-				result.Items = lookResult.Items
-				result.OldRoom = oldRoom
-				result.OldRoomMsg = []string{fmt.Sprintf("%s leaves.", player.FirstName)}
-				result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s arrives.", player.FirstName))
-				e.applyEntryScripts(ctx, player, dest, result)
+
+		// --------------------------------------------------------
+		// Second: IFVERB GO
+		// --------------------------------------------------------
+
+		verb := e.RunVerbScripts(
+			player,
+			room,
+			"GO",
+			&room.Items[i],
+			itemDef,
+		)
+
+		result.Messages = append(
+			result.Messages,
+			verb.Messages...,
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			verb.RoomMsgs...,
+		)
+
+		result.GMBroadcast = append(
+			result.GMBroadcast,
+			verb.GMMsgs...,
+		)
+
+		if e.applyGoScriptResult(
+			ctx,
+			player,
+			originalRoom,
+			verb,
+			result,
+		) {
+			return result
+		}
+
+		// Item matched, but neither PREVERB nor VERB handled GO.
+		if len(result.Messages) == 0 {
+			result.Messages = []string{
+				"You can't go that way.",
 			}
 		}
-		if len(result.Messages) == 0 {
-			result.Messages = []string{"You can't go that way."}
-		}
+
 		return result
 	}
 
-	return &CommandResult{Messages: []string{"You don't see that here."}}
+	return &CommandResult{
+		Messages: []string{"You can't go that way."},
+	}
+}
+
+func (e *GameEngine) applyGoScriptResult(
+	ctx context.Context,
+	player *Player,
+	originalRoom int,
+	sc *ScriptContext,
+	result *CommandResult,
+) bool {
+
+	// MOVEGROUP requested by the script.
+	// moveGroupToRoom handles movement and sends LOOK to moved players.
+	if sc.MoveGroupTo > 0 {
+		e.moveGroupToRoom(
+			ctx,
+			originalRoom,
+			sc.MoveGroupTo,
+		)
+
+		dest := e.rooms[player.RoomNumber]
+		if dest != nil {
+			lookResult := e.doLook(player)
+
+			result.Messages = append(
+				result.Messages,
+				lookResult.Messages...,
+			)
+
+			result.RoomName = lookResult.RoomName
+			result.RoomDesc = lookResult.RoomDesc
+			result.Exits = lookResult.Exits
+			result.Items = lookResult.Items
+			result.OldRoom = originalRoom
+		}
+
+		return true
+
+	}
+
+	// MOVE requested by the script.
+	if sc.MoveTo > 0 {
+		dest := e.rooms[sc.MoveTo]
+		if dest == nil {
+			return true
+		}
+
+		player.RoomNumber = sc.MoveTo
+		e.SavePlayer(ctx, player)
+
+		lookResult := e.doLook(player)
+
+		result.Messages = append(
+			result.Messages,
+			lookResult.Messages...,
+		)
+
+		result.RoomName = lookResult.RoomName
+		result.RoomDesc = lookResult.RoomDesc
+		result.Exits = lookResult.Exits
+		result.Items = lookResult.Items
+		result.OldRoom = originalRoom
+
+		e.applyEntryScripts(
+			ctx,
+			player,
+			dest,
+			result,
+		)
+
+		return true
+	}
+
+	// Some script actions may perform movement directly.
+	if player.RoomNumber != originalRoom {
+		dest := e.rooms[player.RoomNumber]
+
+		e.SavePlayer(ctx, player)
+
+		if dest != nil {
+			lookResult := e.doLook(player)
+
+			result.Messages = append(
+				result.Messages,
+				lookResult.Messages...,
+			)
+
+			result.RoomName = lookResult.RoomName
+			result.RoomDesc = lookResult.RoomDesc
+			result.Exits = lookResult.Exits
+			result.Items = lookResult.Items
+			result.OldRoom = originalRoom
+
+			e.applyEntryScripts(
+				ctx,
+				player,
+				dest,
+				result,
+			)
+		}
+
+		return true
+	}
+
+	// CLEARVERB with no movement means the script blocked GO.
+	if sc.Blocked {
+		if len(result.Messages) == 0 {
+			result.Messages = []string{
+				"You can't go that way.",
+			}
+		}
+
+		return true
+	}
+
+	return false
+}
+
+func (e *GameEngine) movePlayerToRoom(ctx context.Context, player *Player, roomNum int, result *CommandResult) {
+	room := e.rooms[roomNum]
+	if room == nil {
+		return
+	}
+
+	oldRoom := player.RoomNumber
+
+	player.RoomNumber = roomNum
+	e.SavePlayer(ctx, player)
+
+	look := e.doLook(player)
+
+	result.Messages = append(result.Messages, look.Messages...)
+	result.RoomName = look.RoomName
+	result.RoomDesc = look.RoomDesc
+	result.Exits = look.Exits
+	result.Items = look.Items
+	result.OldRoom = oldRoom
+
+	e.applyEntryScripts(ctx, player, room, result)
 }
 
 func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gameworld.Room, ri *gameworld.RoomItem, itemDef *gameworld.ItemDef) *CommandResult {
@@ -4412,7 +4698,12 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 	}
 }
 
-func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *CommandResult {
+func (e *GameEngine) doPut(
+	ctx context.Context,
+	player *Player,
+	args []string,
+) *CommandResult {
+
 	if len(args) < 3 {
 		return &CommandResult{
 			Messages: []string{"Put what in what?"},
@@ -4421,7 +4712,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 	raw := strings.ToLower(strings.Join(args, " "))
 
-	// For now support: PUT <item> IN <container>
+	// Support: PUT <item> IN <container>
 	inIdx := strings.Index(raw, " in ")
 	if inIdx < 0 {
 		return &CommandResult{
@@ -4445,8 +4736,14 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 		}
 	}
 
-	// Find the room container.
+	// ------------------------------------------------------------
+	// Find the destination object in the room.
+	// Do NOT require it to be a real container yet because
+	// IFPREVERB2 PUT may handle things like knotholes/windows/etc.
+	// ------------------------------------------------------------
+
 	containerIndex := -1
+
 	for i, ri := range room.Items {
 		if ri.IsPut {
 			continue
@@ -4459,21 +4756,17 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 		name := e.getItemNounName(def)
 
-		if matchesTarget(name, containerTarget, e.getAdjName(ri.Adj1)) {
-			if def.Container != "IN" &&
-				def.Type != "CONTAINER" &&
-				!containsFlag(def.Flags, "CONTAINER") {
-
-				return &CommandResult{
-					Messages: []string{"You can't put anything in that."},
-				}
-			}
-
+		if matchesTarget(
+			name,
+			containerTarget,
+			e.getAdjName(ri.Adj1),
+		) {
 			containerIndex = i
 			break
 		}
 	}
 
+	// If no room target matched, try a container carried by the player.
 	if containerIndex < 0 {
 		return e.doPutInInventoryContainer(
 			ctx,
@@ -4486,22 +4779,19 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	container := &room.Items[containerIndex]
 	containerDef := e.items[container.Archetype]
 
-	if container.State != "OPEN" && container.State != "" {
-		displayName := e.formatItemName(
-			containerDef,
-			container.Adj1,
-			container.Adj2,
-			container.Adj3,
-		)
-
+	if containerDef == nil {
 		return &CommandResult{
-			Messages: []string{
-				fmt.Sprintf("You'll need to open %s first.", displayName),
-			},
+			Messages: []string{"You can't put anything in that."},
 		}
 	}
 
-	// Find item in player's inventory.
+	// ------------------------------------------------------------
+	// Find object #1 in the player's inventory FIRST.
+	// This prevents nonsense like:
+	// PUT CAT IN KNOT
+	// when the player doesn't have a cat.
+	// ------------------------------------------------------------
+
 	itemIndex := -1
 
 	for i, ii := range player.Inventory {
@@ -4512,8 +4802,16 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 		name := e.getItemNounName(def)
 
-		if matchesTarget(name, itemTarget, e.getAdjName(ii.Adj1)) ||
-			matchesTarget(name, itemTarget, e.getAdjName(ii.Adj3)) {
+		if matchesTarget(
+			name,
+			itemTarget,
+			e.getAdjName(ii.Adj1),
+		) ||
+			matchesTarget(
+				name,
+				itemTarget,
+				e.getAdjName(ii.Adj3),
+			) {
 
 			itemIndex = i
 			break
@@ -4529,14 +4827,107 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	ii := player.Inventory[itemIndex]
 	itemDef := e.items[ii.Archetype]
 
-	// Item itself must be smaller than the container.
-	if itemDef.Volume >= containerDef.Volume {
+	if itemDef == nil {
 		return &CommandResult{
-			Messages: []string{"That item is too large to fit in the container."},
+			Messages: []string{"You aren't carrying that."},
 		}
 	}
 
-	// Check remaining interior capacity.
+	// ------------------------------------------------------------
+	// Now run PUT preverb scripts against object #2.
+	//
+	// RunPreverbScripts currently checks both:
+	//   IFPREVERB
+	//   IFPREVERB2
+	//
+	// This is where IFPREVERB2 PUT <ref> can intercept the action.
+	// ------------------------------------------------------------
+
+	scriptItem := gameworld.RoomItem{
+		Ref:       -1,
+		Archetype: ii.Archetype,
+		Adj1:      ii.Adj1,
+		Adj2:      ii.Adj2,
+		Adj3:      ii.Adj3,
+		Val1:      ii.Val1,
+		Val2:      ii.Val2,
+		Val3:      ii.Val3,
+		Val4:      ii.Val4,
+		Val5:      ii.Val5,
+		State:     ii.State,
+	}
+
+	sc := e.RunPreverbScripts(
+		player,
+		room,
+		"PUT",
+		&scriptItem, // object #1: the dust/pelt/etc.
+		itemDef,
+		container, // object #2: the knothole
+	)
+
+	result := &CommandResult{
+		Messages:      append([]string{}, sc.Messages...),
+		RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+		GMBroadcast:   append([]string{}, sc.GMMsgs...),
+	}
+
+	// CLEARVERB means the script handled or cancelled the PUT.
+	if sc.Blocked {
+		e.SavePlayer(ctx, player)
+
+		if len(result.Messages) == 0 {
+			result.Messages = []string{"You can't do that."}
+		}
+
+		return result
+	}
+
+	// ------------------------------------------------------------
+	// No script intercepted it, so from here on it must be a
+	// normal container.
+	// ------------------------------------------------------------
+
+	if containerDef.Container != "IN" &&
+		containerDef.Type != "CONTAINER" &&
+		!containsFlag(containerDef.Flags, "CONTAINER") {
+
+		return &CommandResult{
+			Messages: []string{"You can't put anything in that."},
+		}
+	}
+
+	// Container must be open.
+	if container.State != "OPEN" && container.State != "" {
+		displayName := e.formatItemName(
+			containerDef,
+			container.Adj1,
+			container.Adj2,
+			container.Adj3,
+		)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You'll need to open %s first.",
+					displayName,
+				),
+			},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Normal container volume rules.
+	// ------------------------------------------------------------
+
+	if itemDef.Volume >= containerDef.Volume {
+		return &CommandResult{
+			Messages: []string{
+				"That item is too large to fit in the container.",
+			},
+		}
+	}
+
 	usedVolume := 0
 
 	for _, ri := range room.Items {
@@ -4551,11 +4942,16 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 	if usedVolume+itemDef.Volume > containerDef.Interior {
 		return &CommandResult{
-			Messages: []string{"There isn't enough room in the container."},
+			Messages: []string{
+				"There isn't enough room in the container.",
+			},
 		}
 	}
 
-	// Move inventory item into room as a PUT item.
+	// ------------------------------------------------------------
+	// Perform normal PUT.
+	// ------------------------------------------------------------
+
 	putItem := gameworld.RoomItem{
 		Ref:       container.Ref,
 		Archetype: ii.Archetype,
@@ -4574,7 +4970,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 	room.Items = append(room.Items, putItem)
 
-	// Remove from inventory.
+	// Remove from player inventory.
 	player.Inventory = append(
 		player.Inventory[:itemIndex],
 		player.Inventory[itemIndex+1:]...,
@@ -4596,23 +4992,26 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 		container.Adj3,
 	)
 
-	return &CommandResult{
-		Messages: []string{
-			fmt.Sprintf(
-				"You put %s in %s.",
-				itemName,
-				containerName,
-			),
-		},
-		RoomBroadcast: []string{
-			fmt.Sprintf(
-				"%s puts %s in %s.",
-				player.FirstName,
-				itemName,
-				containerName,
-			),
-		},
-	}
+	result.Messages = append(
+		result.Messages,
+		fmt.Sprintf(
+			"You put %s in %s.",
+			itemName,
+			containerName,
+		),
+	)
+
+	result.RoomBroadcast = append(
+		result.RoomBroadcast,
+		fmt.Sprintf(
+			"%s puts %s in %s.",
+			player.FirstName,
+			itemName,
+			containerName,
+		),
+	)
+
+	return result
 }
 
 func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Player, itemTarget string, containerTarget string) *CommandResult {
@@ -6511,10 +6910,10 @@ func (e *GameEngine) moveGroupToRoom(ctx context.Context, srcRoom, destRoom int)
 			p.Submitting = false
 			e.disengageCombat(p)
 			e.SavePlayer(ctx, p)
-			if e.sendToPlayer != nil {
-				lookResult := e.doLook(p)
-				e.sendToPlayer(p.FirstName, lookResult.Messages)
-			}
+			//	if e.sendToPlayer != nil {
+			//		lookResult := e.doLook(p)
+			//		e.sendToPlayer(p.FirstName, lookResult.Messages)
+			//	}
 			e.applyEntryScripts(ctx, p, dest, &CommandResult{})
 		}
 	}
@@ -7564,6 +7963,82 @@ func (e *GameEngine) doRoomRecall(player *Player) *CommandResult {
 		return &CommandResult{Messages: sc.Messages}
 	}
 	return &CommandResult{Messages: []string{"Nothing comes to mind about this place."}}
+}
+
+func (e *GameEngine) doRoomScriptVerb(ctx context.Context, player *Player, verb string) *CommandResult {
+
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return nil
+	}
+
+	scriptItem := gameworld.RoomItem{Ref: -1}
+	scriptDef := &gameworld.ItemDef{}
+
+	sc := e.RunVerbScripts(
+		player,
+		room,
+		verb,
+		&scriptItem,
+		scriptDef,
+	)
+
+	// No matching room script.
+	if len(sc.Messages) == 0 &&
+		len(sc.RoomMsgs) == 0 &&
+		len(sc.GMMsgs) == 0 &&
+		!sc.Blocked &&
+		sc.MoveTo == 0 &&
+		sc.MoveGroupTo == 0 {
+
+		return nil
+	}
+
+	result := &CommandResult{
+		Messages:      append([]string{}, sc.Messages...),
+		RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+		GMBroadcast:   append([]string{}, sc.GMMsgs...),
+	}
+
+	// The script requested MOVE <room>.
+	if sc.MoveTo > 0 {
+		dest := e.rooms[sc.MoveTo]
+
+		if dest != nil {
+			oldRoom := player.RoomNumber
+
+			player.RoomNumber = sc.MoveTo
+			e.SavePlayer(ctx, player)
+
+			lookResult := e.doLook(player)
+
+			result.Messages = append(
+				result.Messages,
+				lookResult.Messages...,
+			)
+
+			result.RoomName = lookResult.RoomName
+			result.RoomDesc = lookResult.RoomDesc
+			result.Exits = lookResult.Exits
+			result.Items = lookResult.Items
+			result.OldRoom = oldRoom
+
+			e.applyEntryScripts(ctx, player, dest, result)
+		}
+	}
+
+	// The script requested MOVEGROUP <room>.
+	if sc.MoveGroupTo > 0 {
+		e.moveGroupToRoom(
+			ctx,
+			player.RoomNumber,
+			sc.MoveGroupTo,
+		)
+	}
+
+	e.SavePlayer(ctx, player)
+
+	return result
 }
 
 func (e *GameEngine) doDeposit(ctx context.Context, player *Player, args []string) *CommandResult {
