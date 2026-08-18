@@ -1644,7 +1644,7 @@ ITEM 9 693 ADJ1=10
 The homeless huddle around a metal can of burning trash. A lucky few with jackets hang back from the flames, proud of their greater solvency. At the top of a stairway, some ragged men of questionable intent engage in whispered conversation. Young children cling to their mothers; hiding behind dirty skirts offering only symbolic protection.
 *DESCRIPTION_END
 OUTDOOR_OTHER
-FIXED_LIGHT
+DAY_LIGHT
 EXIT SE 288
 EXIT SW 285
 EXIT N 283

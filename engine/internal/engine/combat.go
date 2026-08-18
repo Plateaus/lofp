@@ -780,11 +780,16 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		}
 	}
 
+	//apply room lighting conditions
+	vMod := e.visibilityCombatModifier(player, player.RoomNumber)
+
 	// Resolve to-hit
-	attackRating := playerAttackRating(player, weaponDef) + wMod - fatPenalty
+	attackRating := playerAttackRating(player, weaponDef) + wMod - fatPenalty + vMod
+
 	if inst.Stunned {
 		attackRating += 20 // bonus for attacking stunned target
 	}
+
 	monDefense := def.Defense + inst.DefenseBonus
 	toHit := calcToHit(attackRating, monDefense)
 	roll := rand.Intn(100) + 1
@@ -1090,6 +1095,10 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 	// Weather modifier for monsters too
 	wMod := e.weatherMod(inst.RoomNumber)
 	defRating := e.playerDefenseRating(player)
+
+	visionMod := e.visibilityCombatModifier(player, player.RoomNumber)
+	defRating += visionMod / 2
+
 	// Multi-attacker penalty: -5 per 2 additional attackers beyond the first
 	if e.monsterMgr != nil {
 		attackerCount := 0

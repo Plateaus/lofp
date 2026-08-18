@@ -53,6 +53,8 @@ const (
 	StatFatigue
 	StatMana
 	StatPsi
+	DefensiveBuff
+	LightBuff
 )
 
 const (

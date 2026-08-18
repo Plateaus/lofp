@@ -25,6 +25,9 @@ type SpellDef struct {
 	DmgType  string        // "heat", "cold", "electric", "crushing", ""
 	Duration time.Duration // seconds; 0 = instant/permanent
 	Family   string        // "", "agility", "strength", "armor", etc.
+
+	StatusType StatID
+	StatusMsg  string
 }
 
 // spellRegistry holds all defined spells.
@@ -35,15 +38,15 @@ func init() {
 	conj := []SpellDef{
 		{ID: 100, Name: "Flame Bolt", School: "Conjuration", Level: 1, ManaCost: 3, CastTime: 3, Effect: "damage", DmgMin: 3, DmgMax: 12, DmgType: "heat"},
 		{ID: 101, Name: "Force Blade", School: "Conjuration", Level: 3, ManaCost: 5, CastTime: 3, Effect: "damage", DmgMin: 5, DmgMax: 18, DmgType: ""},
-		{ID: 102, Name: "Mystic Armor", School: "Conjuration", Level: 5, ManaCost: 8, CastTime: 3, Effect: "defense", DefBonus: 20},
+		{ID: 102, Name: "Mystic Armor", School: "Conjuration", Level: 5, ManaCost: 8, CastTime: 3, Effect: "defense", DefBonus: 20, Duration: 30 * time.Minute, Family: "armor", StatusType: DefensiveBuff},
 		{ID: 103, Name: "Lightning Bolt", School: "Conjuration", Level: 7, ManaCost: 10, CastTime: 3, Effect: "damage", DmgMin: 8, DmgMax: 30, DmgType: "electric"},
-		{ID: 105, Name: "Globe of Protection", School: "Conjuration", Level: 15, ManaCost: 20, CastTime: 3, Effect: "defense", DefBonus: 50},
+		{ID: 105, Name: "Globe of Protection", School: "Conjuration", Level: 15, ManaCost: 20, CastTime: 3, Effect: "defense", DefBonus: 50, Duration: 90 * time.Minute, Family: "armor", StatusType: DefensiveBuff},
 		{ID: 106, Name: "Summon Fire Elemental", School: "Conjuration", Level: 12, ManaCost: 25, CastTime: 5, Effect: "utility"},
 		{ID: 107, Name: "Summon Air Elemental", School: "Conjuration", Level: 12, ManaCost: 25, CastTime: 5, Effect: "utility"},
 		{ID: 108, Name: "Summon Water Elemental", School: "Conjuration", Level: 12, ManaCost: 25, CastTime: 5, Effect: "utility"},
 		{ID: 109, Name: "Summon Gargoyle", School: "Conjuration", Level: 16, ManaCost: 30, CastTime: 5, Effect: "utility"},
 		{ID: 112, Name: "Call Meteor", School: "Conjuration", Level: 20, ManaCost: 30, CastTime: 4, Effect: "damage", DmgMin: 25, DmgMax: 60, DmgType: "heat"},
-		{ID: 113, Name: "Light", School: "Conjuration", Level: 1, ManaCost: 2, CastTime: 2, Effect: "utility"},
+		{ID: 113, Name: "Light", School: "Conjuration", Level: 1, ManaCost: 2, CastTime: 2, Effect: "buff", Family: "light", Duration: 30 * time.Minute, StatusType: LightBuff, StatusMsg: "A soft light surrounds you."},
 		{ID: 114, Name: "Mystic Key", School: "Conjuration", Level: 2, ManaCost: 4, CastTime: 3, Effect: "utility"},
 		{ID: 115, Name: "Shockwave", School: "Conjuration", Level: 4, ManaCost: 6, CastTime: 3, Effect: "damage", DmgMin: 4, DmgMax: 15, DmgType: "crushing"},
 		{ID: 116, Name: "Thunder Call", School: "Conjuration", Level: 21, ManaCost: 28, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 50, DmgType: "electric"},
@@ -58,10 +61,10 @@ func init() {
 		{ID: 125, Name: "Thunder Glyph", School: "Conjuration", Level: 10, ManaCost: 15, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 30, DmgType: "electric"},
 		{ID: 126, Name: "Ice Glyph", School: "Conjuration", Level: 15, ManaCost: 20, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 40, DmgType: "cold"},
 		{ID: 127, Name: "Web", School: "Conjuration", Level: 10, ManaCost: 12, CastTime: 3, Effect: "utility"},
-		{ID: 130, Name: "Mass Protection", School: "Conjuration", Level: 23, ManaCost: 30, CastTime: 4, Effect: "defense", DefBonus: 25},
+		{ID: 130, Name: "Mass Protection", School: "Conjuration", Level: 23, ManaCost: 30, CastTime: 4, Effect: "defense", DefBonus: 25, Duration: 45 * time.Minute, Family: "armor"},
 		{ID: 131, Name: "Flaming Arrows", School: "Conjuration", Level: 18, ManaCost: 22, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 35, DmgType: "heat"},
 		{ID: 132, Name: "Chain Lightning", School: "Conjuration", Level: 23, ManaCost: 28, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 50, DmgType: "electric"},
-		{ID: 133, Name: "Globe of Protection II", School: "Conjuration", Level: 30, ManaCost: 40, CastTime: 4, Effect: "defense", DefBonus: 100},
+		{ID: 133, Name: "Globe of Protection II", School: "Conjuration", Level: 30, ManaCost: 40, CastTime: 4, Effect: "defense", DefBonus: 100, Duration: 90 * time.Minute, Family: "armor"},
 		{ID: 134, Name: "Siryx's Terrible Tentacles", School: "Conjuration", Level: 25, ManaCost: 35, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 55, DmgType: "crushing"},
 		{ID: 135, Name: "Storm Blade", School: "Conjuration", Level: 24, ManaCost: 30, CastTime: 3, Effect: "buff"},
 		{ID: 136, Name: "Inferno Blade", School: "Conjuration", Level: 19, ManaCost: 25, CastTime: 3, Effect: "buff"},
@@ -73,20 +76,20 @@ func init() {
 	ench := []SpellDef{
 		{ID: 200, Name: "Fear", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "utility"},
 		{ID: 201, Name: "Charm", School: "Enchantment", Level: 3, ManaCost: 8, CastTime: 3, Effect: "utility"},
-		{ID: 202, Name: "Enchantment I", School: "Enchantment", Level: 5, ManaCost: 10, CastTime: 4, Effect: "buff"},
-		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "strength"},
-		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "strength"},
-		{ID: 209, Name: "Strength III", School: "Enchantment", Level: 16, ManaCost: 18, CastTime: 3, Effect: "buff", DefBonus: 30, Duration: 60 * time.Minute, Family: "strength"},
+		{ID: 202, Name: "Enchantment I", School: "Enchantment", Level: 5, ManaCost: 10, CastTime: 4, Effect: "buff", Duration: 45 * time.Minute, Family: "enchantment"},
+		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "strength", StatusType: StatStrength},
+		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "strength", StatusType: StatStrength},
+		{ID: 209, Name: "Strength III", School: "Enchantment", Level: 16, ManaCost: 18, CastTime: 3, Effect: "buff", DefBonus: 30, Duration: 60 * time.Minute, Family: "strength", StatusType: StatStrength},
 		{ID: 210, Name: "Haste", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "buff", Duration: 60 * time.Minute, Family: "haste"},
 		{ID: 211, Name: "Slow", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "utility", Duration: 60 * time.Minute, Family: "slow"},
 		{ID: 216, Name: "Slumber I", School: "Enchantment", Level: 2, ManaCost: 4, CastTime: 3, Effect: "utility"},
 		{ID: 219, Name: "Silence", School: "Enchantment", Level: 7, ManaCost: 10, CastTime: 3, Effect: "utility"},
-		{ID: 224, Name: "Fly", School: "Enchantment", Level: 11, ManaCost: 15, CastTime: 3, Effect: "buff"},
-		{ID: 225, Name: "Invisibility", School: "Enchantment", Level: 14, ManaCost: 18, CastTime: 3, Effect: "buff"},
+		{ID: 224, Name: "Fly", School: "Enchantment", Level: 11, ManaCost: 15, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
+		{ID: 225, Name: "Invisibility", School: "Enchantment", Level: 14, ManaCost: 18, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
 		{ID: 228, Name: "Identify", School: "Enchantment", Level: 7, ManaCost: 5, CastTime: 3, Effect: "utility"},
-		{ID: 229, Name: "Wizard's Armor", School: "Enchantment", Level: 9, ManaCost: 12, CastTime: 3, Effect: "defense", DefBonus: 15},
-		{ID: 234, Name: "Spell Shield", School: "Enchantment", Level: 13, ManaCost: 15, CastTime: 3, Effect: "defense", DefBonus: 25},
-		{ID: 235, Name: "Cloak Mind", School: "Enchantment", Level: 22, ManaCost: 25, CastTime: 3, Effect: "defense", DefBonus: 25},
+		{ID: 229, Name: "Wizard's Armor", School: "Enchantment", Level: 9, ManaCost: 12, CastTime: 3, Effect: "defense", DefBonus: 15, Duration: 45 * time.Minute},
+		{ID: 234, Name: "Spell Shield", School: "Enchantment", Level: 13, ManaCost: 15, CastTime: 3, Effect: "defense", DefBonus: 25, Duration: 45 * time.Minute},
+		{ID: 235, Name: "Cloak Mind", School: "Enchantment", Level: 22, ManaCost: 25, CastTime: 3, Effect: "defense", DefBonus: 25, Duration: 45 * time.Minute},
 	}
 	// Necromancy (301-356)
 	necro := []SpellDef{
@@ -99,7 +102,7 @@ func init() {
 		{ID: 317, Name: "Body Restoration II", School: "Necromancy", Level: 5, ManaCost: 7, CastTime: 3, Effect: "heal", HealMin: 10, HealMax: 30},
 		{ID: 318, Name: "Body Restoration III", School: "Necromancy", Level: 10, ManaCost: 14, CastTime: 3, Effect: "heal", HealMin: 20, HealMax: 50},
 		{ID: 323, Name: "Spectral Fist", School: "Necromancy", Level: 3, ManaCost: 5, CastTime: 3, Effect: "damage", DmgMin: 4, DmgMax: 14, DmgType: "crushing"},
-		{ID: 326, Name: "Spectral Shield", School: "Necromancy", Level: 9, ManaCost: 12, CastTime: 3, Effect: "defense", DefBonus: 20},
+		{ID: 326, Name: "Spectral Shield", School: "Necromancy", Level: 9, ManaCost: 12, CastTime: 3, Effect: "defense", DefBonus: 20, Duration: 45 * time.Minute, StatusType: DefensiveBuff},
 		{ID: 334, Name: "Invigoration I", School: "Necromancy", Level: 2, ManaCost: 4, CastTime: 3, Effect: "heal", HealMin: 3, HealMax: 10},
 		{ID: 335, Name: "Invigoration II", School: "Necromancy", Level: 9, ManaCost: 10, CastTime: 3, Effect: "heal", HealMin: 8, HealMax: 25},
 		{ID: 337, Name: "Reconstruction", School: "Necromancy", Level: 4, ManaCost: 6, CastTime: 3, Effect: "heal", HealMin: 5, HealMax: 20},
@@ -109,14 +112,14 @@ func init() {
 		{ID: 341, Name: "Destroy Undead III", School: "Necromancy", Level: 13, ManaCost: 20, CastTime: 3, Effect: "damage", DmgMin: 25, DmgMax: 60, DmgType: ""},
 		{ID: 343, Name: "Regeneration", School: "Necromancy", Level: 27, ManaCost: 35, CastTime: 4, Effect: "heal", HealMin: 40, HealMax: 80},
 		{ID: 345, Name: "Spectral Sword", School: "Necromancy", Level: 7, ManaCost: 10, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 22, DmgType: ""},
-		{ID: 347, Name: "Divine Blessing", School: "Necromancy", Level: 10, ManaCost: 12, CastTime: 3, Effect: "buff"},
+		{ID: 347, Name: "Divine Blessing", School: "Necromancy", Level: 10, ManaCost: 12, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
 		{ID: 354, Name: "Rorin's Fire", School: "Necromancy", Level: 17, ManaCost: 22, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 40, DmgType: "heat"},
 	}
 	// General (400-415)
 	gen := []SpellDef{
 		{ID: 400, Name: "Detect Magic", School: "General", Level: 1, ManaCost: 2, CastTime: 2, Effect: "utility"},
 		{ID: 401, Name: "Dispel Lesser Magic", School: "General", Level: 5, ManaCost: 8, CastTime: 3, Effect: "utility"},
-		{ID: 403, Name: "Mindlink", School: "General", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility"},
+		{ID: 403, Name: "Mindlink", School: "General", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility", Duration: 45 * time.Minute},
 		{ID: 405, Name: "See Hidden", School: "General", Level: 3, ManaCost: 5, CastTime: 3, Effect: "utility"},
 		{ID: 406, Name: "Dispel Invisibility", School: "General", Level: 8, ManaCost: 10, CastTime: 3, Effect: "utility"},
 		{ID: 407, Name: "Analyze Ore", School: "General", Level: 3, ManaCost: 4, CastTime: 3, Effect: "utility"},
@@ -125,16 +128,16 @@ func init() {
 	druid := []SpellDef{
 		{ID: 500, Name: "Plant Snare", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "utility"},
 		{ID: 505, Name: "Freedom", School: "Druidic", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility"},
-		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff"},
-		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff"},
+		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
+		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
 		{ID: 511, Name: "Carapace", School: "Druidic", Level: 8, ManaCost: 10, CastTime: 3, Effect: "defense", DefBonus: 20, Duration: 45 * time.Minute},
 		{ID: 512, Name: "True Aim", School: "Druidic", Level: 15, ManaCost: 18, CastTime: 3, Effect: "buff"},
-		{ID: 513, Name: "Agility I", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "agility"},
-		{ID: 514, Name: "Agility II", School: "Druidic", Level: 11, ManaCost: 12, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "agility"},
-		{ID: 515, Name: "Agility III", School: "Druidic", Level: 16, ManaCost: 20, CastTime: 3, Effect: "buff", DefBonus: 30, Duration: 60 * time.Minute, Family: "agility"},
+		{ID: 513, Name: "Agility I", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "agility", StatusType: StatAgility},
+		{ID: 514, Name: "Agility II", School: "Druidic", Level: 11, ManaCost: 12, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "agility", StatusType: StatAgility},
+		{ID: 515, Name: "Agility III", School: "Druidic", Level: 16, ManaCost: 20, CastTime: 3, Effect: "buff", DefBonus: 30, Duration: 60 * time.Minute, Family: "agility", StatusType: StatAgility},
 		{ID: 519, Name: "Sunray", School: "Druidic", Level: 13, ManaCost: 18, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 35, DmgType: "heat"},
-		{ID: 520, Name: "Night Vision", School: "Druidic", Level: 1, ManaCost: 2, CastTime: 2, Effect: "utility"},
-		{ID: 521, Name: "Camouflage", School: "Druidic", Level: 7, ManaCost: 8, CastTime: 3, Effect: "buff"},
+		{ID: 520, Name: "Night Vision", School: "Druidic", Level: 1, ManaCost: 2, CastTime: 2, Effect: "utility", Duration: 45 * time.Minute},
+		{ID: 521, Name: "Camouflage", School: "Druidic", Level: 7, ManaCost: 8, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
 		{ID: 523, Name: "Earth Spike", School: "Druidic", Level: 5, ManaCost: 7, CastTime: 3, Effect: "damage", DmgMin: 5, DmgMax: 18, DmgType: "crushing"},
 		{ID: 524, Name: "Earth Wave", School: "Druidic", Level: 12, ManaCost: 16, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 30, DmgType: "crushing"},
 	}
@@ -423,11 +426,9 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	case "heal":
 		result = e.castHealSpell(ctx, player, spell, args)
 	case "defense": //todo: add defensive spell effects to player stats
-		player.DefenseBonus += spell.DefBonus
-		result.Messages = []string{fmt.Sprintf("You gesture and %s takes effect! (+%d defense)", spell.Name, spell.DefBonus)}
-		result.RoomBroadcast = []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)}
+		result = e.castStatusSpell(player, spell, args)
 	case "buff":
-		result = e.castBuffSpell(player, spell, args)
+		result = e.castStatusSpell(player, spell, args)
 	default:
 		result.Messages = []string{fmt.Sprintf("You gesture and cast %s.", spell.Name)}
 		result.RoomBroadcast = []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)}
@@ -440,6 +441,48 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	e.SavePlayer(ctx, player)
 
 	return result
+}
+
+func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []string) *CommandResult {
+
+	duration := spell.Duration
+	if duration == 0 {
+		duration = 30 * time.Minute
+	}
+
+	if !prepareSpellFamilyEffect(player, spell) {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You gesture and cast %s, but a stronger %s spell is already affecting you.",
+					spell.Name,
+					spell.Family,
+				),
+			},
+		}
+	}
+
+	player.ApplyStatEffect(
+		spell.ID,
+		EffectSourceSpell,
+		spell.StatusType,
+		spell.DefBonus,
+		duration,
+	)
+
+	msg := spell.StatusMsg
+	if strings.Contains(msg, "%d") {
+		msg = fmt.Sprintf(msg, spell.DefBonus)
+	}
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf("You gesture and cast %s. %s", spell.Name, msg),
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+		},
+	}
 }
 
 func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []string, spectacular bool) *CommandResult {
@@ -639,38 +682,77 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 			}
 		}
 		return &CommandResult{Messages: []string{"You don't have a weapon matching that."}}
-	case 207: // Strength I
-		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatStrength, spell.DefBonus, buffDuration)
-		msg = fmt.Sprintf("You gesture and cast %s. You feel stronger! (+10 STR)", spell.Name)
-	case 208: // Strength II
-		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatStrength, spell.DefBonus, buffDuration)
-		msg = fmt.Sprintf("You gesture and cast %s. You feel much stronger! (+20 STR)", spell.Name)
-	case 209: // Strength III
-		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatStrength, spell.DefBonus, buffDuration)
-		msg = fmt.Sprintf("You gesture and cast %s. Immense strength surges through you! (+30 STR)", spell.Name)
-	case 210: // Haste
-		player.ApplyStatEffect(spell.ID, EffectSourceSpell, HasteBuff, spell.DefBonus, buffDuration)
-		msg = fmt.Sprintf("You gesture and cast %s. The world seems to slow down around you.", spell.Name)
-	case 224: // Fly
-		player.CanFly = true
-		msg = fmt.Sprintf("You gesture and cast %s. You rise into the air!", spell.Name)
-	case 225: // Invisibility
-		player.Invisible = true
-		msg = fmt.Sprintf("You gesture and cast %s. You fade from sight.", spell.Name)
-	case 513: // Agility I
-		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatAgility, spell.DefBonus, buffDuration)
-		msg = fmt.Sprintf("You gesture and cast %s. You feel more agile! (+10 AGI)", spell.Name)
-	case 514: // Agility II
-		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatAgility, spell.DefBonus, buffDuration)
-		msg = fmt.Sprintf("You gesture and cast %s. You feel much more agile! (+20 AGI)", spell.Name)
-	case 515: // Agility III
-		player.ApplyStatEffect(spell.ID, EffectSourceSpell, StatAgility, spell.DefBonus, buffDuration)
-		msg = fmt.Sprintf("You gesture and cast %s. Incredible agility flows through you! (+30 AGI)", spell.Name)
+
+	case 207, 208, 209: // Strength I-III
+		player.ApplyStatEffect(
+			spell.ID,
+			EffectSourceSpell,
+			StatStrength,
+			spell.DefBonus,
+			buffDuration,
+		)
+
+		msg = fmt.Sprintf("You gesture and cast %s. Your strength increases! (+%d STR)", spell.Name, spell.DefBonus)
+
+	case 513, 514, 515: // Agility I-III
+		player.ApplyStatEffect(
+			spell.ID,
+			EffectSourceSpell,
+			StatAgility,
+			spell.DefBonus,
+			buffDuration,
+		)
+
+		msg = fmt.Sprintf("You gesture and cast %s. Your agility increases! (+%d AGI)", spell.Name, spell.DefBonus)
 	}
 
 	return &CommandResult{
 		Messages:      []string{msg},
 		RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)},
+	}
+}
+
+func (e *GameEngine) castDefenseSpell(player *Player, spell *SpellDef, args []string) *CommandResult {
+
+	buffDuration := spell.Duration
+	if buffDuration == 0 {
+		buffDuration = 30 * time.Minute
+	}
+
+	if !prepareSpellFamilyEffect(player, spell) {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You gesture and cast %s, but a stronger %s spell is already affecting you.",
+					spell.Name,
+					spell.Family,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+			},
+		}
+	}
+
+	player.ApplyStatEffect(
+		spell.ID,
+		EffectSourceSpell,
+		DefensiveBuff,
+		spell.DefBonus,
+		buffDuration,
+	)
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf(
+				"You gesture and cast %s. A protective force surrounds you! (+%d defense)",
+				spell.Name,
+				spell.DefBonus,
+			),
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+		},
 	}
 }
 

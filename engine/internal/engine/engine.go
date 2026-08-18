@@ -48,6 +48,15 @@ var reservedSubstrings = []string{
 	"nazi", "hitler",
 }
 
+type VisibilityLevel int
+
+const (
+	VisibilityDark VisibilityLevel = iota
+	VisibilityPartial
+	VisibilityLimited
+	VisibilityClear
+)
+
 // ValidateCharacterInput checks character creation parameters.
 func ValidateCharacterInput(firstName, lastName string, race, gender int) error {
 	if !validNamePattern.MatchString(firstName) {
@@ -2324,7 +2333,7 @@ func (e *GameEngine) doLookFull(player *Player) *CommandResult {
 	}
 	result := e.doLook(player)
 	// Always include the full description regardless of BriefMode
-	if !player.Dead && result.RoomDesc == "" {
+	if !player.Dead && e.canPlayerSee(player, room) && result.RoomDesc == "" {
 		result.RoomDesc = room.Description
 	}
 	return result
@@ -2345,6 +2354,11 @@ func (e *GameEngine) doLook(player *Player) *CommandResult {
 			result.RoomName,
 			"You are dead and can't do much of anything beside wait for someone to attempt to raise you or for Eternity, Inc. to retrieve you. Hope you paid your premium! [You may type DEPART at any time to allow Eternity, Inc. to retrieve you.]",
 		}
+		return result
+	}
+
+	if !e.canPlayerSee(player, room) {
+		result.Messages = []string{"It is too dark to see."}
 		return result
 	}
 
@@ -5569,36 +5583,56 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 			name = "Encumbered"
 		}
 
+		// Permanent effects
 		if effect.Permanent {
-			msgs = append(
-				msgs,
-				fmt.Sprintf(
-					"  %s: %s%d %s",
-					name,
-					modifierSign(effect.Modifier),
-					effect.Modifier,
-					statName(effect.Stat),
-				),
-			)
+			if effect.Modifier != 0 {
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						"  %s: %s%d %s",
+						name,
+						modifierSign(effect.Modifier),
+						effect.Modifier,
+						statName(effect.Stat),
+					),
+				)
+			} else {
+				msgs = append(msgs, fmt.Sprintf("  %s", name))
+			}
 
 			activeEffectCount++
 			continue
 		}
+
 		remaining := time.Until(effect.ExpiresAt)
 		if remaining < 0 {
 			remaining = 0
 		}
 
-		msgs = append(msgs,
-			fmt.Sprintf(
-				"  %s: %s%d %s — %s remaining",
-				name,
-				modifierSign(effect.Modifier),
-				effect.Modifier,
-				statName(effect.Stat),
-				formatEffectDuration(remaining),
-			),
-		)
+		// Numeric stat/status effect
+		if effect.Modifier != 0 {
+			msgs = append(
+				msgs,
+				fmt.Sprintf(
+					"  %s: %s%d %s — %s remaining",
+					name,
+					modifierSign(effect.Modifier),
+					effect.Modifier,
+					statName(effect.Stat),
+					formatEffectDuration(remaining),
+				),
+			)
+		} else {
+			// Non-numeric status effect such as Light, Night Vision, Invisibility, etc.
+			msgs = append(
+				msgs,
+				fmt.Sprintf(
+					"  %s — %s remaining",
+					name,
+					formatEffectDuration(remaining),
+				),
+			)
+		}
 
 		activeEffectCount++
 	}
@@ -7694,43 +7728,267 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 	return &CommandResult{Messages: []string{"You don't have that."}}
 }
 
-func (e *GameEngine) doLight(ctx context.Context, player *Player, args []string, lightOn bool) *CommandResult {
+func (e *GameEngine) doLight(
+	ctx context.Context,
+	player *Player,
+	args []string,
+	lightOn bool,
+) *CommandResult {
+
 	if len(args) == 0 {
 		if lightOn {
 			return &CommandResult{Messages: []string{"Light what?"}}
 		}
 		return &CommandResult{Messages: []string{"Extinguish what?"}}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
+
+	//
+	// Check carried items first
+	//
 	skip := ordSkip
-	for i, ii := range player.Inventory {
+
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
 		itemDef := e.items[ii.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		if !containsFlag(itemDef.Flags, "LIGHTABLE") {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
 		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
 			continue
 		}
+
 		if skip > 0 {
 			skip--
 			continue
 		}
-		displayName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
+
 		if lightOn {
-			player.Inventory[i].State = "LIT"
+			if ii.State == "LIT" {
+				displayName := e.formatItemName(
+					itemDef,
+					ii.Adj1,
+					ii.Adj2,
+					ii.Adj3,
+				)
+
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf("%s is already lit.", displayName),
+					},
+				}
+			}
+
+			// Get the name BEFORE applying the lit adjective.
+			originalName := e.formatItemName(
+				itemDef,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			)
+
+			// Apply the lit adjective.
+			if itemDef.Parameter1 > 0 {
+				ii.Val5 = ii.Adj1
+				ii.Adj1 = itemDef.Parameter1
+			}
+
+			ii.State = "LIT"
+
 			e.SavePlayer(ctx, player)
-			return &CommandResult{Messages: []string{fmt.Sprintf("You light %s.", displayName)}}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("You light %s.", originalName),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf("%s lights %s.", player.FirstName, originalName),
+				},
+			}
 		}
-		player.Inventory[i].State = "UNLIT"
+
+		// Extinguish
+		if ii.State != "LIT" {
+			displayName := e.formatItemName(
+				itemDef,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("%s is not lit.", displayName),
+				},
+			}
+		}
+
+		if itemDef.Parameter1 > 0 {
+			ii.Adj1 = ii.Val5
+			ii.Val5 = 0
+		}
+
+		ii.State = "UNLIT"
+
+		displayName := e.formatItemName(
+			itemDef,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
+
 		e.SavePlayer(ctx, player)
-		return &CommandResult{Messages: []string{fmt.Sprintf("You extinguish %s.", displayName)}}
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("You extinguish %s.", displayName),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s extinguishes %s.", player.FirstName, displayName),
+			},
+		}
 	}
-	return &CommandResult{Messages: []string{"You don't have anything to light."}}
+
+	//
+	// Then check items in the room
+	//
+	room := e.rooms[player.RoomNumber]
+	if room != nil {
+		skip = ordSkip
+
+		for i := range room.Items {
+			ri := &room.Items[i]
+
+			itemDef := e.items[ri.Archetype]
+			if itemDef == nil {
+				continue
+			}
+
+			if !containsFlag(itemDef.Flags, "LIGHTABLE") {
+				continue
+			}
+
+			name := e.getItemNounName(itemDef)
+			if !matchesTarget(name, target, e.getAdjName(ri.Adj1)) {
+				continue
+			}
+
+			if skip > 0 {
+				skip--
+				continue
+			}
+
+			if lightOn {
+				if ri.State == "LIT" {
+					displayName := e.formatItemName(
+						itemDef,
+						ri.Adj1,
+						ri.Adj2,
+						ri.Adj3,
+					)
+
+					return &CommandResult{
+						Messages: []string{
+							fmt.Sprintf("%s is already lit.", displayName),
+						},
+					}
+				}
+
+				if itemDef.Parameter1 > 0 {
+					ri.Val5 = ri.Adj1
+					ri.Adj1 = itemDef.Parameter1
+				}
+
+				ri.State = "LIT"
+
+				displayName := e.formatItemName(
+					itemDef,
+					ri.Adj1,
+					ri.Adj2,
+					ri.Adj3,
+				)
+
+				e.notifyRoomChange(RoomChange{
+					RoomNumber: player.RoomNumber,
+					Type:       "item_update",
+					Item:       ri,
+				})
+
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf("You light %s.", displayName),
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf("%s lights %s.", player.FirstName, displayName),
+					},
+				}
+			}
+
+			// Extinguish
+			if ri.State != "LIT" {
+				displayName := e.formatItemName(
+					itemDef,
+					ri.Adj1,
+					ri.Adj2,
+					ri.Adj3,
+				)
+
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf("%s is not lit.", displayName),
+					},
+				}
+			}
+
+			if itemDef.Parameter1 > 0 {
+				ri.Adj1 = ri.Val5
+				ri.Val5 = 0
+			}
+
+			ri.State = "UNLIT"
+
+			displayName := e.formatItemName(
+				itemDef,
+				ri.Adj1,
+				ri.Adj2,
+				ri.Adj3,
+			)
+
+			e.notifyRoomChange(RoomChange{
+				RoomNumber: player.RoomNumber,
+				Type:       "item_update",
+				Item:       ri,
+			})
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("You extinguish %s.", displayName),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf("%s extinguishes %s.", player.FirstName, displayName),
+				},
+			}
+		}
+	}
+
+	if lightOn {
+		return &CommandResult{
+			Messages: []string{"You don't see anything here that you can light."},
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{"You don't see anything here that you can extinguish."},
+	}
 }
 
 func (e *GameEngine) doFlip(ctx context.Context, player *Player, args []string) *CommandResult {
@@ -10490,4 +10748,115 @@ func (e *GameEngine) RefreshEncumbrance(player *Player) {
 			Permanent: true, // Encumbrance effects do not expire on their own
 		},
 	)
+}
+
+func (e *GameEngine) roomHasLightSource(roomNum int) bool {
+	if e.sessions == nil {
+		return false
+	}
+
+	now := time.Now()
+
+	for _, p := range e.sessions.OnlinePlayers() {
+		if p.RoomNumber != roomNum {
+			continue
+		}
+
+		// Magical Light spell
+		for _, effect := range p.ActiveStatEffects {
+			if effect.Stat == LightBuff &&
+				(effect.Permanent || effect.ExpiresAt.After(now)) {
+				return true
+			}
+		}
+
+		// Physical light sources carried by players
+		for _, item := range p.Inventory {
+			def := e.items[item.Archetype]
+			if def == nil {
+				continue
+			}
+
+			if containsFlag(def.Flags, "LIGHTABLE") &&
+				item.State == "LIT" {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func playerCanSeeInDark(player *Player) bool {
+	switch player.Race {
+	case RaceMurg, RaceHighlander:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *GameEngine) canPlayerSee(player *Player, room *gameworld.Room) bool {
+	if room == nil {
+		return false
+	}
+	return e.roomVisibility(player, room) != VisibilityDark
+}
+
+func (e *GameEngine) roomVisibility(player *Player, room *gameworld.Room) VisibilityLevel {
+	if room == nil {
+		return VisibilityDark
+	}
+
+	// Racial dark vision
+	if playerCanSeeInDark(player) {
+		return VisibilityClear
+	}
+
+	// Any active light source in the room illuminates it for everyone.
+	if e.roomHasLightSource(room.Number) {
+		return VisibilityClear
+	}
+
+	switch room.Lighting {
+	case "FIXED_LIGHT":
+		return VisibilityClear
+
+	case "DARKNESS":
+		return VisibilityDark
+
+	case "DAY_LIGHT", "OBSCURED_DAY_LIGHT":
+		if IsDay() {
+			return VisibilityClear
+		}
+		return VisibilityDark
+
+	case "PARTIAL_DARKNESS":
+		return VisibilityPartial
+
+	case "LIMITED_VISION":
+		return VisibilityLimited
+
+	default:
+		return VisibilityClear
+	}
+}
+
+func (e *GameEngine) visibilityCombatModifier(player *Player, RoomNumber int) int {
+
+	room := e.rooms[RoomNumber]
+
+	switch e.roomVisibility(player, room) {
+	case VisibilityDark:
+		return -40
+
+	case VisibilityPartial:
+		return -20
+
+	case VisibilityLimited:
+		return -10
+
+	default:
+		return 0
+	}
 }
