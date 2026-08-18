@@ -2508,88 +2508,131 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 
 	target := strings.ToLower(strings.Join(args, " "))
 
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"You see nothing."},
+		}
+	}
+
 	// Check for directional look (LOOK N, LOOK NORTH, etc.)
 	if dir, ok := lookDirMap[target]; ok {
-		room := e.rooms[player.RoomNumber]
-		if room != nil {
-			destNum, hasExit := room.Exits[dir]
+		destNum, hasExit := room.Exits[dir]
 
-			if !hasExit && dir == "U" {
-				destNum, hasExit = room.Exits["ABOVE"]
-			}
-			if !hasExit && dir == "D" {
-				destNum, hasExit = room.Exits["BELOW"]
-			}
+		if !hasExit && dir == "U" {
+			destNum, hasExit = room.Exits["ABOVE"]
+		}
 
-			if hasExit {
-				if dest := e.rooms[destNum]; dest != nil {
-					msgs := []string{fmt.Sprintf("[%s]", dest.Name)}
+		if !hasExit && dir == "D" {
+			destNum, hasExit = room.Exits["BELOW"]
+		}
 
-					if dest.Description != "" {
-						msgs = append(msgs, descriptionToMessages(dest.Description)...)
-					}
-
-					// Show players in that room.
-					if e.sessions != nil {
-						var playersHere []string
-
-						for _, p := range e.sessions.OnlinePlayers() {
-							if p.RoomNumber == destNum &&
-								!p.Hidden &&
-								!p.Invisible &&
-								!p.GMInvis {
-
-								playersHere = append(playersHere, p.FirstName)
-							}
-						}
-
-						if len(playersHere) > 0 {
-							msgs = append(
-								msgs,
-								fmt.Sprintf("You see %s.", strings.Join(playersHere, ", ")),
-							)
-						}
-					}
-
-					// Show top-level room items only.
-					for _, ri := range dest.Items {
-						if ri.IsPut {
-							continue
-						}
-
-						itemDef := e.items[ri.Archetype]
-						if itemDef == nil {
-							continue
-						}
-
-						itemName := e.formatItemName(
-							itemDef,
-							ri.Adj1,
-							ri.Adj2,
-							ri.Adj3,
-						)
-
-						msgs = append(
-							msgs,
-							fmt.Sprintf("You see %s.", itemName),
-						)
-					}
-
-					// Show monsters.
-					monLines := e.MonsterLookLines(destNum)
-					msgs = append(msgs, monLines...)
-
-					return &CommandResult{
-						Messages: msgs,
-					}
-				}
-			}
-
+		if !hasExit {
 			return &CommandResult{
 				Messages: []string{
 					"You see nothing of interest in that direction.",
 				},
 			}
+		}
+
+		dest := e.rooms[destNum]
+		if dest == nil {
+			return &CommandResult{
+				Messages: []string{
+					"You see nothing of interest in that direction.",
+				},
+			}
+		}
+
+		// Directional look uses the visibility of the DESTINATION room.
+		if e.roomVisibility(player, dest) == VisibilityDark {
+			return &CommandResult{
+				Messages: []string{
+					"It is too dark to see in that direction.",
+				},
+			}
+		}
+
+		msgs := []string{
+			fmt.Sprintf("[%s]", dest.Name),
+		}
+
+		if dest.Description != "" {
+			msgs = append(
+				msgs,
+				descriptionToMessages(dest.Description)...,
+			)
+		}
+
+		// Show players in that room.
+		if e.sessions != nil {
+			var playersHere []string
+
+			for _, p := range e.sessions.OnlinePlayers() {
+				if p.RoomNumber == destNum &&
+					!p.Hidden &&
+					!p.Invisible &&
+					!p.GMInvis {
+
+					playersHere = append(playersHere, p.FirstName)
+				}
+			}
+
+			if len(playersHere) > 0 {
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						"You see %s.",
+						strings.Join(playersHere, ", "),
+					),
+				)
+			}
+		}
+
+		// Show top-level room items only.
+		for _, ri := range dest.Items {
+			if ri.IsPut {
+				continue
+			}
+
+			itemDef := e.items[ri.Archetype]
+			if itemDef == nil {
+				continue
+			}
+
+			// Don't expose hidden room machinery/items.
+			if containsFlag(itemDef.Flags, "HIDDEN") {
+				continue
+			}
+
+			itemName := e.formatItemName(
+				itemDef,
+				ri.Adj1,
+				ri.Adj2,
+				ri.Adj3,
+			)
+
+			msgs = append(
+				msgs,
+				fmt.Sprintf("You see %s.", itemName),
+			)
+		}
+
+		// Show monsters.
+		monLines := e.MonsterLookLines(destNum)
+		msgs = append(msgs, monLines...)
+
+		return &CommandResult{
+			Messages: msgs,
+		}
+	}
+
+	// Everything below this point is looking at the CURRENT room.
+	if e.roomVisibility(player, room) == VisibilityDark {
+		return &CommandResult{
+			Messages: []string{
+				"It is too dark to see anything.",
+			},
 		}
 	}
 
@@ -2606,13 +2649,6 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 	// Look at a monster.
 	if _, monDef := e.findMonsterInRoom(player, target); monDef != nil {
 		return e.examineMonster(monDef)
-	}
-
-	room := e.rooms[player.RoomNumber]
-	if room == nil {
-		return &CommandResult{
-			Messages: []string{"You see nothing."},
-		}
 	}
 
 	// Check IN / ON / UNDER / BEHIND prefixes.
@@ -2644,7 +2680,6 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 
 	// Search room items.
 	for _, ri := range room.Items {
-		// Don't let contained items appear as ordinary room objects.
 		if ri.IsPut {
 			continue
 		}
@@ -2706,7 +2741,6 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 					continue
 				}
 
-				// Count the item's volume toward the container's capacity.
 				usedVolume += childDef.Volume
 
 				if childDef.Type == "MONEY" {
@@ -2743,7 +2777,11 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			if itemDef.Interior > 0 {
 				msgs = append(
 					msgs,
-					fmt.Sprintf("Capacity: %d/%d", usedVolume, itemDef.Interior),
+					fmt.Sprintf(
+						"Capacity: %d/%d",
+						usedVolume,
+						itemDef.Interior,
+					),
 				)
 			}
 
@@ -5278,6 +5316,7 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			Val3:      ii.Val3,
 			Val4:      ii.Val4,
 			Val5:      ii.Val5,
+			State:     ii.State,
 		}
 
 		sc := e.RunPreverbScripts(
@@ -5539,6 +5578,13 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 		fmt.Sprintf("Current Attack Modifier: %d [%s]", atkRating, stanceLabel),
 		fmt.Sprintf("Current Defend Modifier: %d", defRating),
 	)
+
+	//Room brightness modifiers
+	room := e.rooms[player.RoomNumber]
+
+	if visStatus := e.visibilityStatus(player, room); visStatus != "" {
+		msgs = append(msgs, visStatus)
+	}
 
 	// Height/Weight/Load
 	heightFeet := player.Height / 12
@@ -10784,6 +10830,22 @@ func (e *GameEngine) roomHasLightSource(roomNum int) bool {
 		}
 	}
 
+	// Light sources lying in the room.
+	room := e.rooms[roomNum]
+	if room != nil {
+		for _, item := range room.Items {
+			def := e.items[item.Archetype]
+			if def == nil {
+				continue
+			}
+
+			if containsFlag(def.Flags, "LIGHTABLE") &&
+				item.State == "LIT" {
+				return true
+			}
+		}
+	}
+
 	return false
 }
 
@@ -10810,6 +10872,11 @@ func (e *GameEngine) roomVisibility(player *Player, room *gameworld.Room) Visibi
 
 	// Racial dark vision
 	if playerCanSeeInDark(player) {
+		return VisibilityClear
+	}
+
+	// Personal night vision  PARTIAL_DARKNESS
+	if player != nil && player.HasStatEffect(NightVisionBuff) {
 		return VisibilityClear
 	}
 
@@ -10842,6 +10909,22 @@ func (e *GameEngine) roomVisibility(player *Player, room *gameworld.Room) Visibi
 	}
 }
 
+func (p *Player) HasStatEffect(stat StatID) bool {
+	now := time.Now()
+
+	for _, effect := range p.ActiveStatEffects {
+		if effect.Stat != stat {
+			continue
+		}
+
+		if effect.Permanent || effect.ExpiresAt.After(now) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (e *GameEngine) visibilityCombatModifier(player *Player, RoomNumber int) int {
 
 	room := e.rooms[RoomNumber]
@@ -10858,5 +10941,36 @@ func (e *GameEngine) visibilityCombatModifier(player *Player, RoomNumber int) in
 
 	default:
 		return 0
+	}
+}
+
+func (e *GameEngine) visibilityStatus(player *Player, room *gameworld.Room) string {
+	if room == nil {
+		return ""
+	}
+
+	mod := e.visibilityCombatModifier(player, room.Number)
+
+	switch e.roomVisibility(player, room) {
+	case VisibilityDark:
+		return fmt.Sprintf(
+			"Visibility: Darkness (%d attack, %d defense)",
+			mod, mod,
+		)
+
+	case VisibilityPartial:
+		return fmt.Sprintf(
+			"Visibility: Partial darkness (%d attack, %d defense)",
+			mod, mod,
+		)
+
+	case VisibilityLimited:
+		return fmt.Sprintf(
+			"Visibility: Limited vision (%d attack, %d defense)",
+			mod, mod,
+		)
+
+	default:
+		return ""
 	}
 }
