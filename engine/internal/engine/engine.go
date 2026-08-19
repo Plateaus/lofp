@@ -8772,7 +8772,7 @@ func (e *GameEngine) doPositionWithScripts(ctx context.Context, player *Player, 
 	if room != nil {
 		verbUpper := strings.ToUpper(verb)
 		for _, block := range room.Scripts {
-			if block.Type == "IFVERB" && len(block.Args) >= 2 {
+			if (block.Type == "IFVERB" || block.Type == "IFPREVERB") && len(block.Args) >= 2 {
 				if strings.ToUpper(block.Args[0]) == verbUpper && block.Args[1] == "-1" {
 					sc := &ScriptContext{Player: player, Room: room, Engine: e}
 					sc.execBlock(block)
