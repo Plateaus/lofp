@@ -144,10 +144,12 @@ type GameEngine struct {
 	seasonalRooms        map[string][]gameworld.Room        // per-season room overrides
 	currentSeason        string                             // current active season key
 	cevents              []gameworld.CEvent
+	baseForageDefs       []gameworld.ForageDef
 	forageDefs           []gameworld.ForageDef
-	PVals                map[int]int     // persistent global values
-	NamedVars            map[string]int  // VARIABLE-defined global named variables (DANWATER, etc.)
-	namedVarNames        map[string]bool // set of valid named variable names
+	seasonalForageDefs   map[string][]gameworld.ForageDef // per-season forage values
+	PVals                map[int]int                      // persistent global values
+	NamedVars            map[string]int                   // VARIABLE-defined global named variables (DANWATER, etc.)
+	namedVarNames        map[string]bool                  // set of valid named variable names
 	Events               *EventBus
 	Banner               string // active login banner; in-memory so it works even if MongoDB is down
 	lastAssistName       string // last player who used ASSIST (for @answer)
@@ -520,6 +522,8 @@ func NewGameEngine(db *mongo.Database, parsed *gameworld.ParsedData) *GameEngine
 
 	// Load forage definitions
 	e.forageDefs = parsed.ForageDefs
+	e.baseForageDefs = e.forageDefs
+	e.seasonalForageDefs = parsed.SeasonalForageDefs
 
 	// Initialize event bus for admin monitoring
 	e.Events = NewEventBus()
@@ -534,6 +538,7 @@ func NewGameEngine(db *mongo.Database, parsed *gameworld.ParsedData) *GameEngine
 	e.seasonalRooms = parsed.SeasonalRooms
 	e.currentSeason = GameSeason()
 	e.applySeasonalRooms()
+	e.forageDefs = e.buildActiveForageDefs()
 	e.monsterLists = e.buildActiveMonsterLists()
 	count := e.monsterMgr.SpawnInitialMonsters(e.monsterLists, e.monsters)
 	log.Printf("Season: %s (%s). Base MLISTs: %d, Seasonal: %d, Total: %d",
@@ -2243,6 +2248,8 @@ func (e *GameEngine) CheckSeasonChange() {
 
 	// Apply seasonal room overrides
 	e.applySeasonalRooms()
+	//applies base forage with seasonal forage
+	e.forageDefs = e.buildActiveForageDefs()
 
 	log.Printf("Season changed: %s -> %s. Active MLISTs: %d", oldSeason, newSeason, len(e.monsterLists))
 	e.Events.Publish("time", fmt.Sprintf("The season has changed to %s.", SeasonName()))
@@ -2257,6 +2264,37 @@ func (e *GameEngine) CheckSeasonChange() {
 	if msg, ok := seasonMessages[newSeason]; ok {
 		e.broadcastOutdoor(msg)
 	}
+}
+
+// buildActiveForageDefs combines base FORAGEDEFs with the current season's FORAGEDEFs.
+func (e *GameEngine) buildActiveForageDefs() []gameworld.ForageDef {
+
+	active := make([]gameworld.ForageDef, len(e.baseForageDefs))
+
+	copy(active, e.baseForageDefs)
+
+	seasonal := e.seasonalForageDefs[e.currentSeason]
+
+	for _, sdef := range seasonal {
+		replaced := false
+
+		for i, def := range active {
+			if def.Terrain == sdef.Terrain &&
+				def.ItemNum == sdef.ItemNum &&
+				def.AdjNum == sdef.AdjNum {
+
+				active[i] = sdef
+				replaced = true
+				break
+			}
+		}
+
+		if !replaced {
+			active = append(active, sdef)
+		}
+	}
+
+	return active
 }
 
 // applySeasonalRooms applies seasonal room overrides for the current season.

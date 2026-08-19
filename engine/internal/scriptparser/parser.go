@@ -27,6 +27,7 @@ type ParseResult struct {
 	CEvents              []gameworld.CEvent
 	MoneyDefs            []gameworld.MoneyDef
 	ForageDefs           []gameworld.ForageDef
+	SeasonalForageDefs   map[string][]gameworld.ForageDef
 	MineDefs             []gameworld.MineDef
 	StartRoom            int
 	BumpRoom             int
@@ -105,11 +106,16 @@ func ParseConfig(configPath string) (*ParseResult, error) {
 				if result.SeasonalRooms == nil {
 					result.SeasonalRooms = make(map[string][]gameworld.Room)
 				}
+				if result.SeasonalForageDefs == nil {
+					result.SeasonalForageDefs = make(map[string][]gameworld.ForageDef)
+				}
 				result.SeasonalMonsterLists[cmd] = append(result.SeasonalMonsterLists[cmd], seasonResult.MonsterLists...)
 				result.SeasonalRooms[cmd] = append(result.SeasonalRooms[cmd], seasonResult.Rooms...)
+				result.SeasonalForageDefs[cmd] = append(result.SeasonalForageDefs[cmd], seasonResult.ForageDefs...)
 				// Monsters/items/etc from seasonal scripts go into the main collections
 				result.Monsters = append(result.Monsters, seasonResult.Monsters...)
 				result.Items = append(result.Items, seasonResult.Items...)
+
 			}
 		}
 	}
@@ -168,6 +174,7 @@ func deduplicateRooms(rooms []gameworld.Room) []gameworld.Room {
 
 func parseScriptFile(path string, result *ParseResult) error {
 	path = resolveFileCaseInsensitive(path)
+
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -175,23 +182,53 @@ func parseScriptFile(path string, result *ParseResult) error {
 	defer f.Close()
 
 	filename := filepath.Base(path)
+
 	var lines []string
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	// Give Scanner plenty of room for unusually long script lines.
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
+
 	if err := scanner.Err(); err != nil {
-		return err
+		return fmt.Errorf(
+			"scan %s stopped after %d lines: %w",
+			filename,
+			len(lines),
+			err,
+		)
 	}
 
+	fmt.Printf(
+		"\n===== PARSING %s: %d lines =====\n",
+		filename,
+		len(lines),
+	)
+
+	// Temporary: dump the entire file as Scanner actually read it.
+	/*
+		if strings.EqualFold(filename, "AUTOUT.SCR") {
+			for i, line := range lines {
+				fmt.Printf(
+					"AUTOUT RAW %04d: %q\n",
+					i+1,
+					line,
+				)
+			}
+		}
+	*/
 	p := &fileParser{
 		lines:    lines,
 		pos:      0,
 		filename: filename,
 		result:   result,
 	}
+
 	p.parse()
+
 	return nil
 }
 
@@ -227,6 +264,17 @@ func (p *fileParser) parse() {
 		fields := strings.Fields(line)
 		cmd := strings.ToUpper(fields[0])
 
+		/*  testing forage loads
+		if strings.Contains(strings.ToUpper(line), "FORAGEDEF") {
+			fmt.Printf(
+				"FORAGE RAW: file=%s pos=%d line=%q fields=%v\n",
+				p.filename,
+				p.pos,
+				line,
+				fields,
+			)
+		}
+		*/
 		switch cmd {
 		case "NUMBER":
 			p.parseRoom(fields)
@@ -295,17 +343,33 @@ func (p *fileParser) parse() {
 			}
 			p.pos++
 		case "FORAGEDEF":
-			if len(fields) >= 7 {
+
+			if len(fields) >= 6 {
 				terrain := strings.ToUpper(fields[1])
 				itemNum, _ := strconv.Atoi(fields[2])
 				adjNum, _ := strconv.Atoi(fields[3])
 				ratio, _ := strconv.Atoi(fields[4])
 				v2, _ := strconv.Atoi(fields[5])
-				v5, _ := strconv.Atoi(fields[6])
-				p.result.ForageDefs = append(p.result.ForageDefs, gameworld.ForageDef{
-					Terrain: terrain, ItemNum: itemNum, AdjNum: adjNum, Ratio: ratio, Val2: v2, Val5: v5,
-				})
+
+				v5 := 0
+				if len(fields) >= 7 {
+					v5, _ = strconv.Atoi(fields[6])
+				}
+
+				p.result.ForageDefs = append(
+					p.result.ForageDefs,
+					gameworld.ForageDef{
+						Terrain: terrain,
+						ItemNum: itemNum,
+						AdjNum:  adjNum,
+						Ratio:   ratio,
+						Val2:    v2,
+						Val5:    v5,
+					},
+				)
+
 			}
+
 			p.pos++
 		case "MINDEF":
 			if len(fields) >= 6 {
@@ -349,7 +413,24 @@ func (p *fileParser) parseRoom(fields []string) {
 		cmd := strings.ToUpper(fields[0])
 
 		// A new NUMBER or INUMBER or MNUMBER starts a new block
-		if cmd == "NUMBER" || cmd == "INUMBER" || cmd == "MNUMBER" {
+		//	if cmd == "NUMBER" || cmd == "INUMBER" || cmd == "MNUMBER" {
+		//		break
+		//	}
+
+		// A top-level definition ends the current room block.
+		// Don't advance p.pos — parse() needs to process this line.
+		if cmd == "NUMBER" ||
+			cmd == "INUMBER" ||
+			cmd == "MNUMBER" ||
+			cmd == "REGIONDEF" ||
+			cmd == "FORAGEDEF" ||
+			cmd == "MINDEF" ||
+			cmd == "MLIST" ||
+			cmd == "MONEYDEF" ||
+			cmd == "NOUNDEF" ||
+			cmd == "ADJDEF" ||
+			cmd == "MACRO" ||
+			cmd == "MADJDEF" {
 			break
 		}
 

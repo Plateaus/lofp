@@ -778,73 +778,163 @@ func (e *GameEngine) doRepair(ctx context.Context, player *Player, args []string
 }
 
 // ---- FORAGING ----
-
 func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandResult {
+
+	// Check existing roundtime.
+	if time.Now().Before(player.RoundTimeExpiry) {
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %.0f seconds...]", remaining),
+			},
+		}
+	}
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
-		return &CommandResult{Messages: []string{"You can't forage here."}}
+		return &CommandResult{
+			Messages: []string{"You can't forage here."},
+		}
 	}
 
 	terrain := room.Terrain
-	switch terrain {
-	case "FOREST", "MOUNTAIN", "PLAIN", "SWAMP", "JUNGLE":
-		// OK
-	default:
-		return &CommandResult{Messages: []string{"There is nothing to forage here."}}
+
+	hasForage := false
+	//checks if youre in a valid foraging area
+	for _, def := range e.forageDefs {
+		if strings.EqualFold(def.Terrain, terrain) {
+			hasForage = true
+			break
+		}
 	}
 
-	// Check for forage definitions matching this terrain
+	if !hasForage {
+		return &CommandResult{
+			Messages: []string{"There is nothing to forage here."},
+		}
+	}
+	// Find FORAGEDEF entries matching this terrain.
 	var candidates []gameworld.ForageDef
+
 	for _, fd := range e.forageDefs {
 		if strings.EqualFold(fd.Terrain, terrain) {
 			candidates = append(candidates, fd)
 		}
 	}
 
-	// If no ForageDefs loaded, use generic fallback
+	// Every valid forage attempt takes 20 seconds.
+	rtSec := 20
+	player.RoundTimeExpiry = time.Now().Add(time.Duration(rtSec) * time.Second)
+
+	// No real forage table for this terrain: use generic fallback.
 	if len(candidates) == 0 {
-		return e.doForageFallback(ctx, player, terrain)
+		result := e.doForageFallback(ctx, player, terrain)
+		result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSec))
+
+		return result
 	}
 
-	// Weighted random selection
-	totalRatio := 0
-	for _, fd := range candidates {
-		totalRatio += fd.Ratio
-	}
-	if totalRatio <= 0 {
-		return e.doForageFallback(ctx, player, terrain)
-	}
+	// 30% chance of finding nothing.
+	if rand.Intn(100) < 30 {
+		e.SavePlayer(ctx, player)
 
-	roll := rand.Intn(totalRatio)
-	cumulative := 0
-	for _, fd := range candidates {
-		cumulative += fd.Ratio
-		if roll < cumulative {
-			itemDef := e.items[fd.ItemNum]
-			if itemDef == nil {
-				continue
-			}
-			item := InventoryItem{
-				Archetype: fd.ItemNum,
-				Val2:      fd.Val2,
-				Val5:      fd.Val5,
-			}
-			if fd.AdjNum > 0 {
-				item.Adj1 = fd.AdjNum
-			}
-			player.Inventory = append(player.Inventory, item)
-			e.SavePlayer(ctx, player)
-
-			itemName := e.formatItemName(itemDef, item.Adj1, 0, 0)
-			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You search the area and find some %s!", itemName)},
-				RoomBroadcast: []string{fmt.Sprintf("%s forages in the area.", player.FirstName)},
-				PlayerState:   player,
-			}
+		return &CommandResult{
+			Messages: []string{
+				"You search the area but find nothing useful.",
+				fmt.Sprintf("[Round: %d sec]", rtSec),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s forages in the area.", player.FirstName),
+			},
+			PlayerState: player,
 		}
 	}
 
-	return &CommandResult{Messages: []string{"You search but find nothing useful."}}
+	// Calculate total weight of all possible forage results.
+	totalRatio := 0
+
+	for _, fd := range candidates {
+		if fd.Ratio > 0 {
+			totalRatio += fd.Ratio
+		}
+	}
+
+	// Broken/empty forage table: fall back instead.
+	if totalRatio <= 0 {
+		result := e.doForageFallback(ctx, player, terrain)
+		result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSec))
+		return result
+	}
+
+	// Weighted random selection.
+	roll := rand.Intn(totalRatio)
+	cumulative := 0
+
+	for _, fd := range candidates {
+		if fd.Ratio <= 0 {
+			continue
+		}
+
+		cumulative += fd.Ratio
+
+		if roll >= cumulative {
+			continue
+		}
+
+		itemDef := e.items[fd.ItemNum]
+		if itemDef == nil {
+			continue
+		}
+
+		item := InventoryItem{
+			Archetype: fd.ItemNum,
+			Val2:      fd.Val2,
+			Val5:      fd.Val5,
+		}
+
+		if fd.AdjNum > 0 {
+			item.Adj1 = fd.AdjNum
+		}
+
+		player.Inventory = append(player.Inventory, item)
+		e.SavePlayer(ctx, player)
+
+		itemName := e.formatItemName(
+			itemDef,
+			item.Adj1,
+			item.Adj2,
+			item.Adj3,
+		)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You search the area and find %s!",
+					itemName,
+				),
+
+				fmt.Sprintf("[Round: %d sec]", rtSec),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s forages in the area.", player.FirstName),
+			},
+			PlayerState: player,
+		}
+	}
+
+	// We shouldn't normally reach this, but handle bad item references safely.
+	e.SavePlayer(ctx, player)
+
+	return &CommandResult{
+		Messages: []string{
+			"You search the area but find nothing useful.",
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf("%s forages in the area.", player.FirstName),
+		},
+		PlayerState: player,
+	}
 }
 
 // doForageFallback provides generic foraging when no ForageDefs are loaded.
