@@ -5,7 +5,6 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jonradoff/lofp/internal/gameworld"
 )
@@ -1722,13 +1721,14 @@ func (sc *ScriptContext) expandScriptText(text string) string {
 	}
 	return text
 }
+
 func (sc *ScriptContext) doSpell(args []string) {
 	if len(args) == 0 {
 		return
 	}
 
-	spellID, err := strconv.Atoi(args[0])
-	if err != nil {
+	spellID := sc.resolveNumericArg(args[0])
+	if spellID <= 0 {
 		return
 	}
 
@@ -1737,32 +1737,15 @@ func (sc *ScriptContext) doSpell(args []string) {
 		return
 	}
 
-	switch spell.Effect {
-	case "buff":
-		var result *CommandResult
+	result := sc.Engine.castStatusSpell(
+		sc.Player,
+		spell,
+		nil,
+		false,
+	)
 
-		if len(args) >= 2 {
-			duration, err := strconv.Atoi(args[1])
-			if err != nil {
-				return
-			}
-
-			spell.Duration = time.Duration(duration) * time.Minute
-
-			result = sc.Engine.castBuffSpell(
-				sc.Player,
-				spell,
-				nil,
-			)
-		} else {
-			result = sc.Engine.castBuffSpell(
-				sc.Player,
-				spell,
-				nil,
-			)
-		}
-
-		_ = result
-		// instant heal/damage/etc. can use their existing handlers here later
+	if result != nil {
+		sc.Messages = append(sc.Messages, result.Messages...)
+		sc.RoomMsgs = append(sc.RoomMsgs, result.RoomBroadcast...)
 	}
 }

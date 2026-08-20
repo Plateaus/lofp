@@ -518,3 +518,18 @@ func (p *Player) HasItem(archetype int, adj int) bool {
 
 	return false
 }
+
+func (p *Player) HasTelepathy() bool {
+	if p.TelepathyActive {
+		return true
+	}
+
+	now := time.Now()
+	for _, effect := range p.ActiveStatEffects {
+		if effect.EffectID == 403 && effect.ExpiresAt.After(now) {
+			return true
+		}
+	}
+
+	return false
+}

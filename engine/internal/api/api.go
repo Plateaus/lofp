@@ -950,7 +950,7 @@ func (s *Server) dispatchCommandResult(session *Session, result *engine.CommandR
 			if sess.Player == nil || sess.Player.FirstName == result.TelepathySender {
 				continue
 			}
-			if sess.Player.TelepathyActive {
+			if sess.Player.HasTelepathy() {
 				s.sendBroadcast(sess, telepathyLines)
 			}
 		}

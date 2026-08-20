@@ -753,6 +753,10 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		fatCost := 1
 		if weaponDef != nil && weaponDef.Weight > 5 {
 			fatCost = weaponDef.Weight / 7 // reduced from /5 to cap heavy weapon fatigue
+			if fatCost < 1 {
+				fatCost = 1
+			}
+
 			if fatCost > 3 {
 				fatCost = 3
 			}

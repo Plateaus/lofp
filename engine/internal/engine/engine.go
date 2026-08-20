@@ -2068,33 +2068,59 @@ func resolveVerb(input string) string {
 
 func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *CommandResult {
 	if player.Immobilized {
-		return &CommandResult{Messages: []string{"You are immobilized and cannot move!"}}
+		return &CommandResult{
+			Messages: []string{"You are immobilized and cannot move!"},
+		}
 	}
 
 	if player.CombatTarget != nil {
-		return &CommandResult{Messages: []string{"You are engaged in combat! Try FLEE."}}
+		return &CommandResult{
+			Messages: []string{"You are engaged in combat! Try FLEE."},
+		}
 	}
-	// Normal movement reveals hidden players (but not Ethereal Projection — that's psi-maintained)
+
+	// Normal movement reveals hidden players
+	// (but not Ethereal Projection — that's psi-maintained).
 	if player.Hidden && !player.EtherealActive {
 		player.Hidden = false
 	}
-	if player.Position != 0 && player.Position != 4 { // 4 = flying, can move
-		posNames := map[int]string{1: "sitting", 2: "laying down", 3: "kneeling"}
+
+	if player.Position != 0 && player.Position != 4 { // 4 = flying
+		posNames := map[int]string{
+			1: "sitting",
+			2: "laying down",
+			3: "kneeling",
+		}
+
 		posName := posNames[player.Position]
 		if posName == "" {
 			posName = "not standing"
 		}
-		return &CommandResult{Messages: []string{fmt.Sprintf("You can't move while %s! Try STANDing first.", posName)}}
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You can't move while %s! Try STANDing first.",
+					posName,
+				),
+			},
+		}
 	}
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
-		return &CommandResult{Error: "You are nowhere!"}
+		return &CommandResult{
+			Error: "You are nowhere!",
+		}
 	}
 
-	// Also check ABOVE/BELOW for U/D
+	// ------------------------------------------------------------
+	// Resolve destination.
+	// ------------------------------------------------------------
+
 	destNum, ok := room.Exits[dir]
 	requiresFlight := false
+
 	if !ok {
 		if dir == "U" {
 			destNum, ok = room.Exits["ABOVE"]
@@ -2105,91 +2131,223 @@ func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *Co
 			destNum, ok = room.Exits["BELOW"]
 		}
 	}
+
 	if !ok {
-		return &CommandResult{Messages: []string{"You can't go that way."}}
+		return &CommandResult{
+			Messages: []string{"You can't go that way."},
+		}
 	}
+
 	if requiresFlight && !player.IsFlying() {
-		return &CommandResult{Messages: []string{"You leap into the air but come crashing back down. You need to be able to fly to go that way."}}
+		return &CommandResult{
+			Messages: []string{
+				"You leap into the air but come crashing back down. You need to be able to fly to go that way.",
+			},
+		}
 	}
 
 	dest := e.rooms[destNum]
 	if dest == nil {
-		return &CommandResult{Messages: []string{"That way seems to lead nowhere."}}
+		return &CommandResult{
+			Messages: []string{"That way seems to lead nowhere."},
+		}
 	}
 
 	oldRoom := player.RoomNumber
+
 	dirNames := map[string]string{
-		"N": "north", "S": "south", "E": "east", "W": "west",
-		"NE": "northeast", "NW": "northwest", "SE": "southeast", "SW": "southwest",
-		"U": "up", "D": "down", "O": "out", "ABOVE": "up", "BELOW": "down",
+		"N":     "north",
+		"S":     "south",
+		"E":     "east",
+		"W":     "west",
+		"NE":    "northeast",
+		"NW":    "northwest",
+		"SE":    "southeast",
+		"SW":    "southwest",
+		"U":     "up",
+		"D":     "down",
+		"O":     "out",
+		"ABOVE": "up",
+		"BELOW": "down",
 	}
+
 	dirName := dirNames[dir]
 	if dirName == "" {
 		dirName = strings.ToLower(dir)
 	}
 
+	// ------------------------------------------------------------
+	// Move the leader.
+	// ------------------------------------------------------------
+
 	player.RoomNumber = destNum
-	player.Submitting = false // moving clears submit state
+	player.Submitting = false
 
-	//e.disengageCombat(player) // moving clears combat
+	e.SavePlayer(ctx, player)
 
-	// Moving away from leader breaks follow
+	// ------------------------------------------------------------
+	// If this player is following somebody, moving away from the
+	// leader breaks follow.
+	// ------------------------------------------------------------
+
 	if player.Following != "" {
 		leaderHere := false
+
 		if e.sessions != nil {
 			for _, p := range e.sessions.OnlinePlayers() {
-				if p.FirstName == player.Following && p.RoomNumber == destNum {
+				if p.FirstName == player.Following &&
+					p.RoomNumber == destNum {
+
 					leaderHere = true
 					break
 				}
 			}
 		}
+
 		if !leaderHere {
 			e.removeFromGroup(player)
 		}
 	}
-	e.SavePlayer(ctx, player)
-	result := e.doLook(player)
-	result.OldRoom = oldRoom
-	// Invisible GMs move silently — no exit/entry echoes
-	if !player.GMInvis {
-		if player.ExitEcho != "" {
-			result.OldRoomMsg = []string{player.ExitEcho}
-		} else {
-			result.OldRoomMsg = []string{fmt.Sprintf("%s goes %s.", player.FirstName, dirName)}
-		}
-		if player.EntryEcho != "" {
-			result.RoomBroadcast = []string{player.EntryEcho}
-		} else {
-			result.RoomBroadcast = []string{fmt.Sprintf("%s arrives.", player.FirstName)}
+
+	// ------------------------------------------------------------
+	// Move ALL followers before doing any LOOK.
+	//
+	// This is important because a follower may be carrying the
+	// group's light source. roomVisibility() needs everybody to
+	// already be in the destination.
+	// ------------------------------------------------------------
+
+	var movedFollowers []*Player
+
+	if player.IsGroupLeader &&
+		len(player.GroupMembers) > 0 &&
+		e.sessions != nil {
+
+		for _, memberName := range player.GroupMembers {
+			for _, p := range e.sessions.OnlinePlayers() {
+				if p.FirstName != memberName {
+					continue
+				}
+
+				if p.RoomNumber != oldRoom {
+					continue
+				}
+
+				if p.Dead {
+					continue
+				}
+
+				p.RoomNumber = destNum
+				p.Submitting = false
+
+				e.disengageCombat(p)
+				e.SavePlayer(ctx, p)
+
+				movedFollowers = append(movedFollowers, p)
+
+				break
+			}
 		}
 	}
 
-	// Run IFENTRY scripts for the destination room
-	e.applyEntryScripts(ctx, player, dest, result)
+	// ------------------------------------------------------------
+	// NOW generate the leader's room look.
+	//
+	// At this point all followers — and their light sources — are
+	// physically in the destination room.
+	// ------------------------------------------------------------
 
-	// Group movement: if leader has followers, move them too
-	if player.IsGroupLeader && len(player.GroupMembers) > 0 && e.sessions != nil {
-		groupDir := dirName
-		for _, memberName := range player.GroupMembers {
-			for _, p := range e.sessions.OnlinePlayers() {
-				if p.FirstName == memberName && p.RoomNumber == oldRoom && !p.Dead {
-					p.RoomNumber = destNum
-					p.Submitting = false
-					e.disengageCombat(p)
-					e.SavePlayer(ctx, p)
-					// Send the follower a look at the new room
-					if e.sendToPlayer != nil {
-						followLook := e.doLook(p)
-						e.sendToPlayer(p.FirstName, followLook.Messages)
-					}
-					e.applyEntryScripts(ctx, p, dest, &CommandResult{})
-					break
-				}
+	result := e.doLook(player)
+	result.OldRoom = oldRoom
+
+	// ------------------------------------------------------------
+	// Movement messaging.
+	// ------------------------------------------------------------
+
+	if !player.GMInvis {
+		if player.ExitEcho != "" {
+			result.OldRoomMsg = []string{
+				player.ExitEcho,
+			}
+		} else {
+			result.OldRoomMsg = []string{
+				fmt.Sprintf(
+					"%s goes %s.",
+					player.FirstName,
+					dirName,
+				),
 			}
 		}
-		result.OldRoomMsg = append(result.OldRoomMsg, fmt.Sprintf("%s's group goes %s.", player.FirstName, groupDir))
-		result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s's group arrives.", player.FirstName))
+
+		if player.EntryEcho != "" {
+			result.RoomBroadcast = []string{
+				player.EntryEcho,
+			}
+		} else {
+			result.RoomBroadcast = []string{
+				fmt.Sprintf(
+					"%s arrives.",
+					player.FirstName,
+				),
+			}
+		}
+	}
+
+	if len(movedFollowers) > 0 {
+		result.OldRoomMsg = append(
+			result.OldRoomMsg,
+			fmt.Sprintf(
+				"%s's group goes %s.",
+				player.FirstName,
+				dirName,
+			),
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			fmt.Sprintf(
+				"%s's group arrives.",
+				player.FirstName,
+			),
+		)
+	}
+
+	// ------------------------------------------------------------
+	// Send followers their room look.
+	//
+	// Again, everyone has already moved, so shared lighting works
+	// for them too.
+	// ------------------------------------------------------------
+
+	for _, p := range movedFollowers {
+		if e.sendToPlayer != nil {
+			followLook := e.doLook(p)
+
+			e.sendToPlayer(
+				p.FirstName,
+				followLook.Messages,
+			)
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Run entry scripts after movement/look state is settled.
+	// ------------------------------------------------------------
+
+	e.applyEntryScripts(
+		ctx,
+		player,
+		dest,
+		result,
+	)
+
+	for _, p := range movedFollowers {
+		e.applyEntryScripts(
+			ctx,
+			p,
+			dest,
+			&CommandResult{},
+		)
 	}
 
 	return result
@@ -2955,6 +3113,10 @@ func (e *GameEngine) findPlayerInRoom(self *Player, target string) *Player {
 	if e.sessions == nil {
 		return nil
 	}
+
+	//normalize target because were using lowercase
+	target = strings.ToLower(strings.TrimSpace(target))
+
 	for _, p := range e.sessions.OnlinePlayers() {
 		if p.RoomNumber != self.RoomNumber {
 			continue
@@ -3259,6 +3421,7 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 
 	if dir, ok := directionAliases[target]; ok {
 		if destNum, exists := room.Exits[dir]; exists {
+
 			dest := e.rooms[destNum]
 			if dest == nil {
 				return &CommandResult{
@@ -3268,21 +3431,115 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 
 			oldRoom := player.RoomNumber
 
+			// Move leader first.
 			player.RoomNumber = destNum
+			player.Submitting = false
+			e.disengageCombat(player)
 			e.SavePlayer(ctx, player)
+
+			// ----------------------------------------------------
+			// Move ALL followers before generating anyone's LOOK.
+			//
+			// This matters for shared light sources:
+			// if a follower has a lit torch, they need to already
+			// be in the destination when roomVisibility() runs.
+			// ----------------------------------------------------
+
+			var movedFollowers []*Player
+
+			if player.IsGroupLeader &&
+				len(player.GroupMembers) > 0 &&
+				e.sessions != nil {
+
+				for _, memberName := range player.GroupMembers {
+
+					for _, p := range e.sessions.OnlinePlayers() {
+
+						if p.FirstName != memberName {
+							continue
+						}
+
+						if p.RoomNumber != oldRoom {
+							continue
+						}
+
+						if p.Dead {
+							continue
+						}
+
+						p.RoomNumber = destNum
+						p.Submitting = false
+						e.disengageCombat(p)
+						e.SavePlayer(ctx, p)
+
+						movedFollowers = append(movedFollowers, p)
+
+						break
+					}
+				}
+			}
+
+			// ----------------------------------------------------
+			// Everyone is now physically in the destination.
+			// Leader LOOK can correctly detect group light.
+			// ----------------------------------------------------
 
 			result := e.doLook(player)
 
 			result.OldRoom = oldRoom
+
 			result.OldRoomMsg = []string{
 				fmt.Sprintf("%s leaves.", player.FirstName),
 			}
+
 			result.RoomBroadcast = append(
 				result.RoomBroadcast,
 				fmt.Sprintf("%s arrives.", player.FirstName),
 			)
 
-			e.applyEntryScripts(ctx, player, dest, result)
+			// Group movement messages.
+			if len(movedFollowers) > 0 {
+				result.OldRoomMsg = append(
+					result.OldRoomMsg,
+					fmt.Sprintf("%s's group leaves.", player.FirstName),
+				)
+
+				result.RoomBroadcast = append(
+					result.RoomBroadcast,
+					fmt.Sprintf("%s's group arrives.", player.FirstName),
+				)
+			}
+
+			// ----------------------------------------------------
+			// Now send followers their room LOOKs.
+			// Everyone has moved, so they also see shared light.
+			// ----------------------------------------------------
+
+			for _, p := range movedFollowers {
+
+				if e.sendToPlayer != nil {
+					followLook := e.doLook(p)
+					e.sendToPlayer(
+						p.FirstName,
+						followLook.Messages,
+					)
+				}
+
+				e.applyEntryScripts(
+					ctx,
+					p,
+					dest,
+					&CommandResult{},
+				)
+			}
+
+			// Leader entry scripts.
+			e.applyEntryScripts(
+				ctx,
+				player,
+				dest,
+				result,
+			)
 
 			return result
 		}
@@ -3296,6 +3553,7 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 	// ------------------------------------------------------------
 
 	for i, ri := range room.Items {
+
 		if ri.IsPut {
 			continue
 		}
@@ -3311,6 +3569,7 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 		if !matchesTarget(name, target, e.getAdjName(ri.Adj1)) &&
 			!matchesTarget(name, target, e.getAdjName(ri.Adj2)) &&
 			!matchesTarget(name, target, e.getAdjName(ri.Adj3)) {
+
 			continue
 		}
 
@@ -3614,18 +3873,6 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 	portalName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
 	player.RoomNumber = destNum
 	e.SavePlayer(ctx, player)
-	lookResult := e.doLook(player)
-	result.Messages = append(result.Messages, lookResult.Messages...)
-	result.RoomName = lookResult.RoomName
-	result.RoomDesc = lookResult.RoomDesc
-	result.Exits = lookResult.Exits
-	result.Items = lookResult.Items
-	result.OldRoom = oldRoom
-	result.OldRoomMsg = []string{fmt.Sprintf("%s goes through %s.", player.FirstName, portalName)}
-	result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s arrives.", player.FirstName))
-
-	// Run IFENTRY scripts at destination
-	e.applyEntryScripts(ctx, player, dest, result)
 
 	// Group movement: if leader has followers, move them through the portal too
 	if player.IsGroupLeader && len(player.GroupMembers) > 0 && e.sessions != nil {
@@ -3648,6 +3895,19 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 		result.OldRoomMsg = append(result.OldRoomMsg, fmt.Sprintf("%s's group goes through %s.", player.FirstName, portalName))
 		result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s's group arrives.", player.FirstName))
 	}
+
+	lookResult := e.doLook(player)
+	result.Messages = append(result.Messages, lookResult.Messages...)
+	result.RoomName = lookResult.RoomName
+	result.RoomDesc = lookResult.RoomDesc
+	result.Exits = lookResult.Exits
+	result.Items = lookResult.Items
+	result.OldRoom = oldRoom
+	result.OldRoomMsg = []string{fmt.Sprintf("%s goes through %s.", player.FirstName, portalName)}
+	result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s arrives.", player.FirstName))
+
+	// Run IFENTRY scripts at destination
+	e.applyEntryScripts(ctx, player, dest, result)
 
 	return result
 }
@@ -7397,85 +7657,111 @@ func (e *GameEngine) doEat(ctx context.Context, player *Player, args []string) *
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Eat what?"}}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
+
 	for i, ii := range player.Inventory {
 		itemDef := e.items[ii.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
+		// Only edible items count for EAT or its ordinals.
 		if itemDef.Type != "FOOD" {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
+
+		matched :=
+			matchesTarget(name, target, e.getAdjName(ii.Adj1)) ||
+				matchesTarget(name, target, e.getAdjName(ii.Adj2)) ||
+				matchesTarget(name, target, e.getAdjName(ii.Adj3))
+
+		if !matched {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
+
+		// Run item scripts FIRST — they may set ITEMVAL3 based on adjective checks.
+		// e.g. thesnia leaf:
+		// IFVAR ITEMADJ3 = 397
+		//   EQUAL ITEMVAL3 403
+		// ENDIF
+		room := e.rooms[player.RoomNumber]
+
+		tempRI := gameworld.RoomItem{
+			Ref:       -1,
+			Archetype: ii.Archetype,
+			Adj1:      ii.Adj1,
+			Adj2:      ii.Adj2,
+			Adj3:      ii.Adj3,
+			Val1:      ii.Val1,
+			Val2:      ii.Val2,
+			Val3:      ii.Val3,
+			Val4:      ii.Val4,
+			Val5:      ii.Val5,
+		}
+
+		sc := e.RunItemScripts(player, room, &tempRI, itemDef)
+		sc2 := e.RunVerbScripts(player, room, "EAT", &tempRI, itemDef)
+
+		sc.Messages = append(sc.Messages, sc2.Messages...)
+
+		// Bite tracking: initialize Val2 from Parameter1 on first bite.
+		currentBites := ii.Val2
+		if currentBites == 0 && itemDef.Parameter1 > 0 {
+			currentBites = itemDef.Parameter1
+		}
+
+		var msgs []string
+
+		if currentBites <= 1 {
+			// Last bite (or single-bite food) — remove from inventory.
+			player.Inventory = append(
+				player.Inventory[:i],
+				player.Inventory[i+1:]...,
+			)
+
+			msgs = []string{
+				fmt.Sprintf("You finish eating %s.", fullName),
 			}
-			fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
+		} else {
+			// Decrement bites remaining.
+			newVal := currentBites - 1
+			player.Inventory[i].Val2 = newVal
 
-			// Run item scripts FIRST — they may set ITEMVAL3 based on adjective checks
-			// (e.g., thesnia leaf: IFVAR ITEMADJ3=397 → EQUAL ITEMVAL3 403)
-			room := e.rooms[player.RoomNumber]
-			tempRI := gameworld.RoomItem{Ref: -1, Archetype: ii.Archetype,
-				Adj1: ii.Adj1, Adj2: ii.Adj2, Adj3: ii.Adj3,
-				Val1: ii.Val1, Val2: ii.Val2, Val3: ii.Val3, Val4: ii.Val4, Val5: ii.Val5}
-			// Run all item-level scripts (IFVAR at root level + IFVERB EAT)
-			sc := e.RunItemScripts(player, room, &tempRI, itemDef)
-			sc2 := e.RunVerbScripts(player, room, "EAT", &tempRI, itemDef)
-			sc.Messages = append(sc.Messages, sc2.Messages...)
-			// Scripts may have modified tempRI.Val3
-			spellNum := tempRI.Val3
-
-			// Bite tracking: initialize Val2 from Parameter1 on first bite
-			currentBites := ii.Val2
-			if currentBites == 0 && itemDef.Parameter1 > 0 {
-				currentBites = itemDef.Parameter1
-			}
-			isFirstBite := (currentBites == 0 && itemDef.Parameter1 == 0) || (ii.Val2 == 0 && itemDef.Parameter1 > 0)
-
-			var msgs []string
-			if currentBites <= 1 {
-				// Last bite (or single-bite food) — remove from inventory
-				player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
-				msgs = []string{fmt.Sprintf("You finish eating %s.", fullName)}
-			} else {
-				// Decrement bites remaining
-				newVal := currentBites - 1
-				player.Inventory[i].Val2 = newVal
-				msgs = []string{fmt.Sprintf("You take a bite of %s. (%d bites remaining)", fullName, newVal)}
-			}
-
-			// Add any script ECHO messages
-			msgs = append(msgs, sc.Messages...)
-
-			// Spell effect fires on FIRST bite only
-			if isFirstBite {
-				if spellNum == 403 { // Mindlink
-					player.TelepathyActive = true
-					player.TelepathyExpiry = time.Now().Add(1 * time.Hour)
-					msgs = append(msgs, "You feel your mind open to the thoughts of others.")
-				} else if spellNum != 0 {
-					msgs = append(msgs, fmt.Sprintf("[Spell #%d effect coming soon.]", spellNum))
-				}
-			} else if spellNum != 0 {
-				msgs = append(msgs, fmt.Sprintf("[Spell #%d effect coming soon.]", spellNum))
-
-			}
-
-			e.SavePlayer(ctx, player)
-			return &CommandResult{
-				Messages:      msgs,
-				RoomBroadcast: []string{fmt.Sprintf("%s eats %s.", player.FirstName, fullName)},
-				PlayerState:   player,
+			msgs = []string{
+				fmt.Sprintf(
+					"You take a bite of %s. (%d bites remaining)",
+					fullName,
+					newVal,
+				),
 			}
 		}
+
+		// Add any script ECHO / SPELL messages.
+		msgs = append(msgs, sc.Messages...)
+
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages:      msgs,
+			RoomBroadcast: []string{fmt.Sprintf("%s eats %s.", player.FirstName, fullName)},
+			PlayerState:   player,
+		}
 	}
+
 	return &CommandResult{Messages: []string{"You don't have that."}}
 }
-
 func (e *GameEngine) doSpeech(ctx context.Context, player *Player, args []string, rawInput string) *CommandResult {
 	if len(args) == 0 {
 		if player.SpeechAdverb != "" {
@@ -7795,6 +8081,7 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 		// Spell effect fires on FIRST sip only
 		if isFirstSip && spellNum != 0 {
 			if spellNum == 403 {
+				//TODO:This needs to be cast 403  or put in script
 				player.TelepathyActive = true
 				player.TelepathyExpiry = time.Now().Add(1 * time.Hour)
 				msgs = append(msgs, "You feel your mind open to the thoughts of others.")
@@ -8983,7 +9270,7 @@ func (e *GameEngine) doThink(player *Player, rawInput string) *CommandResult {
 	if text == "" {
 		return &CommandResult{Messages: []string{"Think what?"}}
 	}
-	if !player.TelepathyActive {
+	if !player.HasTelepathy() {
 		return &CommandResult{Messages: []string{"You don't have telepathic ability right now."}}
 	}
 	return &CommandResult{

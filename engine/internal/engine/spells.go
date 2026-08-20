@@ -119,7 +119,7 @@ func init() {
 	gen := []SpellDef{
 		{ID: 400, Name: "Detect Magic", School: "General", Level: 1, ManaCost: 2, CastTime: 2, Effect: "utility"},
 		{ID: 401, Name: "Dispel Lesser Magic", School: "General", Level: 5, ManaCost: 8, CastTime: 3, Effect: "utility"},
-		{ID: 403, Name: "Mindlink", School: "General", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility", Duration: 45 * time.Minute},
+		{ID: 403, Name: "Mindlink", School: "General", Level: 9, ManaCost: 12, CastTime: 3, Effect: "buff", Family: "mind", Duration: 90 * time.Minute},
 		{ID: 405, Name: "See Hidden", School: "General", Level: 3, ManaCost: 5, CastTime: 3, Effect: "utility"},
 		{ID: 406, Name: "Dispel Invisibility", School: "General", Level: 8, ManaCost: 10, CastTime: 3, Effect: "utility"},
 		{ID: 407, Name: "Analyze Ore", School: "General", Level: 3, ManaCost: 4, CastTime: 3, Effect: "utility"},
@@ -426,9 +426,9 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	case "heal":
 		result = e.castHealSpell(ctx, player, spell, args)
 	case "defense": //todo: add defensive spell effects to player stats
-		result = e.castStatusSpell(player, spell, args)
+		result = e.castStatusSpell(player, spell, args, true)
 	case "buff":
-		result = e.castStatusSpell(player, spell, args)
+		result = e.castStatusSpell(player, spell, args, true)
 	default:
 		result.Messages = []string{fmt.Sprintf("You gesture and cast %s.", spell.Name)}
 		result.RoomBroadcast = []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)}
@@ -443,26 +443,67 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	return result
 }
 
-func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []string) *CommandResult {
+func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
+
+	// Default target is the caster.
+	target := player
+
+	// If arguments were supplied, resolve another player in the room.
+	if len(args) > 0 {
+		targetArgs := args
+
+		// Support: CAST ON BOB
+		if strings.EqualFold(targetArgs[0], "ON") {
+			targetArgs = targetArgs[1:]
+		}
+
+		if len(targetArgs) > 0 {
+			targetName := strings.Join(targetArgs, " ")
+
+			found := e.findPlayerInRoom(player, targetName)
+			if found == nil {
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf("You don't see '%s' here.", targetName),
+					},
+				}
+			}
+
+			target = found
+		}
+	}
 
 	duration := spell.Duration
 	if duration == 0 {
 		duration = 30 * time.Minute
 	}
 
-	if !prepareSpellFamilyEffect(player, spell) {
+	// Check existing effects on the TARGET, not the caster.
+	if !prepareSpellFamilyEffect(target, spell) {
+		if target == player {
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"A stronger %s spell is already affecting you.",
+						spell.Family,
+					),
+				},
+			}
+		}
+
 		return &CommandResult{
 			Messages: []string{
 				fmt.Sprintf(
-					"You gesture and cast %s, but a stronger %s spell is already affecting you.",
-					spell.Name,
+					"A stronger %s spell is already affecting %s.",
 					spell.Family,
+					target.FirstName,
 				),
 			},
 		}
 	}
 
-	player.ApplyStatEffect(
+	// Apply the actual status effect to the target.
+	target.ApplyStatEffect(
 		spell.ID,
 		EffectSourceSpell,
 		spell.StatusType,
@@ -470,19 +511,58 @@ func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []str
 		duration,
 	)
 
-	msg := spell.StatusMsg
-	if strings.Contains(msg, "%d") {
-		msg = fmt.Sprintf(msg, spell.DefBonus)
+	// Build the spell's status message.
+	statusMsg := spell.StatusMsg
+	if strings.Contains(statusMsg, "%d") {
+		statusMsg = fmt.Sprintf(statusMsg, spell.DefBonus)
 	}
 
-	return &CommandResult{
-		Messages: []string{
-			fmt.Sprintf("You gesture and cast %s. %s", spell.Name, msg),
-		},
-		RoomBroadcast: []string{
-			fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
-		},
+	result := &CommandResult{}
+
+	// Normal player casting.
+	if showCastMessage {
+		if target == player {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf("You gesture and cast %s.", spell.Name),
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s gestures and casts %s.",
+					player.FirstName,
+					spell.Name,
+				),
+			)
+		} else {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf(
+					"You gesture at %s and cast %s.",
+					target.FirstName,
+					spell.Name,
+				),
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s gestures at %s and casts %s.",
+					player.FirstName,
+					target.FirstName,
+					spell.Name,
+				),
+			)
+		}
 	}
+
+	// Effect message is useful whether cast normally or triggered by a script/item.
+	if statusMsg != "" {
+		result.Messages = append(result.Messages, statusMsg)
+	}
+
+	return result
 }
 
 func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []string, spectacular bool) *CommandResult {
@@ -630,7 +710,8 @@ func (e *GameEngine) castHealSpell(ctx context.Context, player *Player, spell *S
 	}
 }
 
-func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []string) *CommandResult {
+func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
+
 	msg := fmt.Sprintf("You gesture and cast %s.", spell.Name)
 
 	buffDuration := spell.Duration
@@ -652,6 +733,38 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 				fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
 			},
 		}
+	}
+
+	// Generic stat/status buff
+	if spell.StatusType != 0 {
+
+		player.ApplyStatEffect(
+			spell.ID,
+			EffectSourceSpell,
+			spell.StatusType,
+			spell.DefBonus,
+			buffDuration,
+		)
+
+		result := &CommandResult{}
+
+		if showCastMessage {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf("You gesture and cast %s.", spell.Name),
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+			)
+		}
+
+		if spell.StatusMsg != "" {
+			result.Messages = append(result.Messages, spell.StatusMsg)
+		}
+
+		return result
 	}
 
 	switch spell.ID {
@@ -683,26 +796,26 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 		}
 		return &CommandResult{Messages: []string{"You don't have a weapon matching that."}}
 
-	case 207, 208, 209: // Strength I-III
-		player.ApplyStatEffect(
-			spell.ID,
-			EffectSourceSpell,
-			StatStrength,
-			spell.DefBonus,
-			buffDuration,
-		)
+		/*case 207, 208, 209: // Strength I-III
+			player.ApplyStatEffect(
+				spell.ID,
+				EffectSourceSpell,
+				spell.StatusType,
+				spell.DefBonus,
+				buffDuration,
+			)
 
-		msg = fmt.Sprintf("You gesture and cast %s. Your strength increases! (+%d STR)", spell.Name, spell.DefBonus)
+			msg = fmt.Sprintf("You gesture and cast %s. Your strength increases! (+%d STR)", spell.Name, spell.DefBonus)
 
-	case 513, 514, 515: // Agility I-III
-		player.ApplyStatEffect(
-			spell.ID,
-			EffectSourceSpell,
-			StatAgility,
-			spell.DefBonus,
-			buffDuration,
-		)
-
+		case 513, 514, 515: // Agility I-III
+			player.ApplyStatEffect(
+				spell.ID,
+				EffectSourceSpell,
+				StatAgility,
+				spell.DefBonus,
+				buffDuration,
+			)
+		*/
 		msg = fmt.Sprintf("You gesture and cast %s. Your agility increases! (+%d AGI)", spell.Name, spell.DefBonus)
 	}
 
