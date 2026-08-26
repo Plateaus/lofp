@@ -123,6 +123,8 @@ func init() {
 		{ID: 405, Name: "See Hidden", School: "General", Level: 3, ManaCost: 5, CastTime: 3, Effect: "utility"},
 		{ID: 406, Name: "Dispel Invisibility", School: "General", Level: 8, ManaCost: 10, CastTime: 3, Effect: "utility"},
 		{ID: 407, Name: "Analyze Ore", School: "General", Level: 3, ManaCost: 4, CastTime: 3, Effect: "utility"},
+		{ID: 303, Name: "Cure Poison", School: "General", Level: 11, ManaCost: 12, CastTime: 3, Effect: "heal", StatusType: RemovePoison, StatusMsg: "A blue light flashes around %d."},
+		{ID: 303, Name: "Cure Disease", School: "General", Level: 12, ManaCost: 16, CastTime: 3, Effect: "heal", StatusType: RemoveDisease, StatusMsg: "A purple light flashes around %d."},
 	}
 	// Druidic (500-538)
 	druid := []SpellDef{
@@ -424,7 +426,7 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	case "damage":
 		result = e.castDamageSpell(player, spell, args, spectacularSuccess)
 	case "heal":
-		result = e.castHealSpell(ctx, player, spell, args)
+		result = e.castHealSpell(player, spell, args, true)
 	case "defense": //todo: add defensive spell effects to player stats
 		result = e.castStatusSpell(player, spell, args, true)
 	case "buff":
@@ -673,7 +675,7 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 	return &CommandResult{Messages: msgs, RoomBroadcast: roomMsgs}
 }
 
-func (e *GameEngine) castHealSpell(ctx context.Context, player *Player, spell *SpellDef, args []string) *CommandResult {
+func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
 	// Heal self by default, or target if specified
 	target := player
 	targetName := "yourself"
@@ -689,25 +691,94 @@ func (e *GameEngine) castHealSpell(ctx context.Context, player *Player, spell *S
 		}
 	}
 
-	heal := rand.Intn(spell.HealMax-spell.HealMin+1) + spell.HealMin
-	target.BodyPoints += heal
-	if target.BodyPoints > target.MaxBodyPoints {
-		target.BodyPoints = target.MaxBodyPoints
-	}
+	switch spell.StatusType {
 
-	if target == player {
-		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("You gesture and cast %s on yourself, healing %d body points. [BP: %d/%d]", spell.Name, heal, target.BodyPoints, target.MaxBodyPoints)},
-			RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)},
+	case RemovePoison:
+		target.RemoveStatEffectsBySource(EffectSourcePoison)
+		target.Poisoned = false
+
+		if showCastMessage {
+			if target == player {
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf("You gesture and cast %s on yourself. The poison leaves your system.", spell.Name),
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+					},
+				}
+			}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("You gesture and cast %s on %s. The poison leaves their system.", spell.Name, targetName),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf("%s gestures and casts %s on %s.", player.FirstName, spell.Name, targetName),
+				},
+				TargetName: target.FirstName,
+				TargetMsg: []string{
+					fmt.Sprintf("%s casts %s on you. The poison leaves your system.", player.FirstName, spell.Name),
+				},
+			}
+		}
+
+	case RemoveDisease:
+		target.RemoveStatEffectsBySource(EffectSourceDisease)
+		target.Diseased = false
+
+		if showCastMessage {
+			if target == player {
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf("You gesture and cast %s on yourself. The disease leaves your system.", spell.Name),
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+					},
+				}
+			}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("You gesture and cast %s on %s. The disease leaves their system.", spell.Name, targetName),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf("%s gestures and casts %s on %s.", player.FirstName, spell.Name, targetName),
+				},
+				TargetName: target.FirstName,
+				TargetMsg: []string{
+					fmt.Sprintf("%s casts %s on you. The disease leaves your system.", player.FirstName, spell.Name),
+				},
+			}
+		}
+
+	default:
+
+		heal := rand.Intn(spell.HealMax-spell.HealMin+1) + spell.HealMin
+		target.BodyPoints += heal
+		if target.BodyPoints > target.MaxBodyPoints {
+			target.BodyPoints = target.MaxBodyPoints
+		}
+
+		if showCastMessage {
+			if target == player {
+				return &CommandResult{
+					Messages:      []string{fmt.Sprintf("You gesture and cast %s on yourself, healing %d body points. [BP: %d/%d]", spell.Name, heal, target.BodyPoints, target.MaxBodyPoints)},
+					RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)},
+				}
+			}
+
+			return &CommandResult{
+				Messages:      []string{fmt.Sprintf("You gesture and cast %s on %s, healing %d body points.", spell.Name, targetName, heal)},
+				RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s on %s.", player.FirstName, spell.Name, targetName)},
+				TargetName:    target.FirstName,
+				TargetMsg:     []string{fmt.Sprintf("%s casts %s on you, healing %d body points. [BP: %d/%d]", player.FirstName, spell.Name, heal, target.BodyPoints, target.MaxBodyPoints)},
+			}
 		}
 	}
 
-	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You gesture and cast %s on %s, healing %d body points.", spell.Name, targetName, heal)},
-		RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s on %s.", player.FirstName, spell.Name, targetName)},
-		TargetName:    target.FirstName,
-		TargetMsg:     []string{fmt.Sprintf("%s casts %s on you, healing %d body points. [BP: %d/%d]", player.FirstName, spell.Name, heal, target.BodyPoints, target.MaxBodyPoints)},
-	}
+	return &CommandResult{}
 }
 
 func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
@@ -881,6 +952,62 @@ func elementalImmunityType(dmgType string) int {
 		return 1
 	default:
 		return -1
+	}
+}
+
+func (e *GameEngine) buildCastResult(
+	player *Player,
+	target *Player,
+	spell *SpellDef,
+	selfMsg string,
+	targetMsg string,
+) *CommandResult {
+
+	if target == player {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You gesture and cast %s on yourself. %s",
+					spell.Name,
+					selfMsg,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s gestures and casts %s.",
+					player.FirstName,
+					spell.Name,
+				),
+			},
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf(
+				"You gesture and cast %s on %s. %s",
+				spell.Name,
+				target.FirstName,
+				targetMsg,
+			),
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf(
+				"%s gestures and casts %s on %s.",
+				player.FirstName,
+				spell.Name,
+				target.FirstName,
+			),
+		},
+		TargetName: target.FirstName,
+		TargetMsg: []string{
+			fmt.Sprintf(
+				"%s casts %s on you. %s",
+				player.FirstName,
+				spell.Name,
+				selfMsg,
+			),
+		},
 	}
 }
 

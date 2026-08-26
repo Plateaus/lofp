@@ -56,6 +56,8 @@ const (
 	DefensiveBuff
 	LightBuff
 	NightVisionBuff
+	RemovePoison
+	RemoveDisease
 )
 
 const (
@@ -494,6 +496,23 @@ func (p *Player) ApplyStatEffect(
 		ExpiresAt: expiresAt,
 	})
 
+}
+
+func (p *Player) RemoveStatEffectsBySource(source EffectSource) bool {
+	removed := false
+	active := p.ActiveStatEffects[:0]
+
+	for _, effect := range p.ActiveStatEffects {
+		if effect.Source == source {
+			removed = true
+			continue
+		}
+
+		active = append(active, effect)
+	}
+
+	p.ActiveStatEffects = active
+	return removed
 }
 
 func (p *Player) HasItem(archetype int, adj int) bool {

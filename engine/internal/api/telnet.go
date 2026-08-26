@@ -137,10 +137,14 @@ func (t *telnetConn) SendResult(result *engine.CommandResult) error {
 	// rather than rendering from the individual fields (which would duplicate).
 	for _, msg := range result.Messages {
 		colored := t.colorizeMessage(msg)
-		buf.WriteString(colored + "\r\n")
+		buf.WriteString(colored)
+		buf.WriteString("\r\n")
 	}
 	if result.Error != "" {
-		buf.WriteString(ansiRed + result.Error + ansiReset + "\r\n")
+		buf.WriteString(ansiRed)
+		buf.WriteString(result.Error)
+		buf.WriteString(ansiReset)
+		buf.WriteString("\r\n")
 	}
 
 	_, err := t.write([]byte(buf.String()))
@@ -167,7 +171,11 @@ func (t *telnetConn) colorizeMessage(msg string) string {
 					b.WriteString(", ")
 				}
 				exit = strings.TrimSpace(exit)
-				b.WriteString("<send href=\"" + exit + "\">" + exit + "</send>")
+				b.WriteString("<send href=\"")
+				b.WriteString(exit)
+				b.WriteString("\">")
+				b.WriteString(exit)
+				b.WriteString("</send>")
 			}
 			b.WriteString("." + ansiReset)
 			return b.String()
@@ -190,9 +198,13 @@ func (t *telnetConn) SendBroadcast(messages []string) error {
 	var buf strings.Builder
 	for _, msg := range messages {
 		if strings.HasPrefix(msg, "**") {
-			buf.WriteString(ansiBoldWhite + msg + ansiReset + "\r\n")
+			buf.WriteString(ansiBoldWhite)
+			buf.WriteString(msg)
+			buf.WriteString(ansiReset)
+			buf.WriteString("\r\n")
 		} else {
-			buf.WriteString(msg + "\r\n")
+			buf.WriteString(msg)
+			buf.WriteString("\r\n")
 		}
 	}
 	_, err := t.write([]byte(buf.String()))
@@ -895,7 +907,9 @@ func buildPrompt(p *engine.Player, gmcpEnabled bool) string {
 
 	indicators := p.PromptIndicators()
 	if indicators != "" {
-		b.WriteString(" " + ansiRed + indicators + ansiReset)
+		b.WriteString(" " + ansiRed)
+		b.WriteString(indicators)
+		b.WriteString(ansiReset)
 	}
 
 	b.WriteString("> ")

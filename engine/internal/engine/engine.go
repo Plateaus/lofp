@@ -1848,10 +1848,7 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 			switch effect.Source {
 			case EffectSourcePoison:
 				player.Poisoned = false
-				messages = append(
-					messages,
-					"The poison finally leaves your system.",
-				)
+				messages = append(messages, "The poison finally leaves your system.")
 
 			case EffectSourceDisease:
 				player.Diseased = false
@@ -2122,12 +2119,13 @@ func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *Co
 	requiresFlight := false
 
 	if !ok {
-		if dir == "U" {
+		switch dir {
+		case "U":
 			destNum, ok = room.Exits["ABOVE"]
 			if ok {
 				requiresFlight = true
 			}
-		} else if dir == "D" {
+		case "D":
 			destNum, ok = room.Exits["BELOW"]
 		}
 	}
@@ -3382,6 +3380,15 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 		return &CommandResult{
 			Messages: []string{"You can't go that way."},
 		}
+	}
+
+	if player.Position != 0 && player.Position != 4 {
+		posNames := map[int]string{1: "sitting", 2: "laying down", 3: "kneeling"}
+		posName := posNames[player.Position]
+		if posName == "" {
+			posName = "not standing"
+		}
+		return &CommandResult{Messages: []string{fmt.Sprintf("You can't go anywhere while %s! Try STANDing first.", posName)}}
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
@@ -6942,7 +6949,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 		case glyphType <= 6:
 			msgs = append(msgs, fmt.Sprintf("A Thunder Glyph explodes with crackling energy! [%d Damage]", spellDmg))
 		case glyphType <= 8:
-			msgs = append(msgs, fmt.Sprintf("An Imprisonment Rune flares! You feel rooted to the spot!"))
+			msgs = append(msgs, "An Imprisonment Rune flares! You feel rooted to the spot!")
 			player.Immobilized = true
 		default:
 			msgs = append(msgs, fmt.Sprintf("A Symbol of Death erupts! [%d Damage]", spellDmg))
@@ -7356,7 +7363,7 @@ func (e *GameEngine) doDisband(player *Player) *CommandResult {
 	player.GroupMembers = nil
 	player.IsGroupLeader = false
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You disband your group.")},
+		Messages:      []string{"You disband your group."},
 		RoomBroadcast: []string{fmt.Sprintf("%s disbands their group.", player.FirstName)},
 	}
 }

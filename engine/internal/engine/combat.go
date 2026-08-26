@@ -672,7 +672,7 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	}
 
 	if player.RoundTimeExpiry.After(time.Now()) {
-		remaining := int(player.RoundTimeExpiry.Sub(time.Now()).Seconds()) + 1
+		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
 		return &CommandResult{Messages: []string{fmt.Sprintf("[Wait %d seconds...]", remaining)}}
 	}
 
@@ -896,7 +896,7 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 				msgs = append(msgs, fmt.Sprintf(" The %s crackles with electricity!", weaponNoun))
 				msgs = append(msgs, fmt.Sprintf(" %s shock to %s. [%d Damage]", critSeverity, critPart, critDmg))
 			case "slayer":
-				msgs = append(msgs, fmt.Sprintf(" Your weapon resonates against its foe!"))
+				msgs = append(msgs, " Your weapon resonates against its foe!")
 				msgs = append(msgs, fmt.Sprintf(" %s strike to %s. [%d Damage]", critSeverity, critPart, critDmg))
 			}
 		}

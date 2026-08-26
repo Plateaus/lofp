@@ -1737,15 +1737,30 @@ func (sc *ScriptContext) doSpell(args []string) {
 		return
 	}
 
-	result := sc.Engine.castStatusSpell(
-		sc.Player,
-		spell,
-		nil,
-		false,
-	)
+	switch spell.Effect {
+	case "heal":
+		result := sc.Engine.castHealSpell(
+			sc.Player,
+			spell,
+			nil,
+			false,
+		)
 
-	if result != nil {
-		sc.Messages = append(sc.Messages, result.Messages...)
-		sc.RoomMsgs = append(sc.RoomMsgs, result.RoomBroadcast...)
+		if result != nil {
+			sc.Messages = append(sc.Messages, result.Messages...)
+			sc.RoomMsgs = append(sc.RoomMsgs, result.RoomBroadcast...)
+		}
+	default:
+		result := sc.Engine.castStatusSpell(
+			sc.Player,
+			spell,
+			nil,
+			false,
+		)
+
+		if result != nil {
+			sc.Messages = append(sc.Messages, result.Messages...)
+			sc.RoomMsgs = append(sc.RoomMsgs, result.RoomBroadcast...)
+		}
 	}
 }
