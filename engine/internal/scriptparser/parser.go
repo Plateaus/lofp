@@ -1075,6 +1075,7 @@ func (p *fileParser) parseScriptBlock(fields []string) gameworld.ScriptBlock {
 			p.pos++
 			continue
 		}
+
 		fields := strings.Fields(line)
 		cmd := strings.ToUpper(fields[0])
 
@@ -1088,62 +1089,148 @@ func (p *fileParser) parseScriptBlock(fields []string) gameworld.ScriptBlock {
 			return block
 		}
 
+		// ------------------------------------------------------------
+		// ELSE branch
+		// ------------------------------------------------------------
 		if cmd == "ELSE" {
 			p.pos++
-			// Parse remaining actions/children into the ELSE branch
+
 			for p.pos < len(p.lines) {
 				eline := strings.TrimSpace(p.lines[p.pos])
+
 				if eline == "" || strings.HasPrefix(eline, ";") {
 					p.pos++
 					continue
 				}
+
 				efields := strings.Fields(eline)
 				ecmd := strings.ToUpper(efields[0])
-				if ecmd == "ENDIF" || ecmd == "NUMBER" || ecmd == "INUMBER" || ecmd == "MNUMBER" {
+
+				if ecmd == "ENDIF" ||
+					ecmd == "NUMBER" ||
+					ecmd == "INUMBER" ||
+					ecmd == "MNUMBER" {
 					break
 				}
+
 				if ecmd == "ELSE" {
 					p.pos++
-					break // nested ELSE not supported, just stop
+					break
 				}
+
+				// Nested conditional inside ELSE
 				if strings.HasPrefix(ecmd, "IF") {
 					child := p.parseScriptBlock(efields)
-					block.ElseChildren = append(block.ElseChildren, child)
+
+					block.ElseChildren = append(
+						block.ElseChildren,
+						child,
+					)
+
+					block.ElseStatements = append(
+						block.ElseStatements,
+						gameworld.ScriptStatement{
+							Block: &child,
+						},
+					)
+
 					continue
 				}
-				block.ElseActions = append(block.ElseActions, gameworld.ScriptAction{
+
+				// Normal action inside ELSE
+				action := gameworld.ScriptAction{
 					Command: ecmd,
 					Args:    efields[1:],
-				})
+				}
+
+				block.ElseActions = append(
+					block.ElseActions,
+					action,
+				)
+
+				block.ElseStatements = append(
+					block.ElseStatements,
+					gameworld.ScriptStatement{
+						Action: &action,
+					},
+				)
+
 				p.pos++
 			}
+
 			continue
 		}
 
+		// ------------------------------------------------------------
 		// Nested conditional
+		// ------------------------------------------------------------
 		if strings.HasPrefix(cmd, "IF") {
-			// If we're in a verb/preverb block and we see another verb/preverb block,
-			// it's a sibling, not a child — implicitly close this block.
-			// The original engine treated encountering a new IFPREVERB/IFVERB/IFSAY/IFENTRY
-			// as an implicit ENDIF for the current verb block.
-			isVerbBlock := cmd == "IFVERB" || cmd == "IFVERB2" || cmd == "IFPREVERB" || cmd == "IFPREVERB2" ||
-				cmd == "IFSAY" || cmd == "IFENTRY" || cmd == "IFTOUCH" || cmd == "IFLOGIN"
-			parentIsVerbBlock := block.Type == "IFVERB" || block.Type == "IFVERB2" || block.Type == "IFPREVERB" || block.Type == "IFPREVERB2" ||
-				block.Type == "IFSAY" || block.Type == "IFENTRY" || block.Type == "IFTOUCH" || block.Type == "IFLOGIN"
+
+			// If we're in a verb/preverb block and we see another
+			// verb/preverb block, it's a sibling, not a child.
+			isVerbBlock :=
+				cmd == "IFVERB" ||
+					cmd == "IFVERB2" ||
+					cmd == "IFPREVERB" ||
+					cmd == "IFPREVERB2" ||
+					cmd == "IFSAY" ||
+					cmd == "IFENTRY" ||
+					cmd == "IFTOUCH" ||
+					cmd == "IFLOGIN"
+
+			parentIsVerbBlock :=
+				block.Type == "IFVERB" ||
+					block.Type == "IFVERB2" ||
+					block.Type == "IFPREVERB" ||
+					block.Type == "IFPREVERB2" ||
+					block.Type == "IFSAY" ||
+					block.Type == "IFENTRY" ||
+					block.Type == "IFTOUCH" ||
+					block.Type == "IFLOGIN"
+
 			if isVerbBlock && parentIsVerbBlock {
-				// Implicit ENDIF — return current block, let parent re-parse this line
+				// Implicit ENDIF — return current block,
+				// let parent re-parse this line.
 				return block
 			}
+
 			child := p.parseScriptBlock(fields)
-			block.Children = append(block.Children, child)
+
+			block.Children = append(
+				block.Children,
+				child,
+			)
+
+			block.Statements = append(
+				block.Statements,
+				gameworld.ScriptStatement{
+					Block: &child,
+				},
+			)
+
 			continue
 		}
 
-		// It's an action
-		block.Actions = append(block.Actions, gameworld.ScriptAction{
+		// ------------------------------------------------------------
+		// Normal action
+		// ------------------------------------------------------------
+		action := gameworld.ScriptAction{
 			Command: cmd,
 			Args:    fields[1:],
-		})
+		}
+
+		block.Actions = append(
+			block.Actions,
+			action,
+		)
+
+		block.Statements = append(
+			block.Statements,
+			gameworld.ScriptStatement{
+				Action: &action,
+			},
+		)
+
 		p.pos++
 	}
 

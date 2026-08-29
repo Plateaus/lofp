@@ -1294,8 +1294,32 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			}
 			return e.doItemInteraction(ctx, player, verb, args)
 		}
+
+		// ------------------------------------------------------------
+		// Bare SEARCH: run IFPREVERB SEARCH -1 first.
+		// ------------------------------------------------------------
+		room := e.rooms[player.RoomNumber]
+
+		if room != nil {
+			sc := e.RunPreverbScripts(player, room, "SEARCH", nil, nil)
+
+			// CLEARVERB means the script replaces normal SEARCH.
+			if sc.Blocked {
+				e.SavePlayer(ctx, player)
+
+				return &CommandResult{
+					Messages:      sc.Messages,
+					RoomBroadcast: sc.RoomMsgs,
+					GMBroadcast:   sc.GMMsgs,
+					PlayerState:   player,
+				}
+			}
+		}
+
 		// Bare SEARCH: scan the area for hidden players
+		player.RoundTime = 5
 		player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
+
 		msgs := []string{"You search the area.", "[Round: 5 sec]"}
 		perceptionCheck := player.EffectiveStat(StatPerception) + player.Skills[33]*5 // Stealth skill helps detection
 		var revealed []string
@@ -1317,7 +1341,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			}
 		}
 		return &CommandResult{Messages: msgs}
-	case "PULL", "PUSH", "RUB", "TOUCH", "DIG", "USE", "THUMP":
+	case "PULL", "PUSH", "RUB", "TOUCH", "DIG", "USE", "THUMP", "CONCENTRATE":
 		result := e.doItemInteraction(ctx, player, verb, args)
 		// If item interaction found nothing, fall back to emote for verbs that have emote entries
 		if result != nil && len(result.Messages) > 0 && result.Messages[0] != "You don't see that here." {
@@ -1326,6 +1350,10 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		if verb == "THUMP" {
 			return e.processEmote(player, verb, args)
 		}
+		if verb == "CONCENTRATE" {
+			return &CommandResult{Messages: []string{"You concentrate deeply."}}
+		}
+
 		return result
 	case "TURN":
 		if result := e.doTurnPage(ctx, player, args); result != nil {
@@ -1337,8 +1365,9 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			return e.doRoomRecall(player)
 		}
 		return e.doItemInteraction(ctx, player, verb, args)
-	case "CONCENTRATE":
-		return &CommandResult{Messages: []string{"You concentrate deeply."}}
+	//case "CONCENTRATE":
+
+	//	return &CommandResult{Messages: []string{"You concentrate deeply."}}
 	case "BUY", "ORDER":
 		return e.doBuy(ctx, player, args)
 	case "SELL":
@@ -1745,6 +1774,13 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		if len(args) > 0 {
 			return e.doItemInteraction(ctx, player, "SMELL", args)
 		}
+
+		// Check for room-level IFVERB SMELL -1 first.
+		if result := e.doRoomScriptVerb(ctx, player, "SMELL"); result != nil {
+			return result
+		}
+
+		// No room script, use normal emote.
 		return e.processEmote(player, verb, args)
 	case "LISTEN":
 		if len(args) > 0 {
@@ -1848,7 +1884,10 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 			switch effect.Source {
 			case EffectSourcePoison:
 				player.Poisoned = false
-				messages = append(messages, "The poison finally leaves your system.")
+				messages = append(
+					messages,
+					"The poison finally leaves your system.",
+				)
 
 			case EffectSourceDisease:
 				player.Diseased = false
@@ -2064,6 +2103,16 @@ func resolveVerb(input string) string {
 }
 
 func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *CommandResult {
+
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %d seconds...]", remaining),
+			},
+		}
+	}
+
 	if player.Immobilized {
 		return &CommandResult{
 			Messages: []string{"You are immobilized and cannot move!"},
@@ -2119,13 +2168,12 @@ func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *Co
 	requiresFlight := false
 
 	if !ok {
-		switch dir {
-		case "U":
+		if dir == "U" {
 			destNum, ok = room.Exits["ABOVE"]
 			if ok {
 				requiresFlight = true
 			}
-		case "D":
+		} else if dir == "D" {
 			destNum, ok = room.Exits["BELOW"]
 		}
 	}
@@ -2701,6 +2749,12 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
+	target = strings.TrimSpace(target)
+
+	// LOOK AT <thing> should behave like EXAMINE <thing>.
+	if strings.HasPrefix(target, "at ") {
+		target = strings.TrimSpace(strings.TrimPrefix(target, "at "))
+	}
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
@@ -2852,6 +2906,7 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 	for _, p := range []string{
 		"in ",
 		"on ",
+		"out",
 		"under ",
 		"behind ",
 	} {
@@ -2898,8 +2953,31 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			continue
 		}
 
-		// LOOK IN <container>
-		if prefix == "IN" && isContainer(itemDef) {
+		// LOOK IN / ON <container>
+		if (prefix == "IN" || prefix == "ON") && isContainer(itemDef) {
+
+			// The preposition has to match the container type.
+			if itemDef.Container != "" &&
+				itemDef.Container != prefix {
+
+				displayName := e.formatItemName(
+					itemDef,
+					ri.Adj1,
+					ri.Adj2,
+					ri.Adj3,
+				)
+
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You see nothing noteworthy %s %s.",
+							strings.ToLower(prefix),
+							displayName,
+						),
+					},
+				}
+			}
+
 			displayName := e.formatItemName(
 				itemDef,
 				ri.Adj1,
@@ -2907,7 +2985,21 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 				ri.Adj3,
 			)
 
-			if ri.State != "OPEN" && ri.State != "" {
+			// Room-authored ITEM IN / ITEM ON description takes priority
+			// over dynamically listing PUT contents.
+			refStr := fmt.Sprintf("%d", ri.Ref)
+
+			if desc, ok := room.ItemDescriptions[prefix+":"+refStr]; ok {
+				return &CommandResult{
+					Messages: descriptionToMessages(desc),
+				}
+			}
+
+			// Only IN containers need to be open.
+			if prefix == "IN" &&
+				ri.State != "OPEN" &&
+				ri.State != "" {
+
 				return &CommandResult{
 					Messages: []string{
 						fmt.Sprintf(
@@ -2918,8 +3010,16 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 				}
 			}
 
-			msgs := []string{
-				fmt.Sprintf("You look in %s.", displayName),
+			var msgs []string
+
+			if prefix == "ON" {
+				msgs = []string{
+					fmt.Sprintf("You look on %s.", displayName),
+				}
+			} else {
+				msgs = []string{
+					fmt.Sprintf("You look in %s.", displayName),
+				}
 			}
 
 			found := false
@@ -2980,7 +3080,11 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			}
 
 			if !found {
-				msgs = append(msgs, "It is empty.")
+				if prefix == "ON" {
+					msgs = append(msgs, "There is nothing on it.")
+				} else {
+					msgs = append(msgs, "It is empty.")
+				}
 			}
 
 			return &CommandResult{
@@ -3369,6 +3473,15 @@ func (e *GameEngine) examinePlayer(observer *Player, target *Player) *CommandRes
 
 func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *CommandResult {
 
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %d seconds...]", remaining),
+			},
+		}
+	}
+
 	if len(args) == 0 {
 		return &CommandResult{
 			Messages: []string{"Go where?"},
@@ -3380,15 +3493,6 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 		return &CommandResult{
 			Messages: []string{"You can't go that way."},
 		}
-	}
-
-	if player.Position != 0 && player.Position != 4 {
-		posNames := map[int]string{1: "sitting", 2: "laying down", 3: "kneeling"}
-		posName := posNames[player.Position]
-		if posName == "" {
-			posName = "not standing"
-		}
-		return &CommandResult{Messages: []string{fmt.Sprintf("You can't go anywhere while %s! Try STANDing first.", posName)}}
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
@@ -4124,115 +4228,300 @@ func (e *GameEngine) doClimb(ctx context.Context, player *Player, args []string)
 // These run IFPREVERB scripts on the target item. If no script handles it, a default message is shown.
 func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb string, args []string) *CommandResult {
 	verbLower := strings.ToLower(verb)
+
 	if len(args) == 0 {
-		return &CommandResult{Messages: []string{fmt.Sprintf("%s what?", strings.Title(verbLower))}}
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("%s what?", strings.Title(verbLower)),
+			},
+		}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
-		return &CommandResult{Messages: []string{"You can't do that here."}}
+		return &CommandResult{
+			Messages: []string{"You can't do that here."},
+		}
 	}
 
+	// ------------------------------------------------------------
+	// ROOM ITEMS
+	// ------------------------------------------------------------
 	for i, ri := range room.Items {
 		itemDef := e.items[ri.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ri.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
+		if !matchesTarget(name, target, e.getAdjName(ri.Adj1)) {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		result := &CommandResult{}
+
+		// Preverb scripts
+		sc := e.RunPreverbScripts(
+			player,
+			room,
+			verb,
+			&room.Items[i],
+			itemDef,
+		)
+
+		result.Messages = append(result.Messages, sc.Messages...)
+		result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
+		result.GMBroadcast = append(result.GMBroadcast, sc.GMMsgs...)
+
+		// Verb scripts
+		sc2 := e.RunVerbScripts(
+			player,
+			room,
+			verb,
+			&room.Items[i],
+			itemDef,
+		)
+
+		result.Messages = append(result.Messages, sc2.Messages...)
+		result.RoomBroadcast = append(result.RoomBroadcast, sc2.RoomMsgs...)
+		result.GMBroadcast = append(result.GMBroadcast, sc2.GMMsgs...)
+
+		if (sc.Blocked || sc2.Blocked) &&
+			sc.MoveTo == 0 &&
+			sc2.MoveTo == 0 {
+
+			if len(result.Messages) == 0 {
+				result.Messages = []string{"You can't do that."}
 			}
-			result := &CommandResult{}
-			// Run IFPREVERB scripts (room-level and item-level)
-			sc := e.RunPreverbScripts(player, room, verb, &room.Items[i], itemDef)
-			result.Messages = append(result.Messages, sc.Messages...)
-			result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
-			result.GMBroadcast = append(result.GMBroadcast, sc.GMMsgs...)
-			// Also run IFVERB scripts on the item archetype
-			sc2 := e.RunVerbScripts(player, room, verb, &room.Items[i], itemDef)
+
+			return result
+		}
+
+		moveTo := sc.MoveTo
+		if sc2.MoveTo > 0 {
+			moveTo = sc2.MoveTo
+		}
+
+		if moveTo > 0 {
+			dest := e.rooms[moveTo]
+			if dest != nil {
+				oldRoom := player.RoomNumber
+				player.RoomNumber = moveTo
+
+				e.SavePlayer(ctx, player)
+
+				lookResult := e.doLook(player)
+
+				result.Messages = append(
+					result.Messages,
+					lookResult.Messages...,
+				)
+
+				result.RoomName = lookResult.RoomName
+				result.RoomDesc = lookResult.RoomDesc
+				result.Exits = lookResult.Exits
+				result.Items = lookResult.Items
+
+				result.OldRoom = oldRoom
+				result.OldRoomMsg = []string{
+					fmt.Sprintf("%s leaves.", player.FirstName),
+				}
+
+				result.RoomBroadcast = append(
+					result.RoomBroadcast,
+					fmt.Sprintf("%s arrives.", player.FirstName),
+				)
+
+				e.applyEntryScripts(ctx, player, dest, result)
+			}
+		}
+
+		if len(result.Messages) == 0 {
+			itemName := e.formatItemName(
+				itemDef,
+				ri.Adj1,
+				ri.Adj2,
+				ri.Adj3,
+			)
+
+			result.Messages = []string{
+				fmt.Sprintf(
+					"You %s %s. Nothing happens.",
+					verbLower,
+					itemName,
+				),
+			}
+		}
+
+		return result
+	}
+
+	// ------------------------------------------------------------
+
+	// PLAYER ITEM HELPER
+	// ------------------------------------------------------------
+	runPlayerItem := func(ii *InventoryItem) *CommandResult {
+		if ii == nil {
+			return nil
+		}
+
+		itemDef := e.items[ii.Archetype]
+		if itemDef == nil {
+			return nil
+		}
+
+		name := e.getItemNounName(itemDef)
+
+		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) &&
+			!matchesTarget(name, target, e.getAdjName(ii.Adj3)) {
+			return nil
+		}
+
+		if skip > 0 {
+			skip--
+			return nil
+		}
+
+		// Scripts currently expect a RoomItem, so make a temporary
+		// script-context item from the real InventoryItem.
+		tempRI := gameworld.RoomItem{
+			Ref:       -1,
+			Archetype: ii.Archetype,
+			Adj1:      ii.Adj1,
+			Adj2:      ii.Adj2,
+			Adj3:      ii.Adj3,
+			Val1:      ii.Val1,
+			Val2:      ii.Val2,
+			Val3:      ii.Val3,
+			Val4:      ii.Val4,
+			Val5:      ii.Val5,
+		}
+
+		result := &CommandResult{}
+
+		// Run IFPREVERB first.
+		sc := e.RunPreverbScripts(
+			player,
+			room,
+			verb,
+			&tempRI,
+			itemDef,
+		)
+
+		result.Messages = append(result.Messages, sc.Messages...)
+		result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
+		result.GMBroadcast = append(result.GMBroadcast, sc.GMMsgs...)
+
+		// If the preverb did not block the command, run IFVERB.
+		var sc2 *ScriptContext
+		if !sc.Blocked {
+			sc2 = e.RunVerbScripts(
+				player,
+				room,
+				verb,
+				&tempRI,
+				itemDef,
+			)
+
 			result.Messages = append(result.Messages, sc2.Messages...)
 			result.RoomBroadcast = append(result.RoomBroadcast, sc2.RoomMsgs...)
 			result.GMBroadcast = append(result.GMBroadcast, sc2.GMMsgs...)
-			if (sc.Blocked || sc2.Blocked) && sc.MoveTo == 0 && sc2.MoveTo == 0 {
-				if len(result.Messages) == 0 {
-					result.Messages = []string{"You can't do that."}
-				}
-				return result
-			}
-			moveTo := sc.MoveTo
-			if sc2.MoveTo > 0 {
-				moveTo = sc2.MoveTo
-			}
-			if moveTo > 0 {
-				dest := e.rooms[moveTo]
-				if dest != nil {
-					oldRoom := player.RoomNumber
-					player.RoomNumber = moveTo
-					e.SavePlayer(ctx, player)
-					lookResult := e.doLook(player)
-					result.Messages = append(result.Messages, lookResult.Messages...)
-					result.RoomName = lookResult.RoomName
-					result.RoomDesc = lookResult.RoomDesc
-					result.Exits = lookResult.Exits
-					result.Items = lookResult.Items
-					result.OldRoom = oldRoom
-					result.OldRoomMsg = []string{fmt.Sprintf("%s leaves.", player.FirstName)}
-					result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s arrives.", player.FirstName))
-					e.applyEntryScripts(ctx, player, dest, result)
-				}
-			}
+		}
+
+		// Persist any ITEMVAL changes made by either script.
+		ii.Val1 = tempRI.Val1
+		ii.Val2 = tempRI.Val2
+		ii.Val3 = tempRI.Val3
+		ii.Val4 = tempRI.Val4
+		ii.Val5 = tempRI.Val5
+
+		e.SavePlayer(ctx, player)
+
+		// CLEARVERB from the preverb stops normal handling.
+		if sc.Blocked {
 			if len(result.Messages) == 0 {
-				itemName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
-				result.Messages = []string{fmt.Sprintf("You %s %s. Nothing happens.", verbLower, itemName)}
+				result.Messages = []string{"You can't do that."}
 			}
+			return result
+		}
+
+		// IFVERB may also block.
+		if sc2 != nil && sc2.Blocked {
+			if len(result.Messages) == 0 {
+				result.Messages = []string{"You can't do that."}
+			}
+			return result
+		}
+
+		// If either script produced output, return it.
+		if len(result.Messages) > 0 ||
+			len(result.RoomBroadcast) > 0 ||
+			len(result.GMBroadcast) > 0 {
+			return result
+		}
+
+		itemName := e.formatItemName(
+			itemDef,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You %s %s. Nothing happens.",
+					verbLower,
+					itemName,
+				),
+			},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// INVENTORY
+	// ------------------------------------------------------------
+	for i := range player.Inventory {
+		if result := runPlayerItem(&player.Inventory[i]); result != nil {
 			return result
 		}
 	}
 
-	// Check all player items: inventory, worn, and wielded
-	allPlayerItems := make([]InventoryItem, 0, len(player.Inventory)+len(player.Worn)+1)
-	allPlayerItems = append(allPlayerItems, player.Inventory...)
-	allPlayerItems = append(allPlayerItems, player.Worn...)
-	if player.Wielded != nil {
-		allPlayerItems = append(allPlayerItems, *player.Wielded)
-	}
-	for _, ii := range allPlayerItems {
-		itemDef := e.items[ii.Archetype]
-		if itemDef == nil {
-			continue
-		}
-		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) || matchesTarget(name, target, e.getAdjName(ii.Adj3)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			// Create a temporary RoomItem for script context
-			tempRI := gameworld.RoomItem{Ref: -1, Archetype: ii.Archetype,
-				Adj1: ii.Adj1, Adj2: ii.Adj2, Adj3: ii.Adj3,
-				Val1: ii.Val1, Val2: ii.Val2, Val3: ii.Val3, Val4: ii.Val4, Val5: ii.Val5}
-			sc := e.RunVerbScripts(player, room, verb, &tempRI, itemDef)
-			if len(sc.Messages) > 0 || len(sc.RoomMsgs) > 0 {
-				result := &CommandResult{}
-				result.Messages = append(result.Messages, sc.Messages...)
-				result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
-				return result
-			}
-			itemName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			return &CommandResult{Messages: []string{fmt.Sprintf("You %s %s. Nothing happens.", verbLower, itemName)}}
+	// ------------------------------------------------------------
+	// WORN
+	// ------------------------------------------------------------
+	for i := range player.Worn {
+		if result := runPlayerItem(&player.Worn[i]); result != nil {
+			return result
 		}
 	}
 
-	// Fall back to emote if the verb has one (e.g., RUB, TAP, TOUCH targeting a player)
+	// ------------------------------------------------------------
+	// WIELDED
+	// ------------------------------------------------------------
+	if player.Wielded != nil {
+		if result := runPlayerItem(player.Wielded); result != nil {
+			return result
+		}
+	}
+
+	// Fall back to emote if the verb has one.
 	if _, hasEmote := emoteTable[verb]; hasEmote {
 		return e.processEmote(player, verb, args)
 	}
 
-	return &CommandResult{Messages: []string{"You don't see that here."}}
+	return &CommandResult{
+		Messages: []string{"You don't see that here."},
+	}
 }
 
 func (e *GameEngine) doATest(ctx context.Context, player *Player) *CommandResult {
@@ -4281,7 +4570,10 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 		if ri.IsPut {
 			continue
 		}
-		// Handle coin piles that may not have a valid archetype.
+
+		// ------------------------------------------------------------
+		// Coin piles without a valid item archetype.
+		// ------------------------------------------------------------
 		if ri.State == "MONEY" &&
 			(target == "coins" ||
 				target == "money" ||
@@ -4334,18 +4626,13 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 			continue
 		}
 
-		if itemDef.Weight >= 1000 {
-			continue
-		}
-
-		if isPortal(itemDef.Type) {
-			continue
-		}
-
-		if containsFlag(itemDef.Flags, "FIXED") ||
-			itemDef.Type == "MANUSCRIPT" {
-			continue
-		}
+		// ------------------------------------------------------------
+		// First determine whether this is actually the target.
+		//
+		// IMPORTANT:
+		// Do this BEFORE normal GET restrictions so a scripted
+		// IFPREVERB GET can intercept normally un-gettable scenery.
+		// ------------------------------------------------------------
 
 		name := e.getItemNounName(itemDef)
 
@@ -4362,7 +4649,84 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 			continue
 		}
 
+		/*
+			Copy the selected item before running its script.
+
+			The script may execute NEWPUT, which can append another item
+			to room.Items. Using a copy prevents ScriptContext.ItemRef from
+			becoming an invalid pointer if the room item slice reallocates.
+		*/
+		pickedUp := ri
+
+		// ------------------------------------------------------------
+		// PREVERB GET
+		//
+		// Give room/item scripts a chance to replace normal GET before
+		// we reject the item for being fixed, too heavy, a portal, etc.
+		// ------------------------------------------------------------
+
+		sc := e.RunPreverbScripts(
+			player,
+			room,
+			"GET",
+			&pickedUp,
+			itemDef,
+		)
+
+		result := &CommandResult{}
+
+		result.Messages = append(
+			result.Messages,
+			sc.Messages...,
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			sc.RoomMsgs...,
+		)
+
+		result.GMBroadcast = append(
+			result.GMBroadcast,
+			sc.GMMsgs...,
+		)
+
+		// CLEARVERB means the script completely handled GET.
+		if sc.Blocked {
+			if len(result.Messages) == 0 {
+				result.Messages = append(
+					result.Messages,
+					"You can't get that.",
+				)
+			}
+
+			e.SavePlayer(ctx, player)
+
+			return result
+		}
+
+		// ------------------------------------------------------------
+		// Normal GET restrictions.
+		//
+		// These happen AFTER PREVERB so scripts can override them.
+		// ------------------------------------------------------------
+
+		if itemDef.Weight >= 1000 {
+			continue
+		}
+
+		if isPortal(itemDef.Type) {
+			continue
+		}
+
+		if containsFlag(itemDef.Flags, "FIXED") ||
+			itemDef.Type == "MANUSCRIPT" {
+			continue
+		}
+
+		// ------------------------------------------------------------
 		// MONEY item definitions automatically convert to currency.
+		// ------------------------------------------------------------
+
 		if itemDef.Type == "MONEY" || ri.State == "MONEY" {
 			coins := ri.Val1
 			if coins <= 0 {
@@ -4403,57 +4767,10 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 			}
 		}
 
-		/*
-			Copy the selected item before running its script.
+		// ------------------------------------------------------------
+		// Collect container contents.
+		// ------------------------------------------------------------
 
-			The script may execute NEWPUT, which can append another item
-			to room.Items. Using a copy prevents ScriptContext.ItemRef from
-			becoming an invalid pointer if the room item slice reallocates.
-		*/
-		pickedUp := ri
-
-		// Run item and room IFPREVERB GET scripts.
-		sc := e.RunPreverbScripts(
-			player,
-			room,
-			"GET",
-			&pickedUp,
-			itemDef,
-		)
-
-		result := &CommandResult{}
-
-		result.Messages = append(
-			result.Messages,
-			sc.Messages...,
-		)
-
-		result.RoomBroadcast = append(
-			result.RoomBroadcast,
-			sc.RoomMsgs...,
-		)
-
-		result.GMBroadcast = append(
-			result.GMBroadcast,
-			sc.GMMsgs...,
-		)
-
-		// CLEARVERB cancels the normal GET action.
-		if sc.Blocked {
-			if len(result.Messages) == 0 {
-				result.Messages = append(
-					result.Messages,
-					"You can't get that.",
-				)
-			}
-
-			// Save any player-variable changes made by the script.
-			e.SavePlayer(ctx, player)
-
-			return result
-		}
-
-		///get containers
 		var contents []InventoryItem
 
 		for _, child := range room.Items {
@@ -4461,21 +4778,27 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 				continue
 			}
 
-			contents = append(contents, InventoryItem{
-				Archetype: child.Archetype,
-				Adj1:      child.Adj1,
-				Adj2:      child.Adj2,
-				Adj3:      child.Adj3,
-				Val1:      child.Val1,
-				Val2:      child.Val2,
-				Val3:      child.Val3,
-				Val4:      child.Val4,
-				Val5:      child.Val5,
-				State:     child.State,
-			})
+			contents = append(
+				contents,
+				InventoryItem{
+					Archetype: child.Archetype,
+					Adj1:      child.Adj1,
+					Adj2:      child.Adj2,
+					Adj3:      child.Adj3,
+					Val1:      child.Val1,
+					Val2:      child.Val2,
+					Val3:      child.Val3,
+					Val4:      child.Val4,
+					Val5:      child.Val5,
+					State:     child.State,
+				},
+			)
 		}
 
-		// Move the selected room item into the player's inventory.
+		// ------------------------------------------------------------
+		// Move item into player's inventory.
+		// ------------------------------------------------------------
+
 		player.Inventory = append(
 			player.Inventory,
 			InventoryItem{
@@ -4489,20 +4812,29 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 				Val4:      pickedUp.Val4,
 				Val5:      pickedUp.Val5,
 				State:     pickedUp.State,
-				Contents:  contents, //add any contents if this is a container
+				Contents:  contents,
 			},
 		)
 
-		//remove any items that were inside the container from the room
+		// ------------------------------------------------------------
+		// Remove anything that was inside the picked-up container
+		// from the room.
+		// ------------------------------------------------------------
+
 		if len(contents) > 0 {
 			filtered := room.Items[:0]
 
 			for _, item := range room.Items {
-				if item.IsPut && item.PutIn == pickedUp.Ref {
+				if item.IsPut &&
+					item.PutIn == pickedUp.Ref {
+
 					continue
 				}
 
-				filtered = append(filtered, item)
+				filtered = append(
+					filtered,
+					item,
+				)
 			}
 
 			room.Items = filtered
@@ -4510,8 +4842,10 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 
 		/*
 			NEWPUT may have appended a replacement item while the script
-			was running. Find the original item again instead of assuming
-			the room slice is completely unchanged.
+			was running.
+
+			Find the original item again instead of assuming the slice
+			is unchanged.
 		*/
 		removeIndex := -1
 
@@ -4645,6 +4979,7 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 
 		// Only count actual containers toward the ordinal.
 		if def.Container != "IN" &&
+			def.Container != "ON" &&
 			def.Type != "CONTAINER" &&
 			!containsFlag(def.Flags, "CONTAINER") {
 			continue
@@ -4691,6 +5026,7 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			}
 
 			if def.Container != "IN" &&
+				def.Container != "ON" &&
 				def.Type != "CONTAINER" &&
 				!containsFlag(def.Flags, "CONTAINER") {
 				continue
@@ -5055,34 +5391,48 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 	}
 }
 
-func (e *GameEngine) doPut(
-	ctx context.Context,
-	player *Player,
-	args []string,
-) *CommandResult {
+func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *CommandResult {
 
 	if len(args) < 3 {
 		return &CommandResult{
-			Messages: []string{"Put what in what?"},
+			Messages: []string{"Put what in/on what?"},
 		}
 	}
 
 	raw := strings.ToLower(strings.Join(args, " "))
 
-	// Support: PUT <item> IN <container>
-	inIdx := strings.Index(raw, " in ")
-	if inIdx < 0 {
+	// ------------------------------------------------------------
+	// Parse:
+	//   PUT <item> IN <container>
+	//   PUT <item> ON <container>
+	// ------------------------------------------------------------
+
+	relation := ""
+	splitIdx := -1
+	splitLen := 0
+
+	if idx := strings.Index(raw, " in "); idx >= 0 {
+		relation = "IN"
+		splitIdx = idx
+		splitLen = 4
+	} else if idx := strings.Index(raw, " on "); idx >= 0 {
+		relation = "ON"
+		splitIdx = idx
+		splitLen = 4
+	}
+
+	if splitIdx < 0 {
 		return &CommandResult{
-			Messages: []string{"Put what in what?"},
+			Messages: []string{"Put what in/on what?"},
 		}
 	}
 
-	itemTarget := strings.TrimSpace(raw[:inIdx])
-	containerTarget := strings.TrimSpace(raw[inIdx+4:])
+	itemTarget := strings.TrimSpace(raw[:splitIdx])
+	containerTarget := strings.TrimSpace(raw[splitIdx+splitLen:])
 
 	if itemTarget == "" || containerTarget == "" {
 		return &CommandResult{
-			Messages: []string{"Put what in what?"},
+			Messages: []string{"Put what in/on what?"},
 		}
 	}
 
@@ -5094,14 +5444,17 @@ func (e *GameEngine) doPut(
 	}
 
 	// ------------------------------------------------------------
-	// Find the destination object in the room.
-	// Do NOT require it to be a real container yet because
-	// IFPREVERB2 PUT may handle things like knotholes/windows/etc.
+	// Find object #2 in the room.
+	//
+	// Do not require it to be a container yet because an
+	// IFPREVERB2 PUT script may intercept arbitrary objects.
 	// ------------------------------------------------------------
 
 	containerIndex := -1
 
-	for i, ri := range room.Items {
+	for i := range room.Items {
+		ri := &room.Items[i]
+
 		if ri.IsPut {
 			continue
 		}
@@ -5113,24 +5466,44 @@ func (e *GameEngine) doPut(
 
 		name := e.getItemNounName(def)
 
-		if matchesTarget(
+		if !matchesTarget(
 			name,
 			containerTarget,
 			e.getAdjName(ri.Adj1),
-		) {
-			containerIndex = i
-			break
+		) &&
+			!matchesTarget(
+				name,
+				containerTarget,
+				e.getAdjName(ri.Adj3),
+			) {
+			continue
 		}
+
+		containerIndex = i
+		break
 	}
 
-	// If no room target matched, try a container carried by the player.
+	// ------------------------------------------------------------
+	// No room target found.
+	//
+	// Existing carried-container code currently handles IN.
+	// ------------------------------------------------------------
+
 	if containerIndex < 0 {
-		return e.doPutInInventoryContainer(
-			ctx,
-			player,
-			itemTarget,
-			containerTarget,
-		)
+		if relation == "IN" {
+			return e.doPutInInventoryContainer(
+				ctx,
+				player,
+				itemTarget,
+				containerTarget,
+			)
+		}
+
+		return &CommandResult{
+			Messages: []string{
+				"You don't see that here.",
+			},
+		}
 	}
 
 	container := &room.Items[containerIndex]
@@ -5138,20 +5511,19 @@ func (e *GameEngine) doPut(
 
 	if containerDef == nil {
 		return &CommandResult{
-			Messages: []string{"You can't put anything in that."},
+			Messages: []string{"You can't put anything there."},
 		}
 	}
 
 	// ------------------------------------------------------------
-	// Find object #1 in the player's inventory FIRST.
-	// This prevents nonsense like:
-	// PUT CAT IN KNOT
-	// when the player doesn't have a cat.
+	// Find object #1 in player inventory.
 	// ------------------------------------------------------------
 
 	itemIndex := -1
 
-	for i, ii := range player.Inventory {
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
 		def := e.items[ii.Archetype]
 		if def == nil {
 			continue
@@ -5159,20 +5531,21 @@ func (e *GameEngine) doPut(
 
 		name := e.getItemNounName(def)
 
-		if matchesTarget(
+		if !matchesTarget(
 			name,
 			itemTarget,
 			e.getAdjName(ii.Adj1),
-		) ||
-			matchesTarget(
+		) &&
+			!matchesTarget(
 				name,
 				itemTarget,
 				e.getAdjName(ii.Adj3),
 			) {
-
-			itemIndex = i
-			break
+			continue
 		}
+
+		itemIndex = i
+		break
 	}
 
 	if itemIndex < 0 {
@@ -5191,13 +5564,10 @@ func (e *GameEngine) doPut(
 	}
 
 	// ------------------------------------------------------------
-	// Now run PUT preverb scripts against object #2.
+	// Run PUT scripts first.
 	//
-	// RunPreverbScripts currently checks both:
-	//   IFPREVERB
-	//   IFPREVERB2
-	//
-	// This is where IFPREVERB2 PUT <ref> can intercept the action.
+	// Object #1 = item being put
+	// Object #2 = destination object
 	// ------------------------------------------------------------
 
 	scriptItem := gameworld.RoomItem{
@@ -5218,9 +5588,9 @@ func (e *GameEngine) doPut(
 		player,
 		room,
 		"PUT",
-		&scriptItem, // object #1: the dust/pelt/etc.
+		&scriptItem,
 		itemDef,
-		container, // object #2: the knothole
+		container,
 	)
 
 	result := &CommandResult{
@@ -5229,7 +5599,7 @@ func (e *GameEngine) doPut(
 		GMBroadcast:   append([]string{}, sc.GMMsgs...),
 	}
 
-	// CLEARVERB means the script handled or cancelled the PUT.
+	// CLEARVERB means the script handled/cancelled PUT.
 	if sc.Blocked {
 		e.SavePlayer(ctx, player)
 
@@ -5241,22 +5611,57 @@ func (e *GameEngine) doPut(
 	}
 
 	// ------------------------------------------------------------
-	// No script intercepted it, so from here on it must be a
-	// normal container.
+	// From here onward this must be an ordinary container action.
 	// ------------------------------------------------------------
 
-	if containerDef.Container != "IN" &&
-		containerDef.Type != "CONTAINER" &&
-		!containsFlag(containerDef.Flags, "CONTAINER") {
+	containerMode := strings.ToUpper(containerDef.Container)
 
-		return &CommandResult{
-			Messages: []string{"You can't put anything in that."},
+	// Explicit CONTAINER IN / CONTAINER ON must match the command.
+	if containerMode != "" {
+		if containerMode != relation {
+			containerName := e.formatItemName(
+				containerDef,
+				container.Adj1,
+				container.Adj2,
+				container.Adj3,
+			)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You can't put anything %s %s.",
+						strings.ToLower(relation),
+						containerName,
+					),
+				},
+			}
+		}
+	} else {
+		// Legacy/generic containers without an explicit mode
+		// behave as IN containers.
+		isGenericContainer :=
+			containerDef.Type == "CONTAINER" ||
+				containsFlag(containerDef.Flags, "CONTAINER")
+
+		if !isGenericContainer || relation != "IN" {
+			return &CommandResult{
+				Messages: []string{
+					"You can't put anything there.",
+				},
+			}
 		}
 	}
 
-	// Container must be open.
-	if container.State != "OPEN" && container.State != "" {
-		displayName := e.formatItemName(
+	// ------------------------------------------------------------
+	// IN containers must be open.
+	// ON containers do not have an open/closed requirement.
+	// ------------------------------------------------------------
+
+	if relation == "IN" &&
+		container.State != "OPEN" &&
+		container.State != "" {
+
+		containerName := e.formatItemName(
 			containerDef,
 			container.Adj1,
 			container.Adj2,
@@ -5267,20 +5672,20 @@ func (e *GameEngine) doPut(
 			Messages: []string{
 				fmt.Sprintf(
 					"You'll need to open %s first.",
-					displayName,
+					containerName,
 				),
 			},
 		}
 	}
 
 	// ------------------------------------------------------------
-	// Normal container volume rules.
+	// Capacity / volume rules.
 	// ------------------------------------------------------------
 
 	if itemDef.Volume >= containerDef.Volume {
 		return &CommandResult{
 			Messages: []string{
-				"That item is too large to fit in the container.",
+				"That item is too large.",
 			},
 		}
 	}
@@ -5297,7 +5702,17 @@ func (e *GameEngine) doPut(
 		}
 	}
 
-	if usedVolume+itemDef.Volume > containerDef.Interior {
+	if containerDef.Interior > 0 &&
+		usedVolume+itemDef.Volume > containerDef.Interior {
+
+		if relation == "ON" {
+			return &CommandResult{
+				Messages: []string{
+					"There isn't enough room on it.",
+				},
+			}
+		}
+
 		return &CommandResult{
 			Messages: []string{
 				"There isn't enough room in the container.",
@@ -5307,6 +5722,13 @@ func (e *GameEngine) doPut(
 
 	// ------------------------------------------------------------
 	// Perform normal PUT.
+	//
+	// PUT items live in room.Items with:
+	//   IsPut = true
+	//   PutIn = destination room ref
+	//
+	// The same representation works for IN and ON.
+	// The destination ItemDef tells us which relationship applies.
 	// ------------------------------------------------------------
 
 	putItem := gameworld.RoomItem{
@@ -5325,7 +5747,16 @@ func (e *GameEngine) doPut(
 		PutIn:     container.Ref,
 	}
 
-	room.Items = append(room.Items, putItem)
+	room.Items = append(
+		room.Items,
+		putItem,
+	)
+
+	e.notifyRoomChange(RoomChange{
+		RoomNumber: player.RoomNumber,
+		Type:       "item_add",
+		Item:       &putItem,
+	})
 
 	// Remove from player inventory.
 	player.Inventory = append(
@@ -5349,11 +5780,14 @@ func (e *GameEngine) doPut(
 		container.Adj3,
 	)
 
+	preposition := strings.ToLower(relation)
+
 	result.Messages = append(
 		result.Messages,
 		fmt.Sprintf(
-			"You put %s in %s.",
+			"You put %s %s %s.",
 			itemName,
+			preposition,
 			containerName,
 		),
 	)
@@ -5361,9 +5795,10 @@ func (e *GameEngine) doPut(
 	result.RoomBroadcast = append(
 		result.RoomBroadcast,
 		fmt.Sprintf(
-			"%s puts %s in %s.",
+			"%s puts %s %s %s.",
 			player.FirstName,
 			itemName,
+			preposition,
 			containerName,
 		),
 	)
@@ -5569,16 +6004,17 @@ func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Play
 	}
 }
 
-func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) *CommandResult {
+func (e *GameEngine) doDrop(
+	ctx context.Context,
+	player *Player,
+	args []string,
+) *CommandResult {
+
 	if len(args) == 0 {
 		return &CommandResult{
 			Messages: []string{"Drop what?"},
 		}
 	}
-
-	target := strings.ToLower(strings.Join(args, " "))
-	target, ordSkip := parseOrdinal(target)
-	skip := ordSkip
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
@@ -5587,6 +6023,136 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 		}
 	}
 
+	// ------------------------------------------------------------
+	// DROP MONEY
+	//
+	// Examples:
+	//   DROP 10 GOLD
+	//   DROP 5 SILVER
+	//   DROP 20 COPPER
+	//
+	// Currency normally lives directly on the Player, rather than
+	// as inventory items. Dropping it creates a MONEY RoomItem.
+	// ------------------------------------------------------------
+	if len(args) >= 2 {
+		amount, err := strconv.Atoi(args[0])
+
+		if err == nil && amount > 0 {
+			denom := strings.ToLower(args[1])
+
+			var archetype int
+			var available *int
+			var denomName string
+			var adjName string
+
+			switch denom {
+			case "gold", "crown", "crowns":
+				archetype = 161
+				available = &player.Gold
+				denomName = "gold"
+				adjName = "gold"
+
+			case "silver", "shilling", "shillings":
+				archetype = 162
+				available = &player.Silver
+				denomName = "silver"
+				adjName = "silver"
+
+			case "copper", "penny", "pennies":
+				archetype = 163
+				available = &player.Copper
+				denomName = "copper"
+				adjName = "copper"
+			}
+
+			// Recognized a currency denomination.
+			if available != nil {
+
+				if *available < amount {
+					return &CommandResult{
+						Messages: []string{
+							fmt.Sprintf(
+								"You don't have %d %s coins.",
+								amount,
+								denomName,
+							),
+						},
+					}
+				}
+
+				// Find the legacy adjective number rather than
+				// hard-coding gold=147, etc.
+				adj := e.adjByName(adjName)
+
+				*available -= amount
+
+				droppedItem := gameworld.RoomItem{
+					Ref:       len(room.Items),
+					Archetype: archetype,
+					Adj3:      adj, //after much searching I found adj 3 is the one that controls the coin type
+					Val1:      amount,
+					State:     "MONEY",
+				}
+
+				room.Items = append(
+					room.Items,
+					droppedItem,
+				)
+
+				e.notifyRoomChange(RoomChange{
+					RoomNumber: player.RoomNumber,
+					Type:       "item_add",
+					Item:       &droppedItem,
+				})
+
+				e.SavePlayer(ctx, player)
+
+				msgs := []string{}
+
+				if player.GMTrace {
+					msgs = append(
+						msgs,
+						fmt.Sprintf(
+							"[TRACE] DROP MONEY archetype=%d adj3=%d val1=%d",
+							archetype,
+							adj,
+							amount,
+						),
+					)
+				}
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						"You drop %d %s coins.",
+						amount,
+						denomName,
+					),
+				)
+
+				return &CommandResult{
+					Messages: msgs,
+					RoomBroadcast: []string{
+						fmt.Sprintf(
+							"%s drops some %s coins.",
+							player.FirstName,
+							denomName,
+						),
+					},
+					PlayerState: player,
+				}
+			}
+		}
+	}
+
+	// ------------------------------------------------------------
+	// NORMAL INVENTORY DROP
+	// ------------------------------------------------------------
+
+	target := strings.ToLower(strings.Join(args, " "))
+	target, ordSkip := parseOrdinal(target)
+	skip := ordSkip
+
 	for i, ii := range player.Inventory {
 		itemDef := e.items[ii.Archetype]
 		if itemDef == nil {
@@ -5594,7 +6160,12 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 		}
 
 		name := e.getItemNounName(itemDef)
-		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+
+		if !matchesTarget(
+			name,
+			target,
+			e.getAdjName(ii.Adj1),
+		) {
 			continue
 		}
 
@@ -5607,8 +6178,8 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			Run the inventory item's IFPREVERB DROP script before
 			performing the normal drop.
 
-			RunPreverbScripts currently expects a RoomItem, so create
-			a temporary script representation of the inventory item.
+			RunPreverbScripts expects a RoomItem, so create a
+			temporary script representation of the inventory item.
 		*/
 		scriptItem := gameworld.RoomItem{
 			Ref:       -1,
@@ -5641,24 +6212,25 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 		/*
 			CLEARVERB means the script handled or blocked the drop.
 
-			For the claws, REMOVEITEM -1 has already deleted them
-			from inventory, so we must not perform the normal drop.
+			For example, REMOVEITEM -1 may already have deleted
+			the inventory item, so normal DROP must not continue.
 		*/
 		if sc.Blocked {
 			if len(result.Messages) == 0 {
-				result.Messages = []string{"You can't drop that."}
+				result.Messages = []string{
+					"You can't drop that.",
+				}
 			}
 
-			// Persist inventory and variable changes made by the script.
 			e.SavePlayer(ctx, player)
 
 			return result
 		}
 
-		/*
-			The script did not block the command, so perform the
-			ordinary inventory-to-room transfer.
-		*/
+		// --------------------------------------------------------
+		// Ordinary inventory-to-room transfer.
+		// --------------------------------------------------------
+
 		droppedItem := gameworld.RoomItem{
 			Ref:       len(room.Items),
 			Archetype: ii.Archetype,
@@ -5673,7 +6245,10 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			State:     ii.State,
 		}
 
-		room.Items = append(room.Items, droppedItem)
+		room.Items = append(
+			room.Items,
+			droppedItem,
+		)
 
 		e.notifyRoomChange(RoomChange{
 			RoomNumber: player.RoomNumber,
@@ -5681,7 +6256,10 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			Item:       &droppedItem,
 		})
 
-		// Restore any carried container contents as PUT items in the room.
+		// --------------------------------------------------------
+		// Restore carried container contents as PUT items.
+		// --------------------------------------------------------
+
 		for _, child := range ii.Contents {
 			putItem := gameworld.RoomItem{
 				Ref:       droppedItem.Ref,
@@ -5699,7 +6277,10 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 				PutIn:     droppedItem.Ref,
 			}
 
-			room.Items = append(room.Items, putItem)
+			room.Items = append(
+				room.Items,
+				putItem,
+			)
 
 			e.notifyRoomChange(RoomChange{
 				RoomNumber: player.RoomNumber,
@@ -5708,6 +6289,7 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			})
 		}
 
+		// Remove item from inventory.
 		player.Inventory = append(
 			player.Inventory[:i],
 			player.Inventory[i+1:]...,
@@ -5724,19 +6306,28 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 
 		result.Messages = append(
 			result.Messages,
-			fmt.Sprintf("You drop %s.", fullName),
+			fmt.Sprintf(
+				"You drop %s.",
+				fullName,
+			),
 		)
 
 		result.RoomBroadcast = append(
 			result.RoomBroadcast,
-			fmt.Sprintf("%s drops %s.", player.FirstName, fullName),
+			fmt.Sprintf(
+				"%s drops %s.",
+				player.FirstName,
+				fullName,
+			),
 		)
 
 		return result
 	}
 
 	return &CommandResult{
-		Messages: []string{"You aren't carrying that."},
+		Messages: []string{
+			"You aren't carrying that.",
+		},
 	}
 }
 
@@ -6949,7 +7540,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 		case glyphType <= 6:
 			msgs = append(msgs, fmt.Sprintf("A Thunder Glyph explodes with crackling energy! [%d Damage]", spellDmg))
 		case glyphType <= 8:
-			msgs = append(msgs, "An Imprisonment Rune flares! You feel rooted to the spot!")
+			msgs = append(msgs, fmt.Sprintf("An Imprisonment Rune flares! You feel rooted to the spot!"))
 			player.Immobilized = true
 		default:
 			msgs = append(msgs, fmt.Sprintf("A Symbol of Death erupts! [%d Damage]", spellDmg))
@@ -7363,7 +7954,7 @@ func (e *GameEngine) doDisband(player *Player) *CommandResult {
 	player.GroupMembers = nil
 	player.IsGroupLeader = false
 	return &CommandResult{
-		Messages:      []string{"You disband your group."},
+		Messages:      []string{fmt.Sprintf("You disband your group.")},
 		RoomBroadcast: []string{fmt.Sprintf("%s disbands their group.", player.FirstName)},
 	}
 }
@@ -9306,56 +9897,209 @@ func (e *GameEngine) doCant(player *Player, args []string) *CommandResult {
 
 func (e *GameEngine) doRead(player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
-		return &CommandResult{Messages: []string{"Read what?"}}
+		return &CommandResult{
+			Messages: []string{"Read what?"},
+		}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
-		return &CommandResult{Messages: []string{"There is nothing written on it."}}
+		return &CommandResult{
+			Messages: []string{"There is nothing written on it."},
+		}
 	}
 
+	// ------------------------------------------------------------
 	// Search room items
-	for _, ri := range room.Items {
+	// ------------------------------------------------------------
+	for i := range room.Items {
+		ri := &room.Items[i]
+
 		itemDef := e.items[ri.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ri.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			return e.readRoomItem(room, itemDef, &ri)
+
+		if !matchesTarget(
+			name,
+			target,
+			e.getAdjName(ri.Adj1),
+		) {
+			continue
 		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		// --------------------------------------------------------
+		// Give IFPREVERB READ <ref> first crack.
+		// --------------------------------------------------------
+		sc := e.RunPreverbScripts(
+			player,
+			room,
+			"READ",
+			ri,
+			itemDef,
+		)
+
+		// Add routing information to @trace output.
+		if player.GMTrace {
+			sc.Messages = append(
+				[]string{
+					fmt.Sprintf(
+						"[TRACE] READ matched ref=%d archetype=%d",
+						ri.Ref,
+						ri.Archetype,
+					),
+				},
+				sc.Messages...,
+			)
+		}
+
+		// --------------------------------------------------------
+		// CLEARVERB means the script completely handled READ.
+		// --------------------------------------------------------
+		if sc.Blocked {
+			if player.GMTrace {
+				sc.Messages = append(
+					sc.Messages,
+					"[TRACE] READ blocked by CLEARVERB — skipping normal ITEM READ",
+				)
+			}
+
+			return &CommandResult{
+				Messages:      sc.Messages,
+				RoomBroadcast: sc.RoomMsgs,
+				GMBroadcast:   sc.GMMsgs,
+				PlayerState:   player,
+			}
+		}
+
+		// --------------------------------------------------------
+		// No script override — fall through to normal ITEM READ.
+		// --------------------------------------------------------
+		if player.GMTrace {
+			sc.Messages = append(
+				sc.Messages,
+				"[TRACE] READ not blocked — falling through to ITEM READ",
+			)
+		}
+
+		result := e.readRoomItem(
+			room,
+			itemDef,
+			ri,
+		)
+
+		// Preserve any non-blocking script output.
+		result.Messages = append(
+			sc.Messages,
+			result.Messages...,
+		)
+
+		result.RoomBroadcast = append(
+			sc.RoomMsgs,
+			result.RoomBroadcast...,
+		)
+
+		result.GMBroadcast = append(
+			sc.GMMsgs,
+			result.GMBroadcast...,
+		)
+
+		return result
 	}
 
-	// Search all player items (inventory + worn + wielded)
-	allReadItems := make([]InventoryItem, 0, len(player.Inventory)+len(player.Worn)+1)
-	allReadItems = append(allReadItems, player.Inventory...)
-	allReadItems = append(allReadItems, player.Worn...)
+	// ------------------------------------------------------------
+	// Search player items:
+	// inventory + worn + wielded
+	// ------------------------------------------------------------
+
+	allReadItems := make(
+		[]InventoryItem,
+		0,
+		len(player.Inventory)+len(player.Worn)+1,
+	)
+
+	allReadItems = append(
+		allReadItems,
+		player.Inventory...,
+	)
+
+	allReadItems = append(
+		allReadItems,
+		player.Worn...,
+	)
+
 	if player.Wielded != nil {
-		allReadItems = append(allReadItems, *player.Wielded)
+		allReadItems = append(
+			allReadItems,
+			*player.Wielded,
+		)
 	}
+
 	for _, ii := range allReadItems {
 		itemDef := e.items[ii.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) || matchesTarget(name, target, e.getAdjName(ii.Adj3)) {
-			if skip > 0 {
-				skip--
-				continue
+
+		matched :=
+			matchesTarget(
+				name,
+				target,
+				e.getAdjName(ii.Adj1),
+			) ||
+				matchesTarget(
+					name,
+					target,
+					e.getAdjName(ii.Adj3),
+				)
+
+		if !matched {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		if player.GMTrace {
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"[TRACE] READ matched carried archetype=%d",
+						ii.Archetype,
+					),
+					"[TRACE] No carried-item READ implementation found",
+					"There is nothing written on it.",
+				},
 			}
-			return &CommandResult{Messages: []string{"There is nothing written on it."}}
+		}
+
+		return &CommandResult{
+			Messages: []string{
+				"There is nothing written on it.",
+			},
 		}
 	}
 
-	return &CommandResult{Messages: []string{"You don't see that here."}}
+	return &CommandResult{
+		Messages: []string{
+			"You don't see that here.",
+		},
+	}
 }
 
 func (e *GameEngine) doWho(player *Player) *CommandResult {
@@ -10029,26 +10773,66 @@ func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii 
 }
 
 func (e *GameEngine) examineRoomItem(player *Player, room *gameworld.Room, def *gameworld.ItemDef, ri *gameworld.RoomItem) *CommandResult {
+
 	result := &CommandResult{}
 
-	// Room-scoped EXAMINE description
 	refStr := fmt.Sprintf("%d", ri.Ref)
+
+	// Explicit room-scoped EXAMINE description has highest priority.
 	if desc, ok := room.ItemDescriptions["EXAMINE:"+refStr]; ok {
-		result.Messages = append(result.Messages, descriptionToMessages(desc)...)
+
+		result.Messages = append(
+			result.Messages,
+			descriptionToMessages(desc)...,
+		)
+
 	} else if isPortal(def.Type) {
-		result.Messages = append(result.Messages, "You can't clearly see where it leads.")
+
+		result.Messages = append(
+			result.Messages,
+			"You can't clearly see where it leads.",
+		)
+
 	} else {
-		result.Messages = append(result.Messages, "It is nondescript.")
+
+		// Build the complete room-instance description:
+		// article + adjectives + noun
+		name := e.formatItemName(
+			def,
+			ri.Adj1,
+			ri.Adj2,
+			ri.Adj3,
+		)
+
+		// EXTEND adds instance-specific descriptive text.
+		if ri.Extend != "" {
+			name += " " + ri.Extend
+		}
+
+		result.Messages = append(
+			result.Messages,
+			name+".",
+		)
 	}
 
-	// Run IFVERB LOOK scripts on the item (can add SHOWROOM output, etc.)
-	sc := e.RunVerbScripts(player, room, "LOOK", ri, def)
-	if len(sc.Messages) > 0 {
-		result.Messages = append(result.Messages, sc.Messages...)
-	}
-	if len(sc.RoomMsgs) > 0 {
-		result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
-	}
+	// Run IFVERB LOOK scripts on the item.
+	sc := e.RunVerbScripts(
+		player,
+		room,
+		"LOOK",
+		ri,
+		def,
+	)
+
+	result.Messages = append(
+		result.Messages,
+		sc.Messages...,
+	)
+
+	result.RoomBroadcast = append(
+		result.RoomBroadcast,
+		sc.RoomMsgs...,
+	)
 
 	return result
 }

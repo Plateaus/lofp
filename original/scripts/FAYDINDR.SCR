@@ -1551,7 +1551,7 @@ IFVERB SIT -1
   ECHO PLAYER As you settle down, the physicians begin tending to your injuries.
 ENDIF
 
-IFPVERB LAY -1
+IFPREVERB LAY -1
   ECHO PLAYER As you lie down, the physicians begin tending to your injuries.
 ENDIF
 

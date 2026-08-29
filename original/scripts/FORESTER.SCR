@@ -128,7 +128,7 @@ EXIT W 564
 EXIT N 1470
 ;-------path------
 ITEM 0 74 VAL2=569
-IFPVERB GO 0
+IFPREVERB GO 0
 	IFVAR ALIGN <= -1
 		ECHO PLAYER The forces of nature align to force you away from the grove.
 		ECHO OTHERS %N tried to enter the grove but is thrown back by some unseen source.
