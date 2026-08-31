@@ -1539,7 +1539,7 @@ FIXED_LIGHT
 HEALER
 CALL 33
 *DESCRIPTION_START
-HEYAB Second in age only to the Adventurers' Guild, the Physicians' Guild seems to exude solemnity. Charts representing the anatomy's of the various races hang on all walls. The adventurers sitting and lying about the floor are being treated by Fayd's finest diagnosticians. A door leads back to the street.
+  Second in age only to the Adventurers' Guild, the Physicians' Guild seems to exude solemnity. Charts representing the anatomy's of the various races hang on all walls. The adventurers sitting and lying about the floor are being treated by Fayd's finest diagnosticians. A door leads back to the street.
 *DESCRIPTION_END
 EXIT N 313
 EXIT W 314

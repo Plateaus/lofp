@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -30,6 +31,10 @@ type ScriptContext struct {
 	ItemDef *gameworld.ItemDef  // its archetype definition
 
 	DummyVars map[int]int // DUMMY1-5 temporary variables
+
+	PlayerEventEnabled bool
+	PlayerEventDelay   time.Duration
+	Suspended          bool
 }
 
 // RunEntryScripts executes all IFENTRY script blocks for a room.
@@ -72,11 +77,12 @@ func (e *GameEngine) RunSayScripts(player *Player, room *gameworld.Room, text st
 func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, verb string, ri *gameworld.RoomItem, def *gameworld.ItemDef, ri2 ...*gameworld.RoomItem) *ScriptContext {
 
 	sc := &ScriptContext{
-		Player:  player,
-		Room:    room,
-		Engine:  e,
-		ItemRef: ri,
-		ItemDef: def,
+		Player:             player,
+		Room:               room,
+		Engine:             e,
+		ItemRef:            ri,
+		ItemDef:            def,
+		PlayerEventEnabled: ri != nil && ri.Ref == -1,
 	}
 
 	verb = strings.ToUpper(verb)
@@ -167,11 +173,12 @@ func (e *GameEngine) RunItemScripts(player *Player, room *gameworld.Room, ri *ga
 func (e *GameEngine) RunVerbScripts(player *Player, room *gameworld.Room, verb string, ri *gameworld.RoomItem, def *gameworld.ItemDef) *ScriptContext {
 
 	sc := &ScriptContext{
-		Player:  player,
-		Room:    room,
-		Engine:  e,
-		ItemRef: ri,
-		ItemDef: def,
+		Player:             player,
+		Room:               room,
+		Engine:             e,
+		ItemRef:            ri,
+		ItemDef:            def,
+		PlayerEventEnabled: ri != nil && ri.Ref == -1,
 	}
 
 	verb = strings.ToUpper(verb)
@@ -300,6 +307,7 @@ func (sc *ScriptContext) execBlock(block gameworld.ScriptBlock) {
 	}
 }
 
+/*
 // execElse runs the ELSE branch of a conditional block (if it has one).
 func (sc *ScriptContext) execElse(block gameworld.ScriptBlock) {
 	for _, stmt := range block.ElseStatements {
@@ -339,6 +347,72 @@ func (sc *ScriptContext) execChildren(block gameworld.ScriptBlock) {
 		}
 	}
 }
+*/
+
+// execElse runs the ELSE branch of a conditional block.
+func (sc *ScriptContext) execElse(block gameworld.ScriptBlock) {
+	sc.execStatements(block.ElseStatements)
+}
+
+// execChildren runs the ordered statements within a script block.
+func (sc *ScriptContext) execChildren(block gameworld.ScriptBlock) {
+	sc.execStatements(block.Statements)
+}
+
+func (sc *ScriptContext) execStatements(statements []gameworld.ScriptStatement) {
+	for i := 0; i < len(statements); i++ {
+		stmt := statements[i]
+
+		if stmt.Action != nil {
+			action := *stmt.Action
+			cmd := strings.ToUpper(action.Command)
+
+			if sc.PlayerEventEnabled && cmd == "PLREVENT" {
+				sc.execAction(action)
+
+				// PLREVENT is followed by CONTPLREVENT.
+				// Everything after CONTPLREVENT resumes later.
+				if i+1 < len(statements) &&
+					statements[i+1].Action != nil &&
+					strings.EqualFold(
+						statements[i+1].Action.Command,
+						"CONTPLREVENT",
+					) {
+
+					sc.schedulePlayerEvent(
+						sc.PlayerEventDelay,
+						statements[i+2:],
+					)
+
+					sc.Suspended = true
+					return
+				}
+
+				continue
+			}
+
+			if sc.PlayerEventEnabled && cmd == "CONTPLREVENT" {
+				continue
+			}
+
+			sc.execAction(action)
+
+			if sc.Suspended {
+				return
+			}
+
+			continue
+		}
+
+		if stmt.Block != nil {
+			sc.execBlock(*stmt.Block)
+
+			if sc.Suspended {
+				return
+			}
+		}
+	}
+}
 
 // execAction executes a single script action.
 func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
@@ -361,8 +435,19 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 		sc.doMoveGroup(action.Args)
 	case "SHOWROOM":
 		sc.doShowRoom(action.Args)
-	case "PLREVENT", "CONTPLREVENT":
-		// Timing/event delay — not yet implemented; ignore silently
+	case "PLREVENT":
+		if sc.PlayerEventEnabled && len(action.Args) > 0 {
+			seconds := sc.resolveNumericArg(action.Args[0])
+			if seconds < 0 {
+				seconds = 0
+			}
+
+			sc.PlayerEventDelay =
+				time.Duration(seconds) * time.Second
+		}
+
+	case "CONTPLREVENT":
+		// Marker used by PLREVENT continuation handling.
 	case "AFFECT":
 		sc.doAffect(action.Args)
 	case "RANDOM":
@@ -435,6 +520,119 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 		// TODO: set room where defeated players are moved
 	case "CHANNEL":
 		// TODO: set communication channel for room
+	}
+}
+
+func (sc *ScriptContext) schedulePlayerEvent(
+	delay time.Duration,
+	statements []gameworld.ScriptStatement,
+) {
+	if len(statements) == 0 {
+		return
+	}
+
+	// Make a continuation context. Do NOT keep using the caller's
+	// temporary RoomItem because the original command is about to return.
+	next := *sc
+
+	next.Messages = nil
+	next.RoomMsgs = nil
+	next.GMMsgs = nil
+	next.Suspended = false
+	next.PlayerEventDelay = 0
+
+	if sc.ItemRef != nil {
+		itemCopy := *sc.ItemRef
+		next.ItemRef = &itemCopy
+	}
+
+	continuation := append(
+		[]gameworld.ScriptStatement(nil),
+		statements...,
+	)
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		<-timer.C
+
+		next.execStatements(continuation)
+
+		// Persist ITEMVAL changes back to the actual player item.
+		next.persistPlayerEventItem()
+
+		if next.Engine != nil && next.Player != nil {
+			next.Engine.SavePlayer(
+				context.Background(),
+				next.Player,
+			)
+
+			if len(next.Messages) > 0 &&
+				next.Engine.sendToPlayer != nil {
+
+				next.Engine.sendToPlayer(
+					next.Player.FirstName,
+					next.Messages,
+				)
+			}
+
+			if len(next.RoomMsgs) > 0 &&
+				next.Engine.roomBroadcast != nil {
+
+				next.Engine.roomBroadcast(
+					next.Player.RoomNumber,
+					next.RoomMsgs,
+				)
+			}
+		}
+	}()
+}
+
+func (sc *ScriptContext) persistPlayerEventItem() {
+	if sc.Player == nil ||
+		sc.ItemRef == nil ||
+		sc.ItemRef.Ref != -1 {
+		return
+	}
+
+	src := sc.ItemRef
+
+	copyVals := func(ii *InventoryItem) bool {
+		if ii == nil {
+			return false
+		}
+
+		if ii.Archetype != src.Archetype ||
+			ii.Adj1 != src.Adj1 ||
+			ii.Adj2 != src.Adj2 ||
+			ii.Adj3 != src.Adj3 {
+			return false
+		}
+
+		ii.Val1 = src.Val1
+		ii.Val2 = src.Val2
+		ii.Val3 = src.Val3
+		ii.Val4 = src.Val4
+		ii.Val5 = src.Val5
+
+		return true
+	}
+
+	for i := range sc.Player.Inventory {
+		if copyVals(&sc.Player.Inventory[i]) {
+			return
+		}
+	}
+
+	for i := range sc.Player.Worn {
+		if copyVals(&sc.Player.Worn[i]) {
+			return
+		}
+	}
+
+	if sc.Player.Wielded != nil {
+		copyVals(sc.Player.Wielded)
 	}
 }
 
@@ -1370,21 +1568,6 @@ func (sc *ScriptContext) setVar(name string, val int) {
 		}
 	}
 }
-
-// resolveNumericArg resolves a script argument that can be a literal number
-// or a variable reference like ITEMVAL2.
-/*func (sc *ScriptContext) resolveNumericArg(arg string) int {
-	upper := strings.ToUpper(arg)
-	if strings.HasPrefix(upper, "ITEMVAL") {
-		return sc.getVar(upper)
-	}
-	val, err := strconv.Atoi(arg)
-	if err != nil {
-		return 0
-	}
-	return val
-}
-*/
 
 func (sc *ScriptContext) resolveNumericArg(arg string) int {
 	// First try a literal number.

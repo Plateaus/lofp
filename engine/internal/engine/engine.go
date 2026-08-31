@@ -8252,6 +8252,15 @@ func (e *GameEngine) doGiveMoney(ctx context.Context, giver, receiver *Player, a
 }
 
 func (e *GameEngine) doEat(ctx context.Context, player *Player, args []string) *CommandResult {
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %d seconds...]", remaining),
+			},
+		}
+	}
+
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Eat what?"}}
 	}
@@ -8260,14 +8269,13 @@ func (e *GameEngine) doEat(ctx context.Context, player *Player, args []string) *
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
 
-	for i, ii := range player.Inventory {
-		itemDef := e.items[ii.Archetype]
-		if itemDef == nil {
-			continue
-		}
+	room := e.rooms[player.RoomNumber]
 
-		// Only edible items count for EAT or its ordinals.
-		if itemDef.Type != "FOOD" {
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
+		itemDef := e.items[ii.Archetype]
+		if itemDef == nil || itemDef.Type != "FOOD" {
 			continue
 		}
 
@@ -8287,14 +8295,18 @@ func (e *GameEngine) doEat(ctx context.Context, player *Player, args []string) *
 			continue
 		}
 
-		fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
+		fullName := e.formatItemName(
+			itemDef,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
 
-		// Run item scripts FIRST — they may set ITEMVAL3 based on adjective checks.
-		// e.g. thesnia leaf:
-		// IFVAR ITEMADJ3 = 397
-		//   EQUAL ITEMVAL3 403
-		// ENDIF
-		room := e.rooms[player.RoomNumber]
+		// FOOD Parameter1 is the starting bite count.
+		// Scripted foods need ITEMVAL2 populated before IFPREVERB.
+		if ii.Val2 == 0 && itemDef.Parameter1 > 0 {
+			ii.Val2 = itemDef.Parameter1
+		}
 
 		tempRI := gameworld.RoomItem{
 			Ref:       -1,
@@ -8309,57 +8321,138 @@ func (e *GameEngine) doEat(ctx context.Context, player *Player, args []string) *
 			Val5:      ii.Val5,
 		}
 
-		sc := e.RunItemScripts(player, room, &tempRI, itemDef)
-		sc2 := e.RunVerbScripts(player, room, "EAT", &tempRI, itemDef)
+		// Root-level item scripts may initialize ITEMVALs.
+		rootSC := e.RunItemScripts(
+			player,
+			room,
+			&tempRI,
+			itemDef,
+		)
 
-		sc.Messages = append(sc.Messages, sc2.Messages...)
+		// PREVERB runs before normal eating and may CLEARVERB.
+		preSC := e.RunPreverbScripts(
+			player,
+			room,
+			"EAT",
+			&tempRI,
+			itemDef,
+		)
 
-		// Bite tracking: initialize Val2 from Parameter1 on first bite.
-		currentBites := ii.Val2
-		if currentBites == 0 && itemDef.Parameter1 > 0 {
-			currentBites = itemDef.Parameter1
+		// Persist changes made before the normal action.
+		ii.Val1 = tempRI.Val1
+		ii.Val2 = tempRI.Val2
+		ii.Val3 = tempRI.Val3
+		ii.Val4 = tempRI.Val4
+		ii.Val5 = tempRI.Val5
+
+		var messages []string
+		var roomMessages []string
+		var gmMessages []string
+
+		messages = append(messages, rootSC.Messages...)
+		roomMessages = append(roomMessages, rootSC.RoomMsgs...)
+		gmMessages = append(gmMessages, rootSC.GMMsgs...)
+
+		messages = append(messages, preSC.Messages...)
+		roomMessages = append(roomMessages, preSC.RoomMsgs...)
+		gmMessages = append(gmMessages, preSC.GMMsgs...)
+
+		// Script completely handled EAT.
+		if preSC.Blocked {
+			e.SavePlayer(ctx, player)
+
+			return &CommandResult{
+				Messages:      messages,
+				RoomBroadcast: roomMessages,
+				GMBroadcast:   gmMessages,
+				PlayerState:   player,
+			}
 		}
 
-		var msgs []string
+		// --------------------------------------------------------
+		// Normal eating
+		// --------------------------------------------------------
+
+		currentBites := ii.Val2
 
 		if currentBites <= 1 {
-			// Last bite (or single-bite food) — remove from inventory.
 			player.Inventory = append(
 				player.Inventory[:i],
 				player.Inventory[i+1:]...,
 			)
 
-			msgs = []string{
+			messages = append(
+				messages,
 				fmt.Sprintf("You finish eating %s.", fullName),
-			}
-		} else {
-			// Decrement bites remaining.
-			newVal := currentBites - 1
-			player.Inventory[i].Val2 = newVal
+			)
 
-			msgs = []string{
+			// IFVERB still gets the temporary item context.
+			postSC := e.RunVerbScripts(
+				player,
+				room,
+				"EAT",
+				&tempRI,
+				itemDef,
+			)
+
+			messages = append(messages, postSC.Messages...)
+			roomMessages = append(roomMessages, postSC.RoomMsgs...)
+			gmMessages = append(gmMessages, postSC.GMMsgs...)
+
+		} else {
+			ii.Val2--
+			tempRI.Val2 = ii.Val2
+
+			messages = append(
+				messages,
 				fmt.Sprintf(
 					"You take a bite of %s. (%d bites remaining)",
 					fullName,
-					newVal,
+					ii.Val2,
 				),
-			}
+			)
+
+			// IFVERB runs after successful normal EAT.
+			postSC := e.RunVerbScripts(
+				player,
+				room,
+				"EAT",
+				&tempRI,
+				itemDef,
+			)
+
+			messages = append(messages, postSC.Messages...)
+			roomMessages = append(roomMessages, postSC.RoomMsgs...)
+			gmMessages = append(gmMessages, postSC.GMMsgs...)
+
+			// Persist any ITEMVAL changes made by IFVERB.
+			ii.Val1 = tempRI.Val1
+			ii.Val2 = tempRI.Val2
+			ii.Val3 = tempRI.Val3
+			ii.Val4 = tempRI.Val4
+			ii.Val5 = tempRI.Val5
 		}
 
-		// Add any script ECHO / SPELL messages.
-		msgs = append(msgs, sc.Messages...)
+		roomMessages = append(
+			roomMessages,
+			fmt.Sprintf("%s eats %s.", player.FirstName, fullName),
+		)
 
 		e.SavePlayer(ctx, player)
 
 		return &CommandResult{
-			Messages:      msgs,
-			RoomBroadcast: []string{fmt.Sprintf("%s eats %s.", player.FirstName, fullName)},
+			Messages:      messages,
+			RoomBroadcast: roomMessages,
+			GMBroadcast:   gmMessages,
 			PlayerState:   player,
 		}
 	}
 
-	return &CommandResult{Messages: []string{"You don't have that."}}
+	return &CommandResult{
+		Messages: []string{"You don't have that."},
+	}
 }
+
 func (e *GameEngine) doSpeech(ctx context.Context, player *Player, args []string, rawInput string) *CommandResult {
 	if len(args) == 0 {
 		if player.SpeechAdverb != "" {
