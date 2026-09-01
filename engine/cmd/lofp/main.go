@@ -52,6 +52,7 @@ func main() {
 	parsed := &gameworld.ParsedData{
 		Rooms:                result.Rooms,
 		Items:                result.Items,
+		Traits:               result.Traits,
 		Monsters:             result.Monsters,
 		Nouns:                result.Nouns,
 		Adjectives:           result.Adjectives,

@@ -431,6 +431,37 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		result = e.castStatusSpell(player, spell, args, true)
 	case "buff":
 		result = e.castStatusSpell(player, spell, args, true)
+	case "utility":
+		if spell.ID == 400 { // Detect Magic
+
+			if len(args) > 0 && strings.EqualFold(args[0], "on") {
+				args = args[1:]
+			}
+
+			result = e.doItemInteraction(ctx, player, "DETECTMAGIC", args)
+
+			// If item lookup failed, keep the lookup message.
+			if len(result.Messages) > 0 {
+				return result
+			}
+
+			switch {
+			case result.MagicPower == 0:
+				result.Messages = []string{"You sense no magic."}
+
+			case result.MagicPower == 1:
+				result.Messages = []string{"You sense a faint magical aura."}
+
+			case result.MagicPower <= 3:
+				result.Messages = []string{"You sense a noticeable magical aura."}
+
+			case result.MagicPower <= 6:
+				result.Messages = []string{"You sense a strong magical aura."}
+
+			default:
+				result.Messages = []string{"You sense an overwhelming magical aura."}
+			}
+		}
 	default:
 		result.Messages = []string{fmt.Sprintf("You gesture and cast %s.", spell.Name)}
 		result.RoomBroadcast = []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)}
@@ -867,27 +898,6 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 		}
 		return &CommandResult{Messages: []string{"You don't have a weapon matching that."}}
 
-		/*case 207, 208, 209: // Strength I-III
-			player.ApplyStatEffect(
-				spell.ID,
-				EffectSourceSpell,
-				spell.StatusType,
-				spell.DefBonus,
-				buffDuration,
-			)
-
-			msg = fmt.Sprintf("You gesture and cast %s. Your strength increases! (+%d STR)", spell.Name, spell.DefBonus)
-
-		case 513, 514, 515: // Agility I-III
-			player.ApplyStatEffect(
-				spell.ID,
-				EffectSourceSpell,
-				StatAgility,
-				spell.DefBonus,
-				buffDuration,
-			)
-		*/
-		msg = fmt.Sprintf("You gesture and cast %s. Your agility increases! (+%d AGI)", spell.Name, spell.DefBonus)
 	}
 
 	return &CommandResult{
@@ -936,6 +946,20 @@ func (e *GameEngine) castDefenseSpell(player *Player, spell *SpellDef, args []st
 		},
 		RoomBroadcast: []string{
 			fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+		},
+	}
+}
+
+func (e *GameEngine) castUtilitySpell(player *Player, spell *SpellDef, args []string) *CommandResult {
+
+	switch spell.ID {
+	case 400: // Detect Magic
+		// we'll put our item lookup + itemIsMagical() here
+	}
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf("You gesture and cast %s.", spell.Name),
 		},
 	}
 }

@@ -293,6 +293,7 @@ type InventoryItem struct {
 	State     string          `bson:"state,omitempty" json:"state,omitempty"`
 	WornSlot  string          `bson:"wornSlot,omitempty" json:"wornSlot,omitempty"`
 	Contents  []InventoryItem `bson:"contents,omitempty" json:"contents,omitempty"`
+	Traits    []string        `bson:"traits,omitempty" json:"traits,omitempty"`
 }
 
 type StatEffect struct {
@@ -539,7 +540,7 @@ func (p *Player) HasItem(archetype int, adj int) bool {
 }
 
 func (p *Player) HasTelepathy() bool {
-	if p.TelepathyActive {
+	if p.Race == RaceEphemeral && p.TelepathyActive {
 		return true
 	}
 

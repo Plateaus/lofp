@@ -21,20 +21,21 @@ type Room struct {
 
 // RoomItem is an item placed in a room via ITEM or PUT commands.
 type RoomItem struct {
-	Ref       int    `bson:"ref" json:"ref"`             // reference number 0-9
-	Archetype int    `bson:"archetype" json:"archetype"` // item INUMBER
-	Adj1      int    `bson:"adj1,omitempty" json:"adj1,omitempty"`
-	Adj2      int    `bson:"adj2,omitempty" json:"adj2,omitempty"`
-	Adj3      int    `bson:"adj3,omitempty" json:"adj3,omitempty"`
-	Val1      int    `bson:"val1,omitempty" json:"val1,omitempty"`
-	Val2      int    `bson:"val2,omitempty" json:"val2,omitempty"`
-	Val3      int    `bson:"val3,omitempty" json:"val3,omitempty"`
-	Val4      int    `bson:"val4,omitempty" json:"val4,omitempty"`
-	Val5      int    `bson:"val5,omitempty" json:"val5,omitempty"`
-	State     string `bson:"state,omitempty" json:"state,omitempty"`   // OPEN, CLOSED, LOCKED, etc.
-	Extend    string `bson:"extend,omitempty" json:"extend,omitempty"` // extended description
-	PutIn     int    `bson:"putIn,omitempty" json:"putIn,omitempty"`   // if PUT, which ref it's inside
-	IsPut     bool   `bson:"isPut,omitempty" json:"isPut,omitempty"`
+	Ref       int      `bson:"ref" json:"ref"`             // reference number 0-9
+	Archetype int      `bson:"archetype" json:"archetype"` // item INUMBER
+	Adj1      int      `bson:"adj1,omitempty" json:"adj1,omitempty"`
+	Adj2      int      `bson:"adj2,omitempty" json:"adj2,omitempty"`
+	Adj3      int      `bson:"adj3,omitempty" json:"adj3,omitempty"`
+	Val1      int      `bson:"val1,omitempty" json:"val1,omitempty"`
+	Val2      int      `bson:"val2,omitempty" json:"val2,omitempty"`
+	Val3      int      `bson:"val3,omitempty" json:"val3,omitempty"`
+	Val4      int      `bson:"val4,omitempty" json:"val4,omitempty"`
+	Val5      int      `bson:"val5,omitempty" json:"val5,omitempty"`
+	State     string   `bson:"state,omitempty" json:"state,omitempty"`   // OPEN, CLOSED, LOCKED, etc.
+	Extend    string   `bson:"extend,omitempty" json:"extend,omitempty"` // extended description
+	PutIn     int      `bson:"putIn,omitempty" json:"putIn,omitempty"`   // if PUT, which ref it's inside
+	IsPut     bool     `bson:"isPut,omitempty" json:"isPut,omitempty"`
+	Traits    []string `bson:"traits,omitempty" json:"traits,omitempty"`
 }
 
 // StoreItem represents a purchasable item in a shop room.
@@ -62,12 +63,20 @@ type ItemDef struct {
 	Parameter1 int           `bson:"parameter1" json:"parameter1"`
 	Parameter2 int           `bson:"parameter2" json:"parameter2"`
 	Parameter3 int           `bson:"parameter3" json:"parameter3"`
-	Container  string        `bson:"container,omitempty" json:"container,omitempty"` // IN, ON, UNDER, BEHIND
+	Container  string        `bson:"container,omitempty" json:"container,omitempty"`
 	Interior   int           `bson:"interior,omitempty" json:"interior,omitempty"`
 	WornSlot   string        `bson:"wornSlot,omitempty" json:"wornSlot,omitempty"`
-	Flags      []string      `bson:"flags" json:"flags"` // HIDDEN, LOCKABLE, OPENABLE, etc.
+	Flags      []string      `bson:"flags" json:"flags"`
+	Traits     []string      `bson:"traits,omitempty" json:"traits,omitempty"`
 	Scripts    []ScriptBlock `bson:"scripts,omitempty" json:"scripts,omitempty"`
 	SourceFile string        `bson:"sourceFile" json:"sourceFile"`
+}
+
+// TraitDef is a reusable set of item script behaviors.
+type TraitDef struct {
+	Name    string        `bson:"name" json:"name"`
+	Power   int           `bson:"power" json:"power"`
+	Scripts []ScriptBlock `bson:"scripts,omitempty" json:"scripts,omitempty"`
 }
 
 // MonsterDef defines a monster type.

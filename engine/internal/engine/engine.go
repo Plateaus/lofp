@@ -127,6 +127,7 @@ type GameEngine struct {
 	adjectives           map[int]string
 	monAdjs              map[int]string
 	items                map[int]*gameworld.ItemDef
+	traits               map[string]*gameworld.TraitDef
 	rooms                map[int]*gameworld.Room
 	monsters             map[int]*gameworld.MonsterDef
 	startRoom            int
@@ -391,6 +392,10 @@ func (e *GameEngine) ApplyParsedData(parsed *gameworld.ParsedData) ScriptApplySt
 		e.items[parsed.Items[i].Number] = &parsed.Items[i]
 		stats.Items++
 	}
+	for i := range parsed.Traits {
+		name := strings.ToUpper(parsed.Traits[i].Name)
+		e.traits[name] = &parsed.Traits[i]
+	}
 	for i := range parsed.Monsters {
 		e.monsters[parsed.Monsters[i].Number] = &parsed.Monsters[i]
 		stats.Monsters++
@@ -496,6 +501,7 @@ func NewGameEngine(db *mongo.Database, parsed *gameworld.ParsedData) *GameEngine
 		adjectives: make(map[int]string),
 		monAdjs:    make(map[int]string),
 		items:      make(map[int]*gameworld.ItemDef),
+		traits:     make(map[string]*gameworld.TraitDef),
 		rooms:      make(map[int]*gameworld.Room),
 		monsters:   make(map[int]*gameworld.MonsterDef),
 		startRoom:  parsed.StartRoom,
@@ -512,6 +518,10 @@ func NewGameEngine(db *mongo.Database, parsed *gameworld.ParsedData) *GameEngine
 	}
 	for i := range parsed.Items {
 		e.items[parsed.Items[i].Number] = &parsed.Items[i]
+	}
+	for i := range parsed.Traits {
+		name := strings.ToUpper(parsed.Traits[i].Name)
+		e.traits[name] = &parsed.Traits[i]
 	}
 	for i := range parsed.Rooms {
 		e.rooms[parsed.Rooms[i].Number] = &parsed.Rooms[i]
@@ -694,6 +704,8 @@ type CommandResult struct {
 	// LogEvent: optional event to log (type, detail).
 	LogEventType   string `json:"-"`
 	LogEventDetail string `json:"-"`
+
+	MagicPower int `json:"-"`
 }
 
 // extractOriginalArgs returns the original-case text after the first word of input.
@@ -2733,6 +2745,50 @@ func (e *GameEngine) doLook(player *Player) *CommandResult {
 	return result
 }
 
+func (e *GameEngine) itemExamineStats(def *gameworld.ItemDef) []string {
+	if def == nil {
+		return nil
+	}
+
+	var msgs []string
+
+	if strings.HasSuffix(def.Type, "_WEAPON") {
+		weaponType := strings.TrimSuffix(def.Type, "_WEAPON")
+		weaponType = strings.ReplaceAll(weaponType, "_", " ")
+		weaponType = strings.ToLower(weaponType)
+
+		msgs = append(msgs, fmt.Sprintf("Weapon type: %s", weaponType))
+	}
+
+	if def.Weight > 0 {
+		msgs = append(msgs, fmt.Sprintf("Weight: %d", def.Weight))
+	}
+
+	if def.Substance != "" {
+		material := strings.ToLower(def.Substance)
+		material = strings.ReplaceAll(material, "_", " ")
+
+		if material == "hardmetal" {
+			material = "hard metal"
+		}
+
+		msgs = append(msgs, fmt.Sprintf(
+			"Material: %s",
+			strings.Title(material),
+		))
+	}
+
+	if def.Parameter1 > 0 &&
+		strings.HasSuffix(def.Type, "_WEAPON") {
+
+		msgs = append(msgs, fmt.Sprintf(
+			"Damage: %d",
+			def.Parameter1,
+		))
+	}
+	return msgs
+}
+
 // lookDirMap maps direction words/abbreviations to exit keys.
 var lookDirMap = map[string]string{
 	"n": "N", "north": "N", "s": "S", "south": "S",
@@ -2927,8 +2983,10 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			def.Container == "ON"
 	}
 
-	// Search room items.
-	for _, ri := range room.Items {
+	// ------------------------------------------------------------
+	// ROOM ITEMS
+	// ------------------------------------------------------------
+	for i, ri := range room.Items {
 		if ri.IsPut {
 			continue
 		}
@@ -2940,11 +2998,9 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 
 		name := e.getItemNounName(itemDef)
 
-		if !matchesTarget(
-			name,
-			remaining,
-			e.getAdjName(ri.Adj1),
-		) {
+		if !matchesTarget(name, remaining, e.getAdjName(ri.Adj1)) &&
+			!matchesTarget(name, remaining, e.getAdjName(ri.Adj2)) &&
+			!matchesTarget(name, remaining, e.getAdjName(ri.Adj3)) {
 			continue
 		}
 
@@ -3102,13 +3158,57 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			)
 		}
 
-		return e.examineRoomItem(
+		// Run EXAMINE preverb scripts before normal examine behavior.
+		sc := e.RunPreverbScripts(
+			player,
+			room,
+			"EXAMINE",
+			&room.Items[i],
+			itemDef,
+		)
+
+		result := &CommandResult{
+			Messages:      append([]string{}, sc.Messages...),
+			RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+			GMBroadcast:   append([]string{}, sc.GMMsgs...),
+		}
+
+		if sc.Blocked {
+			if len(result.Messages) == 0 {
+				result.Messages = []string{"You can't do that."}
+			}
+
+			return result
+		}
+
+		examineResult := e.examineRoomItem(
 			player,
 			room,
 			itemDef,
-			&ri,
+			&room.Items[i],
 		)
+
+		result.Messages = append(
+			result.Messages,
+			examineResult.Messages...,
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			examineResult.RoomBroadcast...,
+		)
+
+		result.GMBroadcast = append(
+			result.GMBroadcast,
+			examineResult.GMBroadcast...,
+		)
+
+		return result
 	}
+
+	// ------------------------------------------------------------
+	// PLAYER ITEMS
+	// ------------------------------------------------------------
 
 	// Search all player items (inventory + worn + wielded).
 	allItems := make(
@@ -3132,17 +3232,9 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 
 		name := e.getItemNounName(itemDef)
 
-		if !matchesTarget(
-			name,
-			remaining,
-			e.getAdjName(ii.Adj1),
-		) &&
-			!matchesTarget(
-				name,
-				remaining,
-				e.getAdjName(ii.Adj3),
-			) {
-
+		if !matchesTarget(name, remaining, e.getAdjName(ii.Adj1)) &&
+			!matchesTarget(name, remaining, e.getAdjName(ii.Adj2)) &&
+			!matchesTarget(name, remaining, e.getAdjName(ii.Adj3)) {
 			continue
 		}
 
@@ -3178,17 +3270,59 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			}
 		}
 
-		msgs := []string{
-			fmt.Sprintf("You look at your %s.", name),
+		tempRI := gameworld.RoomItem{
+			Ref:       -1,
+			Archetype: ii.Archetype,
+			Adj1:      ii.Adj1,
+			Adj2:      ii.Adj2,
+			Adj3:      ii.Adj3,
+			Val1:      ii.Val1,
+			Val2:      ii.Val2,
+			Val3:      ii.Val3,
+			Val4:      ii.Val4,
+			Val5:      ii.Val5,
+			Traits:    ii.Traits,
+		}
+
+		// Run EXAMINE preverb scripts before normal examine behavior.
+		sc := e.RunPreverbScripts(
+			player,
+			room,
+			"EXAMINE",
+			&tempRI,
+			itemDef,
+		)
+
+		result := &CommandResult{
+			Messages:      append([]string{}, sc.Messages...),
+			RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+			GMBroadcast:   append([]string{}, sc.GMMsgs...),
+		}
+
+		if sc.Blocked {
+			if len(result.Messages) == 0 {
+				result.Messages = []string{"You can't do that."}
+			}
+
+			return result
+		}
+
+		stats := e.itemExamineStats(itemDef)
+
+		if len(stats) > 0 {
+			result.Messages = append(result.Messages, stats...)
+		} else {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf("You look at your %s.", name),
+			)
 		}
 
 		if sm := e.scrollLookMsg(ii.Archetype, ii.Val3); sm != "" {
-			msgs = append(msgs, sm)
+			result.Messages = append(result.Messages, sm)
 		}
 
-		return &CommandResult{
-			Messages: msgs,
-		}
+		return result
 	}
 
 	return &CommandResult{
@@ -4258,13 +4392,23 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 		}
 
 		name := e.getItemNounName(itemDef)
-		if !matchesTarget(name, target, e.getAdjName(ri.Adj1)) {
+
+		if !matchesTarget(name, target, e.getAdjName(ri.Adj1)) &&
+			!matchesTarget(name, target, e.getAdjName(ri.Adj2)) &&
+			!matchesTarget(name, target, e.getAdjName(ri.Adj3)) {
 			continue
 		}
 
 		if skip > 0 {
 			skip--
 			continue
+		}
+
+		// Detect Magic only needs item resolution + magic power.
+		if verb == "DETECTMAGIC" {
+			return &CommandResult{
+				MagicPower: e.itemMagicPower(itemDef, &room.Items[i]),
+			}
 		}
 
 		result := &CommandResult{}
@@ -4366,7 +4510,6 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 	}
 
 	// ------------------------------------------------------------
-
 	// PLAYER ITEM HELPER
 	// ------------------------------------------------------------
 	runPlayerItem := func(ii *InventoryItem) *CommandResult {
@@ -4382,6 +4525,7 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 		name := e.getItemNounName(itemDef)
 
 		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) &&
+			!matchesTarget(name, target, e.getAdjName(ii.Adj2)) &&
 			!matchesTarget(name, target, e.getAdjName(ii.Adj3)) {
 			return nil
 		}
@@ -4404,6 +4548,14 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 			Val3:      ii.Val3,
 			Val4:      ii.Val4,
 			Val5:      ii.Val5,
+			Traits:    ii.Traits,
+		}
+
+		// Detect Magic only needs item resolution + magic power.
+		if verb == "DETECTMAGIC" {
+			return &CommandResult{
+				MagicPower: e.itemMagicPower(itemDef, &tempRI),
+			}
 		}
 
 		result := &CommandResult{}
@@ -4514,6 +4666,13 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 		}
 	}
 
+	// Detect Magic needs to preserve "not found" separately from power 0.
+	if verb == "DETECTMAGIC" {
+		return &CommandResult{
+			Messages: []string{"You don't see that here."},
+		}
+	}
+
 	// Fall back to emote if the verb has one.
 	if _, hasEmote := emoteTable[verb]; hasEmote {
 		return e.processEmote(player, verb, args)
@@ -4525,17 +4684,47 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 }
 
 func (e *GameEngine) doATest(ctx context.Context, player *Player) *CommandResult {
-	room := e.rooms[player.RoomNumber]
+
+	for i := range player.Inventory {
+		item := &player.Inventory[i]
+
+		// Short sword archetype
+		if item.Archetype != 45 {
+			continue
+		}
+
+		hasTrait := false
+		for _, trait := range item.Traits {
+			if strings.EqualFold(trait, "GLOWING") {
+				hasTrait = true
+				break
+			}
+		}
+
+		if !hasTrait {
+			item.Traits = append(item.Traits, "GLOWING")
+		}
+
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"TEST: archetype=%d adj1=%d adj2=%d adj3=%d traits=%v",
+					item.Archetype,
+					item.Adj1,
+					item.Adj2,
+					item.Adj3,
+					item.Traits,
+				),
+			},
+			PlayerState: player,
+		}
+	}
 
 	return &CommandResult{
 		Messages: []string{
-			fmt.Sprintf(
-				"TEST: room=%d name=%s modifiers=%v bank=%t",
-				player.RoomNumber,
-				room.Name,
-				room.Modifiers,
-				containsModifier(room.Modifiers, "BANK"),
-			),
+			"TEST: No archetype 45 sword found.",
 		},
 		PlayerState: player,
 	}
@@ -6688,7 +6877,24 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 		}
 
 		name := e.getItemNounName(itemDef)
-		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+
+		// Match any of the item's adjective slots.
+		if !matchesTarget(
+			name,
+			target,
+			e.getAdjName(ii.Adj1),
+		) &&
+			!matchesTarget(
+				name,
+				target,
+				e.getAdjName(ii.Adj2),
+			) &&
+			!matchesTarget(
+				name,
+				target,
+				e.getAdjName(ii.Adj3),
+			) {
+
 			continue
 		}
 
@@ -6746,7 +6952,7 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 				}
 			}
 
-			// Run IFPREVERB WIELD script.
+			// Run IFPREVERB WIELD before the action.
 			scriptItem := gameworld.RoomItem{
 				Ref:       -1,
 				Archetype: ii.Archetype,
@@ -6802,21 +7008,51 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 				shield.Adj3,
 			)
 
-			result.Messages = append(
-				result.Messages,
-				fmt.Sprintf(
-					"You wield %s in your off hand.",
-					fullName,
-				),
+			// Run IFVERB WIELD after the successful action.
+			verbSC := e.RunVerbScripts(
+				player,
+				room,
+				"WIELD",
+				&scriptItem,
+				itemDef,
 			)
 
-			result.RoomBroadcast = append(
-				result.RoomBroadcast,
-				fmt.Sprintf(
-					"%s wields %s.",
-					player.FirstName,
-					fullName,
-				),
+			// Script text overrides the built-in player message.
+			if len(verbSC.Messages) > 0 {
+				result.Messages = append(
+					result.Messages,
+					verbSC.Messages...,
+				)
+			} else {
+				result.Messages = append(
+					result.Messages,
+					fmt.Sprintf(
+						"You wield %s in your off hand.",
+						fullName,
+					),
+				)
+			}
+
+			// Script room text overrides the built-in room message.
+			if len(verbSC.RoomMsgs) > 0 {
+				result.RoomBroadcast = append(
+					result.RoomBroadcast,
+					verbSC.RoomMsgs...,
+				)
+			} else {
+				result.RoomBroadcast = append(
+					result.RoomBroadcast,
+					fmt.Sprintf(
+						"%s wields %s.",
+						player.FirstName,
+						fullName,
+					),
+				)
+			}
+
+			result.GMBroadcast = append(
+				result.GMBroadcast,
+				verbSC.GMMsgs...,
 			)
 
 			return result
@@ -6841,10 +7077,7 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			}
 		}
 
-		/*
-			Run the inventory item's IFPREVERB WIELD script before
-			performing the normal wield action.
-		*/
+		// Run IFPREVERB WIELD before the action.
 		scriptItem := gameworld.RoomItem{
 			Ref:       -1,
 			Archetype: ii.Archetype,
@@ -6908,18 +7141,48 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			wielded.Adj3,
 		)
 
-		result.Messages = append(
-			result.Messages,
-			fmt.Sprintf("You wield %s.", fullName),
+		// Run IFVERB WIELD after the successful action.
+		verbSC := e.RunVerbScripts(
+			player,
+			room,
+			"WIELD",
+			&scriptItem,
+			itemDef,
 		)
 
-		result.RoomBroadcast = append(
-			result.RoomBroadcast,
-			fmt.Sprintf(
-				"%s wields %s.",
-				player.FirstName,
-				fullName,
-			),
+		// Script text overrides the built-in player message.
+		if len(verbSC.Messages) > 0 {
+			result.Messages = append(
+				result.Messages,
+				verbSC.Messages...,
+			)
+		} else {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf("You wield %s.", fullName),
+			)
+		}
+
+		// Script room text overrides the built-in room message.
+		if len(verbSC.RoomMsgs) > 0 {
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				verbSC.RoomMsgs...,
+			)
+		} else {
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s wields %s.",
+					player.FirstName,
+					fullName,
+				),
+			)
+		}
+
+		result.GMBroadcast = append(
+			result.GMBroadcast,
+			verbSC.GMMsgs...,
 		)
 
 		return result
@@ -6928,27 +7191,6 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 	return &CommandResult{
 		Messages: []string{"You don't have that."},
 	}
-}
-
-func isShield(def *gameworld.ItemDef) bool {
-	return def != nil && def.Type == "SHIELD"
-}
-
-func isTwoHandedWeapon(def *gameworld.ItemDef) bool {
-	if def == nil {
-		return false
-	}
-
-	switch def.Type {
-	case "BOW_WEAPON",
-		"POLE_WEAPON",
-		"POLETHROWN",
-		"TWOHAND_WEAPON",
-		"DRAKIN_POLE":
-		return true
-	}
-
-	return false
 }
 
 func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []string) *CommandResult {
@@ -6995,7 +7237,18 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []strin
 					name,
 					target,
 					e.getAdjName(player.Wielded.Adj1),
-				) {
+				) ||
+					matchesTarget(
+						name,
+						target,
+						e.getAdjName(player.Wielded.Adj2),
+					) ||
+					matchesTarget(
+						name,
+						target,
+						e.getAdjName(player.Wielded.Adj3),
+					) {
+
 					item = player.Wielded
 					itemDef = def
 				}
@@ -7013,7 +7266,18 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []strin
 					name,
 					target,
 					e.getAdjName(player.Offhand.Adj1),
-				) {
+				) ||
+					matchesTarget(
+						name,
+						target,
+						e.getAdjName(player.Offhand.Adj2),
+					) ||
+					matchesTarget(
+						name,
+						target,
+						e.getAdjName(player.Offhand.Adj3),
+					) {
+
 					item = player.Offhand
 					itemDef = def
 					isOffhand = true
@@ -7040,7 +7304,7 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []strin
 	}
 
 	// ------------------------------------------------------------
-	// Run IFPREVERB UNWIELD script.
+	// Run IFPREVERB UNWIELD before the action.
 	// ------------------------------------------------------------
 
 	scriptItem := gameworld.RoomItem{
@@ -7111,22 +7375,77 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []strin
 
 	e.SavePlayer(ctx, player)
 
-	result.Messages = append(
-		result.Messages,
-		fmt.Sprintf("You put away %s.", itemName),
+	// ------------------------------------------------------------
+	// Run IFVERB UNWIELD after the successful action.
+	// ------------------------------------------------------------
+
+	verbSC := e.RunVerbScripts(
+		player,
+		room,
+		"UNWIELD",
+		&scriptItem,
+		itemDef,
 	)
 
-	result.RoomBroadcast = append(
-		result.RoomBroadcast,
-		fmt.Sprintf(
-			"%s puts away %s.",
-			player.FirstName,
-			itemName,
-		),
+	// Script text overrides the built-in player message.
+	if len(verbSC.Messages) > 0 {
+		result.Messages = append(
+			result.Messages,
+			verbSC.Messages...,
+		)
+	} else {
+		result.Messages = append(
+			result.Messages,
+			fmt.Sprintf("You put away %s.", itemName),
+		)
+	}
+
+	// Script room text overrides the built-in room message.
+	if len(verbSC.RoomMsgs) > 0 {
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			verbSC.RoomMsgs...,
+		)
+	} else {
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			fmt.Sprintf(
+				"%s puts away %s.",
+				player.FirstName,
+				itemName,
+			),
+		)
+	}
+
+	result.GMBroadcast = append(
+		result.GMBroadcast,
+		verbSC.GMMsgs...,
 	)
 
 	return result
 }
+
+func isShield(def *gameworld.ItemDef) bool {
+	return def != nil && def.Type == "SHIELD"
+}
+
+func isTwoHandedWeapon(def *gameworld.ItemDef) bool {
+	if def == nil {
+		return false
+	}
+
+	switch def.Type {
+	case "BOW_WEAPON",
+		"POLE_WEAPON",
+		"POLETHROWN",
+		"TWOHAND_WEAPON",
+		"DRAKIN_POLE":
+		return true
+	}
+
+	return false
+}
+
 func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Wear what?"}}
@@ -11081,6 +11400,35 @@ func isWeapon(itemType string) bool {
 		return true
 	}
 	return false
+}
+
+// a way to check if an item is magical.  It basically counts POWER from the  item scripts
+func (e *GameEngine) itemMagicPower(def *gameworld.ItemDef, ri *gameworld.RoomItem) int {
+
+	power := 0
+
+	var traitNames []string
+
+	if def != nil {
+		traitNames = append(traitNames, def.Traits...)
+	}
+
+	if ri != nil {
+		traitNames = append(traitNames, ri.Traits...)
+	}
+
+	for _, traitName := range traitNames {
+		trait := e.traits[strings.ToUpper(traitName)]
+		if trait == nil {
+			continue
+		}
+
+		if trait.Power > 0 {
+			power += trait.Power
+		}
+	}
+
+	return power
 }
 
 // doLoadWeapon handles NOCK/LOAD <weapon> WITH <ammo>.

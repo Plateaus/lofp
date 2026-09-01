@@ -15,6 +15,7 @@ import (
 type ParseResult struct {
 	Rooms                []gameworld.Room
 	Items                []gameworld.ItemDef
+	Traits               []gameworld.TraitDef
 	Monsters             []gameworld.MonsterDef
 	Nouns                []gameworld.NounDef
 	Adjectives           []gameworld.AdjDef
@@ -22,8 +23,8 @@ type ParseResult struct {
 	Variables            []gameworld.Variable
 	Regions              []gameworld.Region
 	MonsterLists         []gameworld.MonsterList
-	SeasonalMonsterLists map[string][]gameworld.MonsterList // "PSCRIPT" -> spring MLISTs, etc.
-	SeasonalRooms        map[string][]gameworld.Room        // seasonal room description overrides
+	SeasonalMonsterLists map[string][]gameworld.MonsterList
+	SeasonalRooms        map[string][]gameworld.Room
 	CEvents              []gameworld.CEvent
 	MoneyDefs            []gameworld.MoneyDef
 	ForageDefs           []gameworld.ForageDef
@@ -282,6 +283,8 @@ func (p *fileParser) parse() {
 			p.parseItem(fields)
 		case "MNUMBER":
 			p.parseMonster(fields)
+		case "TRAITDEF":
+			p.parseTrait(fields)
 		case "NOUNDEF":
 			if len(fields) >= 3 {
 				id, _ := strconv.Atoi(fields[1])
@@ -389,6 +392,59 @@ func (p *fileParser) parse() {
 	}
 }
 
+func (p *fileParser) parseTrait(fields []string) {
+	if len(fields) < 2 {
+		p.pos++
+		return
+	}
+
+	trait := gameworld.TraitDef{
+		Name: strings.ToUpper(fields[1]),
+	}
+
+	p.pos++
+
+	for p.pos < len(p.lines) {
+		line := strings.TrimSpace(p.lines[p.pos])
+
+		if line == "" || strings.HasPrefix(line, ";") {
+			p.pos++
+			continue
+		}
+
+		fields := strings.Fields(line)
+		cmd := strings.ToUpper(fields[0])
+
+		if cmd == "ENDTRAIT" {
+			p.pos++
+			break
+		}
+
+		switch cmd {
+
+		case "POWER":
+			if len(fields) >= 2 {
+				if n, err := strconv.Atoi(fields[1]); err == nil {
+					trait.Power = n
+				}
+			}
+			p.pos++
+			continue
+
+		case "IFVERB", "IFPREVERB", "IFVERB2", "IFPREVERB2",
+			"IFITEM", "IFTOUCH", "IFVAR", "IFNOITEM",
+			"IFSEEK", "IFSAY", "IFCARRY":
+
+			block := p.parseScriptBlock(fields)
+			trait.Scripts = append(trait.Scripts, block)
+			continue
+		}
+
+		p.pos++
+	}
+
+	p.result.Traits = append(p.result.Traits, trait)
+}
 func (p *fileParser) parseRoom(fields []string) {
 	if len(fields) < 2 {
 		p.pos++
@@ -669,6 +725,10 @@ func (p *fileParser) parseItem(fields []string) {
 			"HIDDEN", "LATCHABLE", "LIGHTABLE", "LOCKABLE", "OPENABLE",
 			"REAGENT", "SKIN", "TURNABLE", "SEALED", "MATERIAL2":
 			item.Flags = append(item.Flags, cmd)
+		case "TRAIT":
+			if len(fields) >= 2 {
+				item.Traits = append(item.Traits, strings.ToUpper(fields[1]))
+			}
 		case "IFVERB", "IFPREVERB", "IFVERB2", "IFPREVERB2",
 			"IFITEM", "IFTOUCH", "IFVAR", "IFNOITEM",
 			"IFSEEK", "IFSAY", "IFCARRY":
@@ -709,7 +769,10 @@ func (p *fileParser) parseMonster(fields []string) {
 		fields := strings.Fields(line)
 		cmd := strings.ToUpper(fields[0])
 
-		if cmd == "NUMBER" || cmd == "INUMBER" || cmd == "MNUMBER" {
+		if cmd == "NUMBER" ||
+			cmd == "INUMBER" ||
+			cmd == "MNUMBER" ||
+			cmd == "TRAITDEF" {
 			break
 		}
 

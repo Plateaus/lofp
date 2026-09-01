@@ -4,6 +4,7 @@ package gameworld
 type ParsedData struct {
 	Rooms                []Room
 	Items                []ItemDef
+	Traits               []TraitDef
 	Monsters             []MonsterDef
 	Nouns                []NounDef
 	Adjectives           []AdjDef

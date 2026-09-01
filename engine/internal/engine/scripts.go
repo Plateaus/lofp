@@ -93,18 +93,26 @@ func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, ver
 		refStr = fmt.Sprintf("%d", ri.Ref)
 	}
 
-	// Room-level IFPREVERB
-	for _, block := range room.Scripts {
-		if block.Type == "IFPREVERB" && len(block.Args) >= 2 {
-			if strings.ToUpper(block.Args[0]) == verb &&
-				(block.Args[1] == refStr || block.Args[1] == "-1") {
+	// ------------------------------------------------------------
+	// ROOM IFPREVERB
+	// ------------------------------------------------------------
 
-				sc.execBlock(block)
+	if room != nil {
+		for _, block := range room.Scripts {
+			if block.Type == "IFPREVERB" && len(block.Args) >= 2 {
+				if strings.ToUpper(block.Args[0]) == verb &&
+					(block.Args[1] == refStr || block.Args[1] == "-1") {
+
+					sc.execBlock(block)
+				}
 			}
 		}
 	}
 
-	// Item-level IFPREVERB
+	// ------------------------------------------------------------
+	// ITEM ARCHETYPE IFPREVERB
+	// ------------------------------------------------------------
+
 	if def != nil {
 		for _, block := range def.Scripts {
 			if block.Type == "IFPREVERB" && len(block.Args) >= 1 {
@@ -117,17 +125,72 @@ func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, ver
 		}
 	}
 
+	// ------------------------------------------------------------
+	// TRAIT IFPREVERB
+	// Last attached trait defining this verb wins.
+	// ------------------------------------------------------------
+
+	// Archetype traits first, then instance traits.
+	// Last trait defining this verb wins.
+	if def != nil {
+		var traitBlock *gameworld.ScriptBlock
+
+		traitNames := append([]string{}, def.Traits...)
+
+		if ri != nil {
+			traitNames = append(traitNames, ri.Traits...)
+		}
+
+		for _, traitName := range traitNames {
+			trait := e.traits[strings.ToUpper(traitName)]
+			if trait == nil {
+				continue
+			}
+
+			for i := range trait.Scripts {
+				block := &trait.Scripts[i]
+
+				if block.Type != "IFPREVERB" {
+					continue
+				}
+
+				if len(block.Args) < 1 {
+					continue
+				}
+
+				if strings.ToUpper(block.Args[0]) != verb {
+					continue
+				}
+
+				if len(block.Args) >= 2 && block.Args[1] != "-1" {
+					continue
+				}
+
+				traitBlock = block
+			}
+		}
+
+		if traitBlock != nil {
+			sc.execBlock(*traitBlock)
+		}
+	}
+
+	// ------------------------------------------------------------
 	// IFPREVERB2
+	// ------------------------------------------------------------
+
 	if len(ri2) > 0 && ri2[0] != nil {
 		secondItem := ri2[0]
 		secondRefStr := fmt.Sprintf("%d", secondItem.Ref)
 
-		for _, block := range room.Scripts {
-			if block.Type == "IFPREVERB2" && len(block.Args) >= 2 {
-				if strings.ToUpper(block.Args[0]) == verb &&
-					block.Args[1] == secondRefStr {
+		if room != nil {
+			for _, block := range room.Scripts {
+				if block.Type == "IFPREVERB2" && len(block.Args) >= 2 {
+					if strings.ToUpper(block.Args[0]) == verb &&
+						block.Args[1] == secondRefStr {
 
-					sc.execBlock(block)
+						sc.execBlock(block)
+					}
 				}
 			}
 		}
@@ -173,60 +236,97 @@ func (e *GameEngine) RunItemScripts(player *Player, room *gameworld.Room, ri *ga
 func (e *GameEngine) RunVerbScripts(player *Player, room *gameworld.Room, verb string, ri *gameworld.RoomItem, def *gameworld.ItemDef) *ScriptContext {
 
 	sc := &ScriptContext{
-		Player:             player,
-		Room:               room,
-		Engine:             e,
-		ItemRef:            ri,
-		ItemDef:            def,
-		PlayerEventEnabled: ri != nil && ri.Ref == -1,
+		Player:  player,
+		Room:    room,
+		Engine:  e,
+		ItemRef: ri,
+		ItemDef: def,
 	}
 
+	refStr := fmt.Sprintf("%d", ri.Ref)
 	verb = strings.ToUpper(verb)
 
-	refStr := "-1"
-	if ri != nil {
-		refStr = fmt.Sprintf("%d", ri.Ref)
-	}
+	// ------------------------------------------------------------
+	// ROOM IFVERB
+	// ------------------------------------------------------------
 
-	// Room-level scripts
 	if room != nil {
 		for _, block := range room.Scripts {
-			switch block.Type {
-			case "IFVERB":
-				if len(block.Args) >= 2 &&
-					strings.ToUpper(block.Args[0]) == verb &&
+			if block.Type == "IFVERB" && len(block.Args) >= 2 {
+				if strings.ToUpper(block.Args[0]) == verb &&
 					block.Args[1] == refStr {
-					sc.execBlock(block)
-				}
 
-			case "IFTOUCH":
-				if verb == "TOUCH" &&
-					len(block.Args) >= 1 &&
-					(block.Args[0] == refStr || block.Args[0] == "-1") {
 					sc.execBlock(block)
 				}
 			}
 		}
 	}
 
-	// Item-level scripts
-	if def != nil {
-		for _, block := range def.Scripts {
-			switch block.Type {
-			case "IFVERB":
-				if len(block.Args) >= 1 &&
-					strings.ToUpper(block.Args[0]) == verb &&
-					(len(block.Args) < 2 || block.Args[1] == "-1") {
-					sc.execBlock(block)
-				}
+	// ------------------------------------------------------------
+	// ITEM ARCHETYPE IFVERB
+	// ------------------------------------------------------------
 
-			case "IFTOUCH":
-				if verb == "TOUCH" &&
-					(len(block.Args) == 0 || block.Args[0] == "-1") {
+	for _, block := range def.Scripts {
+		if block.Type == "IFVERB" && len(block.Args) >= 1 {
+			if strings.ToUpper(block.Args[0]) == verb {
+				if len(block.Args) < 2 || block.Args[1] == "-1" {
 					sc.execBlock(block)
 				}
 			}
 		}
+	}
+
+	// ------------------------------------------------------------
+	// TRAIT IFVERB
+	//
+	// Traits are attached to the item in order:
+	//
+	// TRAIT GENERIC_SWORD
+	// TRAIT FANCY_SWORD
+	//
+	// If more than one trait defines the same IFVERB,
+	// the LAST attached trait wins.
+	// ------------------------------------------------------------
+
+	var traitBlock *gameworld.ScriptBlock
+
+	traitNames := append([]string{}, def.Traits...)
+
+	if ri != nil {
+		traitNames = append(traitNames, ri.Traits...)
+	}
+
+	for _, traitName := range traitNames {
+		trait := e.traits[strings.ToUpper(traitName)]
+		if trait == nil {
+			continue
+		}
+
+		for i := range trait.Scripts {
+			block := &trait.Scripts[i]
+
+			if block.Type != "IFVERB" {
+				continue
+			}
+
+			if len(block.Args) < 1 {
+				continue
+			}
+
+			if strings.ToUpper(block.Args[0]) != verb {
+				continue
+			}
+
+			if len(block.Args) >= 2 && block.Args[1] != "-1" {
+				continue
+			}
+
+			traitBlock = block
+		}
+	}
+
+	if traitBlock != nil {
+		sc.execBlock(*traitBlock)
 	}
 
 	return sc
@@ -990,17 +1090,21 @@ func (sc *ScriptContext) evalIfVar(args []string) bool {
 }
 
 // evalIfItem evaluates IFITEM conditions like "IFITEM 0 OPEN" or "IFITEM -1 CLOSED".
+// evalIfItem evaluates IFITEM conditions like "IFITEM 0 OPEN" or "IFITEM -1 CLOSED".
 func (sc *ScriptContext) evalIfItem(args []string) bool {
 	if len(args) < 2 {
 		return false
 	}
+
 	ref, err := strconv.Atoi(args[0])
 	if err != nil {
 		return false
 	}
+
 	expectedState := strings.ToUpper(args[1])
 
 	var ri *gameworld.RoomItem
+
 	if ref == -1 && sc.ItemRef != nil {
 		ri = sc.ItemRef
 	} else {
@@ -1011,27 +1115,51 @@ func (sc *ScriptContext) evalIfItem(args []string) bool {
 			}
 		}
 	}
+
 	if ri == nil {
 		return false
 	}
 
 	state := strings.ToUpper(ri.State)
+
 	switch expectedState {
 	case "OPEN":
 		return state == "OPEN"
+
 	case "CLOSED":
 		return state == "CLOSED" || state == ""
+
 	case "LOCKED":
 		return state == "LOCKED"
+
 	case "UNLOCKED":
 		return state == "UNLOCKED" || state == "OPEN"
+
 	case "WORN":
 		for i := range sc.Player.Worn {
-			if sc.Player.Worn[i].Archetype == ri.Archetype {
+			item := &sc.Player.Worn[i]
+
+			if item.Archetype == ri.Archetype &&
+				item.Adj1 == ri.Adj1 &&
+				item.Adj2 == ri.Adj2 &&
+				item.Adj3 == ri.Adj3 {
 				return true
 			}
 		}
+
+	case "WIELDED":
+		if sc.Player.Wielded == nil {
+			return false
+		}
+
+		item := sc.Player.Wielded
+
+		return item.Archetype == ri.Archetype &&
+			item.Adj1 == ri.Adj1 &&
+			item.Adj2 == ri.Adj2 &&
+			item.Adj3 == ri.Adj3
 	}
+
 	return false
 }
 
