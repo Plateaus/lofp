@@ -3318,8 +3318,27 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			)
 		}
 
+		if strings.HasSuffix(itemDef.Type, "_WEAPON") {
+			if ii.State == "DAMAGED" {
+				result.Messages = append(result.Messages, "Condition: Damaged")
+			} else {
+				result.Messages = append(result.Messages, "Condition: Undamaged")
+			}
+		}
+
 		if sm := e.scrollLookMsg(ii.Archetype, ii.Val3); sm != "" {
 			result.Messages = append(result.Messages, sm)
+		}
+
+		if ii.Identified {
+			enchantments := e.itemEnchantments(&ii, itemDef)
+
+			if len(enchantments) > 0 {
+				result.Messages = append(result.Messages, "Enchantments:")
+				for _, enchantment := range enchantments {
+					result.Messages = append(result.Messages, "  "+enchantment)
+				}
+			}
 		}
 
 		return result
@@ -3330,6 +3349,60 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			"You don't see that here.",
 		},
 	}
+}
+
+func (e *GameEngine) itemEnchantments(item *InventoryItem, def *gameworld.ItemDef) []string {
+	if item == nil || def == nil {
+		return nil
+	}
+
+	var result []string
+	seen := make(map[string]bool)
+
+	addTrait := func(name string) {
+		name = strings.ToUpper(name)
+
+		if seen[name] {
+			return
+		}
+
+		trait := e.traits[name]
+		if trait == nil || trait.Power <= 0 {
+			return
+		}
+
+		var display string
+
+		if strings.HasPrefix(name, "MAGIC_PLUS_") {
+			bonus := strings.TrimPrefix(name, "MAGIC_PLUS_")
+			display = "Magic +" + bonus
+		} else {
+			display = strings.ReplaceAll(name, "_", " ")
+			display = strings.ToLower(display)
+
+			words := strings.Fields(display)
+			for i := range words {
+				words[i] = strings.ToUpper(words[i][:1]) + words[i][1:]
+			}
+
+			display = strings.Join(words, " ")
+		}
+
+		seen[name] = true
+		result = append(result, display)
+	}
+
+	// Archetype traits first.
+	for _, name := range def.Traits {
+		addTrait(name)
+	}
+
+	// Instance traits second.
+	for _, name := range item.Traits {
+		addTrait(name)
+	}
+
+	return result
 }
 
 // scrollLookMsg returns a description line if the item is a scroll, empty string otherwise.
@@ -4404,6 +4477,13 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 			continue
 		}
 
+		// Identify currently applies to carried/worn/wielded item instances.
+		if verb == "IDENTIFY" {
+			return &CommandResult{
+				Messages: []string{"You must be holding that to identify it."},
+			}
+		}
+
 		// Detect Magic only needs item resolution + magic power.
 		if verb == "DETECTMAGIC" {
 			return &CommandResult{
@@ -4558,6 +4638,17 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 			}
 		}
 
+		// Identify modifies the actual InventoryItem instance.
+		if verb == "IDENTIFY" {
+			result := &CommandResult{
+				Messages: e.identifyItem(player, ii),
+			}
+
+			e.SavePlayer(ctx, player)
+
+			return result
+		}
+
 		result := &CommandResult{}
 
 		// Run IFPREVERB first.
@@ -4666,8 +4757,8 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 		}
 	}
 
-	// Detect Magic needs to preserve "not found" separately from power 0.
-	if verb == "DETECTMAGIC" {
+	// Detect Magic / Identify need a straightforward not-found result.
+	if verb == "DETECTMAGIC" || verb == "IDENTIFY" {
 		return &CommandResult{
 			Messages: []string{"You don't see that here."},
 		}

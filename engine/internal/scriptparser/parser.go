@@ -431,6 +431,12 @@ func (p *fileParser) parseTrait(fields []string) {
 			p.pos++
 			continue
 
+		case "ITEMVAL2", "ITEMVAL3", "ITEMVAL5", "ADJDEF":
+			trait.Scripts = append(trait.Scripts, gameworld.ScriptBlock{
+				Type: cmd,
+				Args: fields[1:],
+			})
+
 		case "IFVERB", "IFPREVERB", "IFVERB2", "IFPREVERB2",
 			"IFITEM", "IFTOUCH", "IFVAR", "IFNOITEM",
 			"IFSEEK", "IFSAY", "IFCARRY":

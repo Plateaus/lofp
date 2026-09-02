@@ -21,21 +21,22 @@ type Room struct {
 
 // RoomItem is an item placed in a room via ITEM or PUT commands.
 type RoomItem struct {
-	Ref       int      `bson:"ref" json:"ref"`             // reference number 0-9
-	Archetype int      `bson:"archetype" json:"archetype"` // item INUMBER
-	Adj1      int      `bson:"adj1,omitempty" json:"adj1,omitempty"`
-	Adj2      int      `bson:"adj2,omitempty" json:"adj2,omitempty"`
-	Adj3      int      `bson:"adj3,omitempty" json:"adj3,omitempty"`
-	Val1      int      `bson:"val1,omitempty" json:"val1,omitempty"`
-	Val2      int      `bson:"val2,omitempty" json:"val2,omitempty"`
-	Val3      int      `bson:"val3,omitempty" json:"val3,omitempty"`
-	Val4      int      `bson:"val4,omitempty" json:"val4,omitempty"`
-	Val5      int      `bson:"val5,omitempty" json:"val5,omitempty"`
-	State     string   `bson:"state,omitempty" json:"state,omitempty"`   // OPEN, CLOSED, LOCKED, etc.
-	Extend    string   `bson:"extend,omitempty" json:"extend,omitempty"` // extended description
-	PutIn     int      `bson:"putIn,omitempty" json:"putIn,omitempty"`   // if PUT, which ref it's inside
-	IsPut     bool     `bson:"isPut,omitempty" json:"isPut,omitempty"`
-	Traits    []string `bson:"traits,omitempty" json:"traits,omitempty"`
+	Ref        int      `bson:"ref" json:"ref"`             // reference number 0-9
+	Archetype  int      `bson:"archetype" json:"archetype"` // item INUMBER
+	Adj1       int      `bson:"adj1,omitempty" json:"adj1,omitempty"`
+	Adj2       int      `bson:"adj2,omitempty" json:"adj2,omitempty"`
+	Adj3       int      `bson:"adj3,omitempty" json:"adj3,omitempty"`
+	Val1       int      `bson:"val1,omitempty" json:"val1,omitempty"`
+	Val2       int      `bson:"val2,omitempty" json:"val2,omitempty"`
+	Val3       int      `bson:"val3,omitempty" json:"val3,omitempty"`
+	Val4       int      `bson:"val4,omitempty" json:"val4,omitempty"`
+	Val5       int      `bson:"val5,omitempty" json:"val5,omitempty"`
+	State      string   `bson:"state,omitempty" json:"state,omitempty"`   // OPEN, CLOSED, LOCKED, etc.
+	Extend     string   `bson:"extend,omitempty" json:"extend,omitempty"` // extended description
+	PutIn      int      `bson:"putIn,omitempty" json:"putIn,omitempty"`   // if PUT, which ref it's inside
+	IsPut      bool     `bson:"isPut,omitempty" json:"isPut,omitempty"`
+	Traits     []string `bson:"traits,omitempty" json:"traits,omitempty"`
+	Identified bool     `bson:"identified,omitempty" json:"identified,omitempty"`
 }
 
 // StoreItem represents a purchasable item in a shop room.

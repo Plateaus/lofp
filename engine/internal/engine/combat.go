@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,166 @@ func getXPPerBP(level int) int {
 // buildPointsForLevel returns total build points at a given level.
 func buildPointsForLevel(level int) int {
 	return 20 + 10*level
+}
+
+func (e *GameEngine) weaponMagicStats(item *InventoryItem, def *gameworld.ItemDef) (val2, val3, val5 int) {
+
+	if item == nil {
+		return 0, 0, 0
+	}
+
+	// Original values stored directly on this particular item.
+	val2 = item.Val2
+	val3 = item.Val3
+	val5 = item.Val5
+
+	applyTrait := func(name string) {
+		trait := e.traits[strings.ToUpper(name)]
+		if trait == nil {
+			return
+		}
+
+		for _, block := range trait.Scripts {
+			if len(block.Args) == 0 {
+				continue
+			}
+
+			value, err := strconv.Atoi(block.Args[0])
+			if err != nil {
+				continue
+			}
+
+			switch strings.ToUpper(block.Type) {
+			case "ITEMVAL2":
+				val2 = value
+
+			case "ITEMVAL3":
+				val3 = value
+
+			case "ITEMVAL5":
+				val5 = value
+			}
+		}
+	}
+
+	// Base weapon traits.
+	if def != nil {
+		for _, name := range def.Traits {
+			applyTrait(name)
+		}
+	}
+
+	// Traits attached to this particular weapon instance.
+	for _, name := range item.Traits {
+		applyTrait(name)
+	}
+
+	return val2, val3, val5
+}
+
+func (e *GameEngine) weaponCritDamage(wielded *InventoryItem, weaponDef *gameworld.ItemDef, monDef *gameworld.MonsterDef) (int, string) {
+
+	if wielded == nil || weaponDef == nil {
+		return 0, ""
+	}
+
+	_, val3, val5 := e.weaponMagicStats(wielded, weaponDef)
+
+	if val3 == 0 {
+		val3 = weaponDef.Parameter3
+	}
+
+	if val3 == 0 {
+		return 0, ""
+	}
+
+	if val5 == 0 {
+		// Infer crit max from weapon damage
+		val5 = weaponDef.Parameter1 / 2
+		if val5 < 5 {
+			val5 = 5
+		}
+	}
+
+	// Elemental crits (VAL3 2-18): chance-based extra damage
+	switch {
+	case val3 >= 2 && val3 <= 18:
+		chance := 0
+		dmgType := ""
+
+		switch val3 {
+		case 2:
+			chance, dmgType = 50, "heat"
+		case 3:
+			chance, dmgType = 50, "cold"
+		case 4:
+			chance, dmgType = 50, "electric"
+		case 5:
+			chance, dmgType = 40, "heat"
+		case 6:
+			chance, dmgType = 40, "cold"
+		case 7:
+			chance, dmgType = 40, "electric"
+		case 10:
+			chance, dmgType = 30, "heat"
+		case 11:
+			chance, dmgType = 30, "cold"
+		case 12:
+			chance, dmgType = 30, "electric"
+		case 13:
+			chance, dmgType = 20, "heat"
+		case 14:
+			chance, dmgType = 20, "cold"
+		case 15:
+			chance, dmgType = 20, "electric"
+		case 16:
+			chance, dmgType = 10, "heat"
+		case 17:
+			chance, dmgType = 10, "cold"
+		case 18:
+			chance, dmgType = 10, "electric"
+		}
+
+		if chance > 0 && rand.Intn(100) < chance {
+			extra := rand.Intn(val5) + 1
+
+			if monDef != nil {
+				immType := elementalImmunityType(dmgType)
+				if level, ok := monDef.Immunities[immType]; ok {
+					extra = applyImmunity(extra, level)
+				}
+			}
+
+			typeNames := map[string]string{
+				"heat":     "fire",
+				"cold":     "cold",
+				"electric": "lightning",
+			}
+
+			return extra, typeNames[dmgType]
+		}
+
+	// Slayer weapons
+	case val3 >= 21 && val3 <= 31:
+		if monDef != nil && monDef.Race == val3 {
+			return val5, "slayer"
+		}
+	}
+
+	return 0, ""
+}
+
+func elementalImmunityType(dmgType string) int {
+	switch strings.ToLower(dmgType) {
+	case "heat":
+		return 3
+	case "cold":
+		return 4
+	case "electric":
+		return 5
+	default:
+		return 0
+	}
 }
 
 // recalcBuildPoints recalculates a player's build points and level from their XP.
@@ -561,18 +722,23 @@ func applyImmunity(dmg int, immunityLevel int) int {
 // ---- MAGICWEAPON check ----
 // Some monsters require magic weapons: 1=any magic, 2=bonus>=10, 3=bonus>=21
 
-func checkMagicWeapon(player *Player, wielded *InventoryItem, weaponDef *gameworld.ItemDef, monDef *gameworld.MonsterDef) bool {
+func (e *GameEngine) checkMagicWeapon(player *Player, wielded *InventoryItem, weaponDef *gameworld.ItemDef, monDef *gameworld.MonsterDef) bool {
+
 	if monDef.MagicWeapon <= 0 {
-		return true // no requirement
+		return true
 	}
+
 	// Martial Arts 10+ can hit magic-required monsters (level 1 only)
 	if wielded == nil && player.Skills[24] >= 10 && monDef.MagicWeapon <= 1 {
 		return true
 	}
+
 	if wielded == nil || weaponDef == nil {
-		return false // unarmed can't hit magic-required monsters
+		return false
 	}
-	bonus := wielded.Val2 // VAL2 = magic bonus
+
+	bonus, _, _ := e.weaponMagicStats(wielded, weaponDef)
+
 	switch monDef.MagicWeapon {
 	case 1:
 		return bonus > 0
@@ -581,6 +747,7 @@ func checkMagicWeapon(player *Player, wielded *InventoryItem, weaponDef *gamewor
 	case 3:
 		return bonus >= 21
 	}
+
 	return true
 }
 
@@ -720,7 +887,7 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	}
 
 	// Check MAGICWEAPON requirement
-	if !checkMagicWeapon(player, player.Wielded, weaponDef, def) {
+	if !e.checkMagicWeapon(player, player.Wielded, weaponDef, def) {
 		texI := def.TextOverrides["TEXI"]
 		if texI == "" {
 			texI = fmt.Sprintf("Your weapon is not powerful enough to affect %s%s.", article, name)
@@ -789,6 +956,11 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 
 	// Resolve to-hit
 	attackRating := playerAttackRating(player, weaponDef) + wMod - fatPenalty + vMod
+
+	if player.Wielded != nil {
+		weaponBonus, _, _ := e.weaponMagicStats(player.Wielded, weaponDef)
+		attackRating += weaponBonus
+	}
 
 	if inst.Stunned {
 		attackRating += 20 // bonus for attacking stunned target
@@ -880,7 +1052,7 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		msgs = append(msgs, fmt.Sprintf(" %s %s to %s. [%d Damage]", severity, dmgNoun, part, dmg))
 
 		// Weapon elemental crit / slayer bonus
-		if critDmg, critType := weaponCritDamage(player.Wielded, weaponDef, def); critDmg > 0 {
+		if critDmg, critType := e.weaponCritDamage(player.Wielded, weaponDef, def); critDmg > 0 {
 			dmg += critDmg
 			critPart := randomBodyPart(def.BodyType)
 			critSeverity := damageSeverity(critDmg)

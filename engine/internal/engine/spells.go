@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -334,6 +335,7 @@ func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResul
 }
 
 // doCastSpell handles CAST [target].
+// doCastSpell handles CAST [target].
 func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []string) *CommandResult {
 	if player.Dead {
 		return &CommandResult{Messages: []string{"You can't cast spells while dead."}}
@@ -344,15 +346,22 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		if len(args) == 0 {
 			return &CommandResult{Messages: []string{"You have no spell prepared. Use PREPARE <spell> first."}}
 		}
+
 		// Try direct cast: "cast flame bolt <target>"
 		spellName := strings.Join(args, " ")
 		spell := FindSpellByName(spellName)
 		if spell == nil {
-			return &CommandResult{Messages: []string{fmt.Sprintf("You don't know a spell called '%s'.", spellName)}}
+			return &CommandResult{
+				Messages: []string{fmt.Sprintf("You don't know a spell called '%s'.", spellName)},
+			}
 		}
+
 		if !player.KnownSpells[spell.ID] && !player.IsGM {
-			return &CommandResult{Messages: []string{fmt.Sprintf("You haven't learned %s.", spell.Name)}}
+			return &CommandResult{
+				Messages: []string{fmt.Sprintf("You haven't learned %s.", spell.Name)},
+			}
 		}
+
 		player.PreparedSpell = spell.ID
 	}
 
@@ -367,40 +376,69 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	if manaCost < 1 {
 		manaCost = 1
 	}
+
 	if player.Mana < manaCost {
 		player.PreparedSpell = 0
-		return &CommandResult{Messages: []string{fmt.Sprintf("Not enough mana! (%s requires %d, you have %d)", spell.Name, manaCost, player.Mana)}}
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"Not enough mana! (%s requires %d, you have %d)",
+					spell.Name,
+					manaCost,
+					player.Mana,
+				),
+			},
+		}
 	}
 
 	// Check roundtime
 	if player.RoundTimeExpiry.After(time.Now()) {
 		remaining := player.RoundTimeExpiry.Sub(time.Now()).Seconds()
-		return &CommandResult{Messages: []string{fmt.Sprintf("You are still preparing... %.0f seconds remaining.", remaining+0.5)}}
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You are still preparing... %.0f seconds remaining.",
+					remaining+0.5,
+				),
+			},
+		}
 	}
 
-	// Deduct mana (cost = spell level)
+	// Deduct mana
 	player.Mana -= manaCost
 	player.PreparedSpell = 0
 
-	// Spellcraft skill check (from LEGENDS.DOC):
-	// Base 25% + EMP/10 + spellcraft*5%, max 95%.
-	// Roll > 98 = fumble. Roll <= 2 = spectacular success (double effect).
+	// Spellcraft skill check
 	spellcraftSkill := player.Skills[23]
 	castChance := 25 + player.EffectiveStat(StatEmpathy)/10 + spellcraftSkill*5
+
 	if castChance > 95 {
 		castChance = 95
 	}
+
 	if player.IsGM {
 		castChance = 100
 	}
 
 	castRoll := rand.Intn(100) + 1
+
 	if castRoll == 100 && !player.IsGM {
-		// Extreme failure!
 		player.RoundTimeExpiry = time.Now().Add(3 * time.Second)
+
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("[Success: %d%%, Roll %d] Extreme failure! The spell backfires!", castChance, castRoll)},
-			RoomBroadcast: []string{fmt.Sprintf("Magic begins to form around %s but then fizzles.", player.FirstName)},
+			Messages: []string{
+				fmt.Sprintf(
+					"[Success: %d%%, Roll %d] Extreme failure! The spell backfires!",
+					castChance,
+					castRoll,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"Magic begins to form around %s but then fizzles.",
+					player.FirstName,
+				),
+			},
 		}
 	}
 
@@ -408,37 +446,102 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 
 	if castRoll > castChance && !player.IsGM {
 		player.RoundTimeExpiry = time.Now().Add(2 * time.Second)
+
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("[Success: %d%%, Roll %d] Failure.", castChance, castRoll)},
-			RoomBroadcast: []string{fmt.Sprintf("Magic begins to form around %s but then fizzles.", player.FirstName)},
+			Messages: []string{
+				fmt.Sprintf(
+					"[Success: %d%%, Roll %d] Failure.",
+					castChance,
+					castRoll,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"Magic begins to form around %s but then fizzles.",
+					player.FirstName,
+				),
+			},
 		}
 	}
 
 	// Show success roll to caster
-	successMsg := fmt.Sprintf("[Success: %d%%, Roll %d] Success!", castChance, castRoll)
+	successMsg := fmt.Sprintf(
+		"[Success: %d%%, Roll %d] Success!",
+		castChance,
+		castRoll,
+	)
+
 	if spectacularSuccess {
-		successMsg = fmt.Sprintf("[Success: %d%%, Roll %d] Spectacular success!", castChance, castRoll)
+		successMsg = fmt.Sprintf(
+			"[Success: %d%%, Roll %d] Spectacular success!",
+			castChance,
+			castRoll,
+		)
 	}
 
 	result := &CommandResult{}
 
 	switch spell.Effect {
-	case "damage":
-		result = e.castDamageSpell(player, spell, args, spectacularSuccess)
-	case "heal":
-		result = e.castHealSpell(player, spell, args, true)
-	case "defense": //todo: add defensive spell effects to player stats
-		result = e.castStatusSpell(player, spell, args, true)
-	case "buff":
-		result = e.castStatusSpell(player, spell, args, true)
-	case "utility":
-		if spell.ID == 400 { // Detect Magic
 
+	case "damage":
+		result = e.castDamageSpell(
+			player,
+			spell,
+			args,
+			spectacularSuccess,
+		)
+
+	case "heal":
+		result = e.castHealSpell(
+			player,
+			spell,
+			args,
+			true,
+		)
+
+	case "defense":
+		result = e.castStatusSpell(
+			player,
+			spell,
+			args,
+			true,
+		)
+
+	case "buff":
+		result = e.castStatusSpell(
+			player,
+			spell,
+			args,
+			true,
+		)
+
+	case "utility":
+
+		switch spell.ID {
+
+		case 228: // Identify
 			if len(args) > 0 && strings.EqualFold(args[0], "on") {
 				args = args[1:]
 			}
 
-			result = e.doItemInteraction(ctx, player, "DETECTMAGIC", args)
+			result = e.doItemInteraction(
+				ctx,
+				player,
+				"IDENTIFY",
+				args,
+			)
+
+		case 400: // Detect Magic
+			if len(args) > 0 && strings.EqualFold(args[0], "on") {
+				args = args[1:]
+			}
+
+			result = e.doItemInteraction(
+				ctx,
+				player,
+				"DETECTMAGIC",
+				args,
+			)
 
 			// If item lookup failed, keep the lookup message.
 			if len(result.Messages) > 0 {
@@ -447,30 +550,67 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 
 			switch {
 			case result.MagicPower == 0:
-				result.Messages = []string{"You sense no magic."}
+				result.Messages = []string{
+					"You sense no magic.",
+				}
 
 			case result.MagicPower == 1:
-				result.Messages = []string{"You sense a faint magical aura."}
+				result.Messages = []string{
+					"You sense a faint magical aura.",
+				}
 
 			case result.MagicPower <= 3:
-				result.Messages = []string{"You sense a noticeable magical aura."}
+				result.Messages = []string{
+					"You sense a noticeable magical aura.",
+				}
 
 			case result.MagicPower <= 6:
-				result.Messages = []string{"You sense a strong magical aura."}
+				result.Messages = []string{
+					"You sense a strong magical aura.",
+				}
 
 			default:
-				result.Messages = []string{"You sense an overwhelming magical aura."}
+				result.Messages = []string{
+					"You sense an overwhelming magical aura.",
+				}
+			}
+
+		default:
+			result.Messages = []string{
+				fmt.Sprintf(
+					"You gesture and cast %s.",
+					spell.Name,
+				),
 			}
 		}
+
 	default:
-		result.Messages = []string{fmt.Sprintf("You gesture and cast %s.", spell.Name)}
-		result.RoomBroadcast = []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)}
+		result.Messages = []string{
+			fmt.Sprintf(
+				"You gesture and cast %s.",
+				spell.Name,
+			),
+		}
+
+		result.RoomBroadcast = []string{
+			fmt.Sprintf(
+				"%s gestures and casts %s.",
+				player.FirstName,
+				spell.Name,
+			),
+		}
 	}
 
 	// Prepend success roll message
-	result.Messages = append([]string{successMsg}, result.Messages...)
+	result.Messages = append(
+		[]string{successMsg},
+		result.Messages...,
+	)
 
-	player.RoundTimeExpiry = time.Now().Add(time.Duration(spell.CastTime) * time.Second)
+	player.RoundTimeExpiry = time.Now().Add(
+		time.Duration(spell.CastTime) * time.Second,
+	)
+
 	e.SavePlayer(ctx, player)
 
 	return result
@@ -950,6 +1090,57 @@ func (e *GameEngine) castDefenseSpell(player *Player, spell *SpellDef, args []st
 	}
 }
 
+func addItemAdjective(item *InventoryItem, adj int) bool {
+	if item == nil || adj <= 0 {
+		return false
+	}
+
+	// Don't add the same adjective twice.
+	if item.Adj1 == adj || item.Adj2 == adj || item.Adj3 == adj {
+		return false
+	}
+
+	if item.Adj1 == 0 {
+		item.Adj1 = adj
+		return true
+	}
+
+	if item.Adj2 == 0 {
+		item.Adj2 = adj
+		return true
+	}
+
+	if item.Adj3 == 0 {
+		item.Adj3 = adj
+		return true
+	}
+
+	// All adjective slots are already occupied.
+	return false
+}
+
+func (e *GameEngine) traitAdjective(traitName string) int {
+	trait := e.traits[strings.ToUpper(traitName)]
+	if trait == nil || trait.Power <= 0 {
+		return 0
+	}
+
+	for _, block := range trait.Scripts {
+		if strings.ToUpper(block.Type) != "ADJDEF" || len(block.Args) == 0 {
+			continue
+		}
+
+		adj, err := strconv.Atoi(block.Args[0])
+		if err != nil {
+			continue
+		}
+
+		return adj
+	}
+
+	return 0
+}
+
 func (e *GameEngine) castUtilitySpell(player *Player, spell *SpellDef, args []string) *CommandResult {
 
 	switch spell.ID {
@@ -964,6 +1155,7 @@ func (e *GameEngine) castUtilitySpell(player *Player, spell *SpellDef, args []st
 	}
 }
 
+/*
 func elementalImmunityType(dmgType string) int {
 	switch strings.ToLower(dmgType) {
 	case "heat":
@@ -977,7 +1169,7 @@ func elementalImmunityType(dmgType string) int {
 	default:
 		return -1
 	}
-}
+} */
 
 func (e *GameEngine) buildCastResult(
 	player *Player,
@@ -1086,4 +1278,47 @@ func prepareSpellFamilyEffect(player *Player, spell *SpellDef) bool {
 	}
 
 	return true
+}
+
+func (e *GameEngine) identifyItem(player *Player, item *InventoryItem) []string {
+	if player == nil || item == nil {
+		return []string{"You cannot identify that."}
+	}
+
+	def := e.items[item.Archetype]
+	if def == nil {
+		return []string{"You cannot identify that."}
+	}
+
+	// Identification belongs to this specific item instance.
+	item.Identified = true
+
+	// Apply identification adjectives from magical traits.
+	applyTrait := func(traitName string) {
+		adj := e.traitAdjective(traitName)
+		if adj > 0 {
+			addItemAdjective(item, adj)
+		}
+	}
+
+	// Archetype traits first.
+	for _, traitName := range def.Traits {
+		applyTrait(traitName)
+	}
+
+	// Instance traits second.
+	for _, traitName := range item.Traits {
+		applyTrait(traitName)
+	}
+
+	itemName := e.formatItemName(
+		def,
+		item.Adj1,
+		item.Adj2,
+		item.Adj3,
+	)
+
+	return []string{
+		fmt.Sprintf("You identify %s.", itemName),
+	}
 }
