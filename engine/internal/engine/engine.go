@@ -2980,7 +2980,9 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 		return def.Type == "CONTAINER" ||
 			containsFlag(def.Flags, "CONTAINER") ||
 			def.Container == "IN" ||
-			def.Container == "ON"
+			def.Container == "ON" ||
+			def.Container == "UNDER" ||
+			def.Container == "BEHIND"
 	}
 
 	// ------------------------------------------------------------
@@ -3004,35 +3006,29 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			continue
 		}
 
+		// If this is a relationship-based LOOK and this visible object
+		// uses a different relationship, keep looking for another
+		// same-named room item.
+		if (prefix == "IN" ||
+			prefix == "ON" ||
+			prefix == "UNDER" ||
+			prefix == "BEHIND") &&
+			itemDef.Container != "" &&
+			itemDef.Container != prefix {
+			continue
+		}
+
 		if skip > 0 {
 			skip--
 			continue
 		}
 
-		// LOOK IN / ON <container>
-		if (prefix == "IN" || prefix == "ON") && isContainer(itemDef) {
-
-			// The preposition has to match the container type.
-			if itemDef.Container != "" &&
-				itemDef.Container != prefix {
-
-				displayName := e.formatItemName(
-					itemDef,
-					ri.Adj1,
-					ri.Adj2,
-					ri.Adj3,
-				)
-
-				return &CommandResult{
-					Messages: []string{
-						fmt.Sprintf(
-							"You see nothing noteworthy %s %s.",
-							strings.ToLower(prefix),
-							displayName,
-						),
-					},
-				}
-			}
+		// LOOK IN / ON / BEHIND <container>
+		if (prefix == "IN" ||
+			prefix == "ON" ||
+			prefix == "UNDER" ||
+			prefix == "BEHIND") &&
+			isContainer(itemDef) {
 
 			displayName := e.formatItemName(
 				itemDef,
@@ -3041,7 +3037,7 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 				ri.Adj3,
 			)
 
-			// Room-authored ITEM IN / ITEM ON description takes priority
+			// Room-authored relationship description takes priority
 			// over dynamically listing PUT contents.
 			refStr := fmt.Sprintf("%d", ri.Ref)
 
@@ -3068,11 +3064,23 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 
 			var msgs []string
 
-			if prefix == "ON" {
+			switch prefix {
+			case "ON":
 				msgs = []string{
 					fmt.Sprintf("You look on %s.", displayName),
 				}
-			} else {
+
+			case "UNDER":
+				msgs = []string{
+					fmt.Sprintf("You look under %s.", displayName),
+				}
+
+			case "BEHIND":
+				msgs = []string{
+					fmt.Sprintf("You look behind %s.", displayName),
+				}
+
+			default:
 				msgs = []string{
 					fmt.Sprintf("You look in %s.", displayName),
 				}
@@ -3136,9 +3144,16 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			}
 
 			if !found {
-				if prefix == "ON" {
+				switch prefix {
+				case "ON":
 					msgs = append(msgs, "There is nothing on it.")
-				} else {
+
+				case "BEHIND":
+					msgs = append(msgs, "There is nothing behind it.")
+				case "UNDER":
+					msgs = append(msgs, "There is nothing under it.")
+
+				default:
 					msgs = append(msgs, "It is empty.")
 				}
 			}
@@ -3148,7 +3163,7 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			}
 		}
 
-		// Existing ON / UNDER / BEHIND handling.
+		// Existing UNDER / other prefix handling.
 		if prefix != "" {
 			return e.lookPrefixRoomItem(
 				room,
@@ -5208,6 +5223,41 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 		}
 	}
 
+	// ------------------------------------------------------------
+	// Optional relationship:
+	//
+	//   GET DIRK FROM BED
+	//   GET DIRK FROM BEHIND BED
+	//   GET DIRK FROM ON BED
+	//   GET COIN FROM IN CHEST
+	//
+	// This allows otherwise identical room items to be
+	// distinguished by their container relationship.
+	// ------------------------------------------------------------
+
+	relation := ""
+
+	for _, p := range []string{
+		"in ",
+		"on ",
+		"under",
+		"behind ",
+	} {
+		if strings.HasPrefix(containerTarget, p) {
+			relation = strings.ToUpper(strings.TrimSpace(p))
+			containerTarget = strings.TrimSpace(
+				strings.TrimPrefix(containerTarget, p),
+			)
+			break
+		}
+	}
+
+	if containerTarget == "" {
+		return &CommandResult{
+			Messages: []string{"Get what from what?"},
+		}
+	}
+
 	// Support:
 	// GET COIN FROM CHEST 2
 	// GET COIN FROM SECOND CHEST
@@ -5252,6 +5302,11 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			!matchesTarget(
 				name,
 				containerTarget,
+				e.getAdjName(ri.Adj2),
+			) &&
+			!matchesTarget(
+				name,
+				containerTarget,
 				e.getAdjName(ri.Adj3),
 			) {
 			continue
@@ -5260,8 +5315,17 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 		// Only count actual containers toward the ordinal.
 		if def.Container != "IN" &&
 			def.Container != "ON" &&
+			def.Container != "BEHIND" &&
+			def.Container != "UNDER" &&
 			def.Type != "CONTAINER" &&
 			!containsFlag(def.Flags, "CONTAINER") {
+			continue
+		}
+
+		// If the player explicitly said FROM BEHIND / FROM ON /
+		// FROM IN, the underlying object must match that relation.
+		if relation != "" &&
+			!strings.EqualFold(def.Container, relation) {
 			continue
 		}
 
@@ -5300,6 +5364,11 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 				!matchesTarget(
 					name,
 					containerTarget,
+					e.getAdjName(invContainer.Adj2),
+				) &&
+				!matchesTarget(
+					name,
+					containerTarget,
 					e.getAdjName(invContainer.Adj3),
 				) {
 				continue
@@ -5307,8 +5376,15 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 
 			if def.Container != "IN" &&
 				def.Container != "ON" &&
+				def.Container != "BEHIND" &&
+				def.Container != "UNDER" &&
 				def.Type != "CONTAINER" &&
 				!containsFlag(def.Flags, "CONTAINER") {
+				continue
+			}
+
+			if relation != "" &&
+				!strings.EqualFold(def.Container, relation) {
 				continue
 			}
 
@@ -5355,6 +5431,11 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 					parsedItemTarget,
 					e.getAdjName(child.Adj1),
 				) &&
+					!matchesTarget(
+						childName,
+						parsedItemTarget,
+						e.getAdjName(child.Adj2),
+					) &&
 					!matchesTarget(
 						childName,
 						parsedItemTarget,
@@ -5415,6 +5496,9 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 				)
 
 				// Add to ordinary inventory.
+				//
+				// child already contains its own Contents, so nested
+				// containers remain intact automatically.
 				player.Inventory = append(
 					player.Inventory,
 					child,
@@ -5474,7 +5558,11 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 		container.Adj3,
 	)
 
-	if container.State != "OPEN" && container.State != "" {
+	// Only IN-style containers require opening.
+	if containerDef.Container == "IN" &&
+		container.State != "OPEN" &&
+		container.State != "" {
+
 		return &CommandResult{
 			Messages: []string{
 				fmt.Sprintf(
@@ -5491,7 +5579,7 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 	skip := ordSkip
 
 	// Find only items PUT inside this specific container.
-	for i, ri := range room.Items {
+	for _, ri := range room.Items {
 		if !ri.IsPut || ri.PutIn != container.Ref {
 			continue
 		}
@@ -5511,6 +5599,11 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			!matchesTarget(
 				name,
 				parsedItemTarget,
+				e.getAdjName(ri.Adj2),
+			) &&
+			!matchesTarget(
+				name,
+				parsedItemTarget,
 				e.getAdjName(ri.Adj3),
 			) {
 			continue
@@ -5521,21 +5614,49 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			continue
 		}
 
-		// Handle money inside containers.
-		if itemDef.Type == "MONEY" || ri.State == "MONEY" {
-			coins := ri.Val1
+		// Make a stable copy before any scripts can mutate room.Items.
+		pickedUp := ri
+
+		// ------------------------------------------------------------
+		// Handle money inside room containers.
+		// ------------------------------------------------------------
+
+		if itemDef.Type == "MONEY" || pickedUp.State == "MONEY" {
+			coins := pickedUp.Val1
 			if coins <= 0 {
 				coins = 1
 			}
 
-			room.Items = append(
-				room.Items[:i],
-				room.Items[i+1:]...,
-			)
+			removeIndex := -1
+
+			for j := range room.Items {
+				candidate := room.Items[j]
+
+				if candidate.IsPut &&
+					candidate.PutIn == pickedUp.PutIn &&
+					candidate.Ref == pickedUp.Ref &&
+					candidate.Archetype == pickedUp.Archetype &&
+					candidate.Adj1 == pickedUp.Adj1 &&
+					candidate.Adj2 == pickedUp.Adj2 &&
+					candidate.Adj3 == pickedUp.Adj3 {
+
+					removeIndex = j
+					break
+				}
+			}
+
+			if removeIndex >= 0 {
+				room.Items = append(
+					room.Items[:removeIndex],
+					room.Items[removeIndex+1:]...,
+				)
+			}
 
 			player.Copper += coins
+
 			player.Silver += player.Copper / 10
 			player.Copper %= 10
+
 			player.Gold += player.Silver / 10
 			player.Silver %= 10
 
@@ -5559,9 +5680,10 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			}
 		}
 
-		pickedUp := ri
-
+		// ------------------------------------------------------------
 		// Run normal GET preverb scripts on the item.
+		// ------------------------------------------------------------
+
 		sc := e.RunPreverbScripts(
 			player,
 			room,
@@ -5585,6 +5707,45 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			return result
 		}
 
+		// ------------------------------------------------------------
+		// If the item being taken is itself a container, collect
+		// anything stored inside it before removing it from the room.
+		//
+		// Room-contained items use:
+		//     IsPut = true
+		//     PutIn = parent.Ref
+		//
+		// Inventory containers use InventoryItem.Contents.
+		// ------------------------------------------------------------
+
+		var contents []InventoryItem
+
+		for _, child := range room.Items {
+			if !child.IsPut || child.PutIn != pickedUp.Ref {
+				continue
+			}
+
+			contents = append(
+				contents,
+				InventoryItem{
+					Archetype: child.Archetype,
+					Adj1:      child.Adj1,
+					Adj2:      child.Adj2,
+					Adj3:      child.Adj3,
+					Val1:      child.Val1,
+					Val2:      child.Val2,
+					Val3:      child.Val3,
+					Val4:      child.Val4,
+					Val5:      child.Val5,
+					State:     child.State,
+				},
+			)
+		}
+
+		// ------------------------------------------------------------
+		// Add the item to player inventory, preserving its contents.
+		// ------------------------------------------------------------
+
 		player.Inventory = append(
 			player.Inventory,
 			InventoryItem{
@@ -5598,13 +5759,36 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 				Val4:      pickedUp.Val4,
 				Val5:      pickedUp.Val5,
 				State:     pickedUp.State,
+				Contents:  contents,
 			},
 		)
 
-		/*
-			The GET script may modify room.Items, so locate the exact
-			PUT item again before removing it.
-		*/
+		// ------------------------------------------------------------
+		// Remove the item's children from room.Items now that they
+		// live inside InventoryItem.Contents.
+		// ------------------------------------------------------------
+
+		if len(contents) > 0 {
+			filtered := room.Items[:0]
+
+			for _, item := range room.Items {
+				if item.IsPut && item.PutIn == pickedUp.Ref {
+					continue
+				}
+
+				filtered = append(filtered, item)
+			}
+
+			room.Items = filtered
+		}
+
+		// ------------------------------------------------------------
+		// The GET script may have modified room.Items, and removing
+		// children above may also have shifted indexes.
+		//
+		// Locate the exact PUT item again before removing it.
+		// ------------------------------------------------------------
+
 		removeIndex := -1
 
 		for j := range room.Items {
@@ -5675,7 +5859,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 	if len(args) < 3 {
 		return &CommandResult{
-			Messages: []string{"Put what in/on what?"},
+			Messages: []string{"Put what in/on/behind what?"},
 		}
 	}
 
@@ -5685,6 +5869,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	// Parse:
 	//   PUT <item> IN <container>
 	//   PUT <item> ON <container>
+	//   PUT <item> BEHIND <container>
 	// ------------------------------------------------------------
 
 	relation := ""
@@ -5694,16 +5879,24 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	if idx := strings.Index(raw, " in "); idx >= 0 {
 		relation = "IN"
 		splitIdx = idx
-		splitLen = 4
+		splitLen = len(" in ")
 	} else if idx := strings.Index(raw, " on "); idx >= 0 {
 		relation = "ON"
 		splitIdx = idx
-		splitLen = 4
+		splitLen = len(" on ")
+	} else if idx := strings.Index(raw, " behind "); idx >= 0 {
+		relation = "BEHIND"
+		splitIdx = idx
+		splitLen = len(" behind ")
+	} else if idx := strings.Index(raw, " under "); idx >= 0 {
+		relation = "UNDER"
+		splitIdx = idx
+		splitLen = len(" under ")
 	}
 
 	if splitIdx < 0 {
 		return &CommandResult{
-			Messages: []string{"Put what in/on what?"},
+			Messages: []string{"Put what in/on/behind/under what?"},
 		}
 	}
 
@@ -5712,7 +5905,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 	if itemTarget == "" || containerTarget == "" {
 		return &CommandResult{
-			Messages: []string{"Put what in/on what?"},
+			Messages: []string{"Put what in/on/behind/under what?"},
 		}
 	}
 
@@ -5726,11 +5919,19 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	// ------------------------------------------------------------
 	// Find object #2 in the room.
 	//
-	// Do not require it to be a container yet because an
-	// IFPREVERB2 PUT script may intercept arbitrary objects.
+	// Multiple room items may have the same visible name but
+	// represent different relationships, e.g.:
+	//
+	//   rusty bed -> CONTAINER ON
+	//   rusty bed -> CONTAINER BEHIND
+	//
+	// Prefer the matching relationship. Keep the first ordinary
+	// noun match as a fallback because an IFPREVERB2 PUT script
+	// may intercept an otherwise non-container object.
 	// ------------------------------------------------------------
 
 	containerIndex := -1
+	fallbackIndex := -1
 
 	for i := range room.Items {
 		ri := &room.Items[i]
@@ -5754,19 +5955,37 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 			!matchesTarget(
 				name,
 				containerTarget,
+				e.getAdjName(ri.Adj2),
+			) &&
+			!matchesTarget(
+				name,
+				containerTarget,
 				e.getAdjName(ri.Adj3),
 			) {
 			continue
 		}
 
-		containerIndex = i
-		break
+		// Remember the first visible match in case a script
+		// handles PUT against a non-container object.
+		if fallbackIndex < 0 {
+			fallbackIndex = i
+		}
+
+		// Prefer the object whose container relationship matches
+		// the preposition the player actually used.
+		if strings.EqualFold(def.Container, relation) {
+			containerIndex = i
+			break
+		}
+	}
+
+	if containerIndex < 0 {
+		containerIndex = fallbackIndex
 	}
 
 	// ------------------------------------------------------------
 	// No room target found.
-	//
-	// Existing carried-container code currently handles IN.
+	// Existing carried-container code handles IN.
 	// ------------------------------------------------------------
 
 	if containerIndex < 0 {
@@ -5816,6 +6035,11 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 			itemTarget,
 			e.getAdjName(ii.Adj1),
 		) &&
+			!matchesTarget(
+				name,
+				itemTarget,
+				e.getAdjName(ii.Adj2),
+			) &&
 			!matchesTarget(
 				name,
 				itemTarget,
@@ -5879,7 +6103,6 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 		GMBroadcast:   append([]string{}, sc.GMMsgs...),
 	}
 
-	// CLEARVERB means the script handled/cancelled PUT.
 	if sc.Blocked {
 		e.SavePlayer(ctx, player)
 
@@ -5896,7 +6119,6 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 	containerMode := strings.ToUpper(containerDef.Container)
 
-	// Explicit CONTAINER IN / CONTAINER ON must match the command.
 	if containerMode != "" {
 		if containerMode != relation {
 			containerName := e.formatItemName(
@@ -5917,8 +6139,6 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 			}
 		}
 	} else {
-		// Legacy/generic containers without an explicit mode
-		// behave as IN containers.
 		isGenericContainer :=
 			containerDef.Type == "CONTAINER" ||
 				containsFlag(containerDef.Flags, "CONTAINER")
@@ -5934,7 +6154,6 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 
 	// ------------------------------------------------------------
 	// IN containers must be open.
-	// ON containers do not have an open/closed requirement.
 	// ------------------------------------------------------------
 
 	if relation == "IN" &&
@@ -5985,34 +6204,49 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	if containerDef.Interior > 0 &&
 		usedVolume+itemDef.Volume > containerDef.Interior {
 
-		if relation == "ON" {
+		switch relation {
+		case "ON":
 			return &CommandResult{
 				Messages: []string{
 					"There isn't enough room on it.",
 				},
 			}
-		}
 
-		return &CommandResult{
-			Messages: []string{
-				"There isn't enough room in the container.",
-			},
+		case "BEHIND":
+			return &CommandResult{
+				Messages: []string{
+					"There isn't enough room behind it.",
+				},
+			}
+
+		default:
+			return &CommandResult{
+				Messages: []string{
+					"There isn't enough room in the container.",
+				},
+			}
 		}
 	}
 
 	// ------------------------------------------------------------
-	// Perform normal PUT.
+	// Find a unique room Ref for the item being PUT.
 	//
-	// PUT items live in room.Items with:
-	//   IsPut = true
-	//   PutIn = destination room ref
+	// Ref identifies THIS item.
+	// PutIn identifies its parent container.
 	//
-	// The same representation works for IN and ON.
-	// The destination ItemDef tells us which relationship applies.
+	// They must NOT be the same thing.
 	// ------------------------------------------------------------
 
+	nextRef := 0
+
+	for _, ri := range room.Items {
+		if ri.Ref >= nextRef {
+			nextRef = ri.Ref + 1
+		}
+	}
+
 	putItem := gameworld.RoomItem{
-		Ref:       container.Ref,
+		Ref:       nextRef,
 		Archetype: ii.Archetype,
 		Adj1:      ii.Adj1,
 		Adj2:      ii.Adj2,
@@ -6027,10 +6261,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 		PutIn:     container.Ref,
 	}
 
-	room.Items = append(
-		room.Items,
-		putItem,
-	)
+	room.Items = append(room.Items, putItem)
 
 	e.notifyRoomChange(RoomChange{
 		RoomNumber: player.RoomNumber,
@@ -6038,7 +6269,51 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 		Item:       &putItem,
 	})
 
-	// Remove from player inventory.
+	// ------------------------------------------------------------
+	// If the item itself contains anything, convert its inventory
+	// Contents into room PUT items beneath the new room item.
+	// ------------------------------------------------------------
+
+	parentRef := putItem.Ref
+
+	for _, child := range ii.Contents {
+		childRef := 0
+
+		for _, ri := range room.Items {
+			if ri.Ref >= childRef {
+				childRef = ri.Ref + 1
+			}
+		}
+
+		childRoomItem := gameworld.RoomItem{
+			Ref:       childRef,
+			Archetype: child.Archetype,
+			Adj1:      child.Adj1,
+			Adj2:      child.Adj2,
+			Adj3:      child.Adj3,
+			Val1:      child.Val1,
+			Val2:      child.Val2,
+			Val3:      child.Val3,
+			Val4:      child.Val4,
+			Val5:      child.Val5,
+			State:     child.State,
+			IsPut:     true,
+			PutIn:     parentRef,
+		}
+
+		room.Items = append(room.Items, childRoomItem)
+
+		e.notifyRoomChange(RoomChange{
+			RoomNumber: player.RoomNumber,
+			Type:       "item_add",
+			Item:       &childRoomItem,
+		})
+	}
+
+	// ------------------------------------------------------------
+	// Remove original item from player inventory.
+	// ------------------------------------------------------------
+
 	player.Inventory = append(
 		player.Inventory[:itemIndex],
 		player.Inventory[itemIndex+1:]...,

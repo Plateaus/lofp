@@ -718,6 +718,11 @@ func (e *GameEngine) doPick(ctx context.Context, player *Player, args []string) 
 			" [Round: 5 sec]",
 		)
 
+		result.RoomBroadcast = append(result.RoomBroadcast,
+			fmt.Sprintf(
+				"you hear an audible snap as %s works at the lock.",
+				player.FirstName))
+
 		// Destroy the selected lockpick/hairpin.
 		player.Inventory = append(
 			player.Inventory[:toolIndex],
@@ -746,6 +751,10 @@ func (e *GameEngine) doPick(ctx context.Context, player *Player, args []string) 
 		),
 		" [Round: 5 sec]",
 	)
+
+	result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf(
+		" %s mutters audibly as they work at the lock.",
+		player.FirstName))
 
 	e.SavePlayer(ctx, player)
 
