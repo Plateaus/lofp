@@ -48,6 +48,24 @@ var reservedSubstrings = []string{
 	"nazi", "hitler",
 }
 
+// Resolve verb abbreviations to canonical full form for ALL verbs.
+// This ensures IFPREVERB matching works regardless of abbreviation used.
+// Direction shortcuts map to both full name (for scripts) and short form (for movement).
+var dirFullNames = map[string]string{
+	"N": "NORTH", "S": "SOUTH", "E": "EAST", "W": "WEST",
+	"NE": "NORTHEAST", "NW": "NORTHWEST", "SE": "SOUTHEAST", "SW": "SOUTHWEST",
+	"U": "UP", "D": "DOWN", "O": "OUT",
+}
+
+var dirMap = map[string]string{
+	"N": "N", "NORTH": "N", "S": "S", "SOUTH": "S",
+	"E": "E", "EAST": "E", "W": "W", "WEST": "W",
+	"NE": "NE", "NORTHEAST": "NE", "NW": "NW", "NORTHWEST": "NW",
+	"SE": "SE", "SOUTHEAST": "SE", "SW": "SW", "SOUTHWEST": "SW",
+	"U": "U", "UP": "U", "D": "D", "DOWN": "D",
+	"O": "O", "OUT": "O",
+}
+
 type VisibilityLevel int
 
 const (
@@ -827,22 +845,6 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.processGMCommand(ctx, player, verb, args, input)
 	}
 
-	// Resolve verb abbreviations to canonical full form for ALL verbs.
-	// This ensures IFPREVERB matching works regardless of abbreviation used.
-	// Direction shortcuts map to both full name (for scripts) and short form (for movement).
-	dirFullNames := map[string]string{
-		"N": "NORTH", "S": "SOUTH", "E": "EAST", "W": "WEST",
-		"NE": "NORTHEAST", "NW": "NORTHWEST", "SE": "SOUTHEAST", "SW": "SOUTHWEST",
-		"U": "UP", "D": "DOWN", "O": "OUT",
-	}
-	dirMap := map[string]string{
-		"N": "N", "NORTH": "N", "S": "S", "SOUTH": "S",
-		"E": "E", "EAST": "E", "W": "W", "WEST": "W",
-		"NE": "NE", "NORTHEAST": "NE", "NW": "NW", "NORTHWEST": "NW",
-		"SE": "SE", "SOUTHEAST": "SE", "SW": "SW", "SOUTHWEST": "SW",
-		"U": "U", "UP": "U", "D": "D", "DOWN": "D",
-		"O": "O", "OUT": "O",
-	}
 	// Resolve the verb to its full canonical name for script matching
 	canonicalVerb := verb
 	if full, ok := dirFullNames[verb]; ok {
@@ -852,75 +854,135 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	if dir, ok := dirMap[verb]; ok {
 		// Check for IFPREVERB scripts on the direction using canonical verb name
 		room := e.rooms[player.RoomNumber]
+
 		if room != nil {
-			sc := &ScriptContext{Player: player, Room: room, Engine: e}
+			sc := &ScriptContext{
+				Player: player,
+				Room:   room,
+				Engine: e,
+			}
+
 			for _, block := range room.Scripts {
 				if block.Type == "IFPREVERB" && len(block.Args) >= 2 {
-					if strings.ToUpper(block.Args[0]) == canonicalVerb && block.Args[1] == "-1" {
+					if strings.ToUpper(block.Args[0]) == canonicalVerb &&
+						block.Args[1] == "-1" {
+
 						sc.execBlock(block)
 					}
 				}
 			}
+
 			// MOVEGROUP: move all players in this room to destination
 			if sc.MoveGroupTo > 0 {
-				e.moveGroupToRoom(ctx, player.RoomNumber, sc.MoveGroupTo)
+				e.moveGroupToRoom(
+					ctx,
+					player.RoomNumber,
+					sc.MoveGroupTo,
+				)
 			}
+
 			if sc.Blocked || sc.MoveTo > 0 {
 				result := &CommandResult{}
-				result.Messages = append(result.Messages, sc.Messages...)
-				result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
-				if sc.MoveTo > 0 && !sc.Blocked {
-					// Script provided a MOVE destination
+
+				result.Messages = append(
+					result.Messages,
+					sc.Messages...,
+				)
+
+				result.RoomBroadcast = append(
+					result.RoomBroadcast,
+					sc.RoomMsgs...,
+				)
+
+				// --------------------------------------------------------
+				// SCRIPT MOVE
+				// --------------------------------------------------------
+				if sc.MoveTo > 0 {
 					dest := e.rooms[sc.MoveTo]
+
 					if dest != nil {
 						oldRoom := player.RoomNumber
+
 						player.RoomNumber = sc.MoveTo
 						e.SavePlayer(ctx, player)
+
+						// Bring commanded followers with the player.
+						e.moveCommandedFollowers(
+							player,
+							oldRoom,
+							sc.MoveTo,
+						)
+
 						lookResult := e.doLook(player)
-						result.Messages = append(result.Messages, lookResult.Messages...)
+
+						result.Messages = append(
+							result.Messages,
+							lookResult.Messages...,
+						)
+
 						result.RoomName = lookResult.RoomName
 						result.RoomDesc = lookResult.RoomDesc
 						result.Exits = lookResult.Exits
 						result.Items = lookResult.Items
+
 						result.OldRoom = oldRoom
-						result.OldRoomMsg = []string{fmt.Sprintf("%s leaves.", player.FirstName)}
-						result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s arrives.", player.FirstName))
-						e.applyEntryScripts(ctx, player, dest, result)
-					}
-				} else if sc.MoveTo > 0 {
-					// CLEARVERB + MOVE = script-controlled movement
-					dest := e.rooms[sc.MoveTo]
-					if dest != nil {
-						oldRoom := player.RoomNumber
-						player.RoomNumber = sc.MoveTo
-						e.SavePlayer(ctx, player)
-						lookResult := e.doLook(player)
-						result.Messages = append(result.Messages, lookResult.Messages...)
-						result.RoomName = lookResult.RoomName
-						result.RoomDesc = lookResult.RoomDesc
-						result.Exits = lookResult.Exits
-						result.Items = lookResult.Items
-						result.OldRoom = oldRoom
-						result.OldRoomMsg = []string{fmt.Sprintf("%s leaves.", player.FirstName)}
-						result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s arrives.", player.FirstName))
-						e.applyEntryScripts(ctx, player, dest, result)
+
+						result.OldRoomMsg = []string{
+							fmt.Sprintf(
+								"%s leaves.",
+								player.FirstName,
+							),
+						}
+
+						result.RoomBroadcast = append(
+							result.RoomBroadcast,
+							fmt.Sprintf(
+								"%s arrives.",
+								player.FirstName,
+							),
+						)
+
+						e.applyEntryScripts(
+							ctx,
+							player,
+							dest,
+							result,
+						)
 					}
 				}
+
 				if len(result.Messages) == 0 {
-					result.Messages = []string{"You can't go that way."}
+					result.Messages = []string{
+						"You can't go that way.",
+					}
 				}
+
 				return result
 			}
-			// Scripts ran but didn't block — proceed with normal movement
+
+			// Scripts ran but didn't block — proceed with normal movement.
 			if len(sc.Messages) > 0 {
-				moveResult := e.doMove(ctx, player, dir)
-				moveResult.Messages = append(sc.Messages, moveResult.Messages...)
+				moveResult := e.doMove(
+					ctx,
+					player,
+					dir,
+				)
+
+				moveResult.Messages = append(
+					sc.Messages,
+					moveResult.Messages...,
+				)
+
 				return moveResult
 			}
 		}
-		return e.doMove(ctx, player, dir)
-	}
 
+		return e.doMove(
+			ctx,
+			player,
+			dir,
+		)
+	}
 	// Resolve verb abbreviations — try exact match first, then unique prefix
 	verb = resolveVerb(verb)
 
@@ -1626,7 +1688,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "CHANT":
 		return e.doChant(ctx, player, args)
 	case "COMMAND":
-		return &CommandResult{Messages: []string{"[Summoned creature commands coming soon.]"}}
+		return e.doCommandCreature(player, args)
 	case "MASTER":
 		return &CommandResult{Messages: []string{"[Spell mastery coming soon.]"}}
 	case "NOCK", "LOAD":
@@ -2308,6 +2370,9 @@ func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *Co
 		}
 	}
 
+	// Commanded creatures following the player move through the portal too
+	e.moveCommandedFollowers(player, oldRoom, destNum)
+
 	// ------------------------------------------------------------
 	// NOW generate the leader's room look.
 	//
@@ -2409,6 +2474,32 @@ func (e *GameEngine) doMove(ctx context.Context, player *Player, dir string) *Co
 	}
 
 	return result
+}
+
+func (mm *monsterManager) MoveMonster(idx, destRoom int) {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	if idx < 0 || idx >= len(mm.instances) {
+		return
+	}
+
+	oldRoom := mm.instances[idx].RoomNumber
+
+	// Remove from old room index.
+	roomList := mm.monstersByRoom[oldRoom]
+	for i, monsterIdx := range roomList {
+		if monsterIdx == idx {
+			mm.monstersByRoom[oldRoom] = append(roomList[:i], roomList[i+1:]...)
+			break
+		}
+	}
+
+	// Move the actual monster.
+	mm.instances[idx].RoomNumber = destRoom
+
+	// Add to new room index.
+	mm.monstersByRoom[destRoom] = append(mm.monstersByRoom[destRoom], idx)
 }
 
 // EnterRoom performs a look and runs IFENTRY scripts. Used on login/creation.
@@ -3420,6 +3511,363 @@ func (e *GameEngine) itemEnchantments(item *InventoryItem, def *gameworld.ItemDe
 	return result
 }
 
+func (e *GameEngine) doCommandCreature(player *Player, args []string) *CommandResult {
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Command your creature to do what?"},
+		}
+	}
+
+	if e.monsterMgr == nil {
+		return &CommandResult{
+			Messages: []string{"You have no commanded creature here."},
+		}
+	}
+
+	command := strings.ToUpper(strings.Join(args, " "))
+
+	e.monsterMgr.mu.Lock()
+
+	creatureIdx := -1
+
+	var def *gameworld.MonsterDef
+
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if inst.Alive && inst.CommanderID == player.FirstName {
+			creatureIdx = i
+			def = e.monsters[inst.DefNumber]
+			break
+		}
+	}
+
+	if creatureIdx == -1 || def == nil {
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{"You have no creature under your command."},
+		}
+	}
+
+	creature := &e.monsterMgr.instances[creatureIdx]
+	name := FormatMonsterName(def, e.monAdjs)
+
+	moveDir := dirMap[command]
+
+	if moveDir != "" {
+		creature.Following = ""
+
+		if !e.moveMonsterDirection(creatureIdx, creature, def, moveDir) {
+			e.monsterMgr.mu.Unlock()
+
+			dirName := directionNames[moveDir]
+			if dirName == "" {
+				dirName = strings.ToLower(moveDir)
+			}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("Your %s cannot go %s.", name, dirName),
+				},
+			}
+		}
+
+		e.monsterMgr.mu.Unlock()
+
+		watching := creature.Watching
+		roomNum := creature.RoomNumber
+		commanderName := creature.CommanderID
+
+		if watching && commanderName != "" && e.sendToPlayer != nil {
+			for _, commander := range e.sessions.OnlinePlayers() {
+				if commander.FirstName != commanderName {
+					continue
+				}
+
+				messages := e.commandedCreatureLook(
+					commander,
+					roomNum,
+				)
+
+				e.sendToPlayer(
+					commander.FirstName,
+					messages,
+				)
+
+				break
+			}
+		}
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Your %s obeys.", name),
+			},
+		}
+	}
+
+	// COMMAND KILL <target>
+	if command == "KILL" {
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{"Kill what?"},
+		}
+	}
+
+	if strings.HasPrefix(command, "KILL ") {
+		targetText := strings.TrimSpace(command[5:])
+		targetLower := strings.ToLower(targetText)
+
+		targetIdx := -1
+		var targetDef *gameworld.MonsterDef
+
+		for i := range e.monsterMgr.instances {
+			target := &e.monsterMgr.instances[i]
+
+			if !target.Alive ||
+				target.RoomNumber != creature.RoomNumber ||
+				target.ID == creature.ID {
+				continue
+			}
+
+			td := e.monsters[target.DefNumber]
+			if td == nil {
+				continue
+			}
+
+			targetName := strings.ToLower(
+				FormatMonsterName(td, e.monAdjs),
+			)
+
+			noun := strings.ToLower(td.Name)
+
+			if strings.HasPrefix(targetName, targetLower) ||
+				strings.HasPrefix(noun, targetLower) {
+				targetIdx = i
+				targetDef = td
+				break
+			}
+		}
+
+		if targetIdx == -1 || targetDef == nil {
+			e.monsterMgr.mu.Unlock()
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"Your %s does not see '%s' here.",
+						name,
+						strings.ToLower(targetText),
+					),
+				},
+			}
+		}
+
+		target := &e.monsterMgr.instances[targetIdx]
+		targetName := FormatMonsterName(targetDef, e.monAdjs)
+
+		creature.Target = ""
+		creature.TargetMonsterID = target.ID
+		creature.Following = ""
+		creature.Guarding = ""
+
+		// Target turns to fight the commanded creature.
+		target.Target = ""
+		target.TargetMonsterID = creature.ID
+
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"Your %s attacks %s%s.",
+					name,
+					articleFor(targetName, targetDef.Unique),
+					targetName,
+				),
+			},
+		}
+	}
+
+	switch command {
+	case "WATCH":
+		creature.Watching = true
+
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You begin seeing through your %s's eyes.",
+					name,
+				),
+			},
+		}
+
+	case "UNWATCH":
+		creature.Watching = false
+
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You stop seeing through your %s's eyes.",
+					name,
+				),
+			},
+		}
+
+	case "GUARD ME", "GUARD":
+		creature.Guarding = player.FirstName
+		creature.Following = player.FirstName
+
+		// Guarding cancels any current combat order.
+		creature.Target = ""
+		creature.TargetMonsterID = -1
+
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"Your %s begins guarding you.",
+					name,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s moves protectively alongside %s.",
+					name,
+					player.FirstName,
+				),
+			},
+		}
+	case "FOLLOW ME", "FOLL ME", "FOLLOW", "FOLL":
+		creature.Following = player.FirstName
+
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Your %s acknowledges your command.", name),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s is now following %s.", name, player.FirstName),
+			},
+		}
+
+	case "UNFOLLOW", "UNFOLL", "STOP FOLLOWING":
+		creature.Following = ""
+
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Your %s stops following you.", name),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s stops following %s.", name, player.FirstName),
+			},
+		}
+
+	case "BEGONE":
+		if creature.ControlType != "SUMMONED" {
+			e.monsterMgr.mu.Unlock()
+
+			return &CommandResult{
+				Messages: []string{"That creature cannot be dismissed."},
+			}
+		}
+
+		monsterID := creature.ID
+
+		// RemoveMonster locks the manager itself,
+		// so release this lock first.
+		e.monsterMgr.mu.Unlock()
+
+		e.monsterMgr.RemoveMonster(monsterID)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Your %s vanishes.", name),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s vanishes.", name),
+			},
+		}
+	case "LOOK":
+		roomNum := creature.RoomNumber
+
+		// We're done reading the monster.
+		e.monsterMgr.mu.Unlock()
+
+		// Create a temporary copy of the player located where the creature is.
+		// The real player never moves.
+		observer := *player
+		observer.RoomNumber = roomNum
+
+		look := e.doLook(&observer)
+
+		messages := []string{
+			fmt.Sprintf("Through your %s, you receive a telepathic image:", name),
+		}
+
+		messages = append(messages, look.Messages...)
+
+		return &CommandResult{
+			Messages: messages,
+		}
+
+	default:
+		e.monsterMgr.mu.Unlock()
+
+		return &CommandResult{
+			Messages: []string{"Your creature does not understand that command."},
+		}
+	}
+}
+
+func (e *GameEngine) commandedCreatureLook(player *Player, roomNum int) []string {
+	observer := *player
+	observer.RoomNumber = roomNum
+
+	result := e.doLook(&observer)
+	return result.Messages
+}
+
+func (mm *monsterManager) RemoveMonster(id int) {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	for idx := range mm.instances {
+		inst := &mm.instances[idx]
+
+		if inst.ID != id {
+			continue
+		}
+
+		roomNum := inst.RoomNumber
+
+		// Remove it from the room index.
+		roomList := mm.monstersByRoom[roomNum]
+
+		for i, roomIdx := range roomList {
+			if roomIdx == idx {
+				mm.monstersByRoom[roomNum] =
+					append(roomList[:i], roomList[i+1:]...)
+				break
+			}
+		}
+
+		// Retire the instance.
+		inst.Alive = false
+		inst.Watching = false
+		return
+	}
+}
+
 // scrollLookMsg returns a description line if the item is a scroll, empty string otherwise.
 func (e *GameEngine) scrollLookMsg(archetype int, val3 int) string {
 	if archetype != 168 {
@@ -4229,6 +4677,9 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 		result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s's group arrives.", player.FirstName))
 	}
 
+	// Commanded creatures following the player move through the portal too
+	e.moveCommandedFollowers(player, oldRoom, destNum)
+
 	lookResult := e.doLook(player)
 	result.Messages = append(result.Messages, lookResult.Messages...)
 	result.RoomName = lookResult.RoomName
@@ -4243,6 +4694,35 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 	e.applyEntryScripts(ctx, player, dest, result)
 
 	return result
+}
+
+func (e *GameEngine) moveCommandedFollowers(player *Player, oldRoom, newRoom int) {
+	if e.monsterMgr == nil {
+		return
+	}
+
+	var followers []int
+
+	e.monsterMgr.mu.Lock()
+
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if !inst.Alive ||
+			inst.RoomNumber != oldRoom ||
+			inst.CommanderID != player.FirstName ||
+			inst.Following != player.FirstName {
+			continue
+		}
+
+		followers = append(followers, i)
+	}
+
+	e.monsterMgr.mu.Unlock()
+
+	for _, idx := range followers {
+		e.monsterMgr.MoveMonster(idx, newRoom)
+	}
 }
 
 func (e *GameEngine) doRerollStats(ctx context.Context, player *Player, args []string) *CommandResult {
@@ -4423,9 +4903,11 @@ func (e *GameEngine) doClimb(ctx context.Context, player *Player, args []string)
 				if dest != nil {
 					oldRoom := player.RoomNumber
 					player.RoomNumber = sc.MoveTo
+					leftBehind := e.breakCommandedFollowers(player, oldRoom)
 					e.SavePlayer(ctx, player)
 					lookResult := e.doLook(player)
 					result.Messages = append(result.Messages, lookResult.Messages...)
+					result.Messages = append(result.Messages, leftBehind...)
 					result.RoomName = lookResult.RoomName
 					result.RoomDesc = lookResult.RoomDesc
 					result.Exits = lookResult.Exits
@@ -4444,6 +4926,44 @@ func (e *GameEngine) doClimb(ctx context.Context, player *Player, args []string)
 	}
 
 	return &CommandResult{Messages: []string{"You don't see that here."}}
+}
+
+func (e *GameEngine) breakCommandedFollowers(player *Player, roomNum int) []string {
+	if e.monsterMgr == nil {
+		return nil
+	}
+
+	var messages []string
+
+	e.monsterMgr.mu.Lock()
+	defer e.monsterMgr.mu.Unlock()
+
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if !inst.Alive ||
+			inst.RoomNumber != roomNum ||
+			inst.CommanderID != player.FirstName ||
+			inst.Following != player.FirstName {
+			continue
+		}
+
+		def := e.monsters[inst.DefNumber]
+		if def == nil {
+			continue
+		}
+
+		inst.Following = ""
+
+		name := FormatMonsterName(def, e.monAdjs)
+
+		messages = append(
+			messages,
+			fmt.Sprintf("Your %s cannot follow you and remains behind.", name),
+		)
+	}
+
+	return messages
 }
 
 // doItemInteraction handles verbs like PULL, PUSH, TURN, RUB, TAP, TOUCH, SEARCH, DIG.

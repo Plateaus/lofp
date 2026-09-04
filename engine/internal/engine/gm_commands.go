@@ -91,9 +91,10 @@ func (e *GameEngine) processGMCommand(ctx context.Context, player *Player, verb 
 	case "@SPAWN":
 		return e.gmSpawn(player, args)
 	case "@ACTIVATE":
-		return &CommandResult{Messages: []string{"Monster activated."}}
+		return e.gmActivate(player, args)
+
 	case "@SEDATE":
-		return &CommandResult{Messages: []string{"Monster sedated."}}
+		return e.gmSedate(player, args)
 	case "@ZAP":
 		return e.gmZap(player, args)
 	case "@MLIST":
@@ -1820,4 +1821,79 @@ func resolveGMVerb(input string) string {
 		return match
 	}
 	return input
+}
+func (e *GameEngine) gmSedate(player *Player, args []string) *CommandResult {
+	if len(args) == 0 {
+		return &CommandResult{Messages: []string{"Sedate which monster?"}}
+	}
+
+	target := strings.ToLower(strings.Join(args, " "))
+
+	e.monsterMgr.mu.Lock()
+	defer e.monsterMgr.mu.Unlock()
+
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if !inst.Alive || inst.RoomNumber != player.RoomNumber {
+			continue
+		}
+
+		def := e.monsters[inst.DefNumber]
+		if def == nil {
+			continue
+		}
+
+		name := FormatMonsterName(def, e.monAdjs)
+
+		if strings.Contains(strings.ToLower(name), target) {
+			inst.Sedated = true
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("%s sedated.", name),
+				},
+			}
+		}
+	}
+
+	return &CommandResult{Messages: []string{"Monster not found."}}
+}
+
+func (e *GameEngine) gmActivate(player *Player, args []string) *CommandResult {
+	if len(args) == 0 {
+		return &CommandResult{Messages: []string{"Activate which monster?"}}
+	}
+
+	target := strings.ToLower(strings.Join(args, " "))
+
+	e.monsterMgr.mu.Lock()
+	defer e.monsterMgr.mu.Unlock()
+
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if !inst.Alive || inst.RoomNumber != player.RoomNumber {
+			continue
+		}
+
+		def := e.monsters[inst.DefNumber]
+		if def == nil {
+			continue
+		}
+
+		name := FormatMonsterName(def, e.monAdjs)
+
+		if strings.Contains(strings.ToLower(name), target) {
+			inst.Sedated = false
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("%s activated.", name),
+				},
+			}
+		}
+	}
+
+	return &CommandResult{Messages: []string{"Monster not found."}}
 }

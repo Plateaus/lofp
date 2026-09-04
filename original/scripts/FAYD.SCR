@@ -387,6 +387,7 @@ EXIT N 223
 EXIT W 254
 ITEM 0 396
 ITEM 1 202
+
 *DESCRIPTION_START ITEM ON 0
 There is a manuscript detailing the items for sale by the Armorers Guild here.
 *DESCRIPTION_END

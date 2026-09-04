@@ -1190,6 +1190,53 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 		return nil, nil
 	}
 
+	// Commanded creature guard redirect.
+	if e.monsterMgr != nil {
+		e.monsterMgr.mu.Lock()
+
+		for i := range e.monsterMgr.instances {
+			guard := &e.monsterMgr.instances[i]
+
+			if !guard.Alive ||
+				guard.RoomNumber != player.RoomNumber ||
+				guard.Guarding != player.FirstName {
+				continue
+			}
+
+			guardDef := e.monsters[guard.DefNumber]
+			if guardDef == nil {
+				continue
+			}
+
+			guardName := FormatMonsterName(guardDef, e.monAdjs)
+
+			if e.localRoomBroadcast != nil {
+				e.localRoomBroadcast(
+					player.RoomNumber,
+					[]string{
+						fmt.Sprintf(
+							"%s's %s intercepts the attack!",
+							player.FirstName,
+							guardName,
+						),
+					},
+				)
+			}
+
+			// The attacker turns on the guarding creature.
+			//	inst.Target = ""
+			//	inst.TargetMonsterID = guard.ID
+
+			e.monsterAttackMonster(inst, def, guard, guardDef)
+
+			e.monsterMgr.mu.Unlock()
+
+			return nil, nil
+		}
+
+		e.monsterMgr.mu.Unlock()
+	}
+
 	// Guard redirect: if someone is guarding this player, redirect the attack
 	if e.sessions != nil {
 		for _, guard := range e.sessions.OnlinePlayers() {
@@ -2002,61 +2049,174 @@ func (e *GameEngine) cryForLaw(attacker *Player, target *MonsterInstance, target
 // ---- Monster Combat AI ----
 
 func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.MonsterDef) {
-	if inst.Target == "" || !inst.Alive {
+	if !inst.Alive {
 		return
 	}
-	// Stunned monsters skip their combat tick and recover
+
+	// No combat target at all.
+	if inst.Target == "" && inst.TargetMonsterID < 0 {
+		return
+	}
+
+	// Stunned monsters skip one combat tick and recover.
 	if inst.Stunned {
 		inst.Stunned = false
 		return
 	}
 
+	// ------------------------------------------------------------
+	// MONSTER -> MONSTER
+	// ------------------------------------------------------------
+
+	if inst.TargetMonsterID > 0 {
+		targetIdx := e.monsterMgr.indexOfID(inst.TargetMonsterID)
+
+		if targetIdx < 0 {
+			inst.TargetMonsterID = 0
+			return
+		}
+
+		target := &e.monsterMgr.instances[targetIdx]
+
+		// Target is gone, dead, or no longer in the same room.
+		if !target.Alive || target.RoomNumber != inst.RoomNumber {
+			inst.TargetMonsterID = 0
+			return
+		}
+
+		targetDef := e.monsters[target.DefNumber]
+		if targetDef == nil {
+			inst.TargetMonsterID = 0
+			return
+		}
+
+		e.monsterAttackMonster(
+			inst,
+			def,
+			target,
+			targetDef,
+		)
+
+		// If this monster is still alive after combat, it may flee
+		// according to its normal strategy.
+		if inst.Alive && inst.CurrentHP > 0 && inst.CommanderID == "" {
+			hpPct := inst.CurrentHP * 100 / max(
+				1,
+				def.Body+def.ExtraBody,
+			)
+
+			shouldFlee := false
+
+			switch {
+			case def.Strategy >= 501:
+				// Fight to death.
+
+			case def.Strategy >= 301 && def.Strategy < 500:
+				shouldFlee = hpPct < 30
+
+			case def.Strategy >= 201 && def.Strategy < 300:
+				shouldFlee = hpPct < 50
+
+			case def.Strategy >= 1 && def.Strategy < 200:
+				shouldFlee = hpPct < 60
+			}
+
+			if shouldFlee {
+				e.monsterFlee(inst, def)
+			}
+		}
+
+		return
+	}
+
+	// ------------------------------------------------------------
+	// MONSTER -> PLAYER
+	// Existing combat path.
+	// ------------------------------------------------------------
+
 	if e.sessions == nil {
 		return
 	}
+
 	var target *Player
+
 	for _, p := range e.sessions.OnlinePlayers() {
-		if p.FirstName == inst.Target && p.RoomNumber == inst.RoomNumber && !p.Dead {
+		if p.FirstName == inst.Target &&
+			p.RoomNumber == inst.RoomNumber &&
+			!p.Dead {
+
 			target = p
 			break
 		}
 	}
 
-	if target == nil || target.Hidden || target.Invisible || target.GMInvis {
+	// Player is no longer a valid target.
+	if target == nil ||
+		target.Hidden ||
+		target.Invisible ||
+		target.GMInvis {
+
 		inst.Target = ""
 		return
 	}
 
+	// monsterAttackPlayer may touch systems that don't run under
+	// the monster manager lock.
 	e.monsterMgr.mu.Unlock()
-	playerMsgs, roomMsgs := e.monsterAttackPlayer(inst, def, target)
+
+	playerMsgs, roomMsgs :=
+		e.monsterAttackPlayer(inst, def, target)
+
 	e.monsterMgr.mu.Lock()
 
 	if e.sendToPlayer != nil && len(playerMsgs) > 0 {
-		e.sendToPlayer(target.FirstName, playerMsgs)
+		e.sendToPlayer(
+			target.FirstName,
+			playerMsgs,
+		)
 	}
+
 	if e.localRoomBroadcast != nil && len(roomMsgs) > 0 {
-		e.localRoomBroadcast(inst.RoomNumber, roomMsgs)
+		e.localRoomBroadcast(
+			inst.RoomNumber,
+			roomMsgs,
+		)
 	}
 
-	// Save player state after monster combat (persists HP loss, death, poison, etc.)
+	// Persist player HP/status changes.
 	if e.db != nil {
-		go e.SavePlayer(context.Background(), target)
+		go e.SavePlayer(
+			context.Background(),
+			target,
+		)
 	}
 
-	// Monster flee behavior (strategy 301-500 = flee when wounded, 501+ = fight to death)
-	if inst.Alive && inst.CurrentHP > 0 {
-		hpPct := inst.CurrentHP * 100 / max(1, def.Body+def.ExtraBody)
+	// ------------------------------------------------------------
+	// FLEE BEHAVIOR
+	// ------------------------------------------------------------
+
+	if inst.Alive && inst.CurrentHP > 0 && inst.CommanderID == "" {
+		hpPct := inst.CurrentHP * 100 / max(
+			1,
+			def.Body+def.ExtraBody,
+		)
+
 		shouldFlee := false
+
 		switch {
 		case def.Strategy >= 501:
-			// Fight to death — never flee
+			// Fight to death — never flee.
+
 		case def.Strategy >= 301 && def.Strategy < 500:
 			shouldFlee = hpPct < 30
+
 		case def.Strategy >= 201 && def.Strategy < 300:
 			shouldFlee = hpPct < 50
+
 		case def.Strategy >= 1 && def.Strategy < 200:
 			shouldFlee = hpPct < 60
 		}
+
 		if shouldFlee {
 			e.monsterFlee(inst, def)
 		}
@@ -2129,7 +2289,11 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 
 	for i := range e.monsterMgr.instances {
 		inst := &e.monsterMgr.instances[i]
-		if inst.RoomNumber != roomNum || !inst.Alive || inst.Sedated || inst.Target != "" {
+		if inst.RoomNumber != roomNum ||
+			!inst.Alive ||
+			inst.Sedated ||
+			inst.Target != "" ||
+			inst.TargetMonsterID >= 0 {
 			continue
 		}
 		def := e.monsters[inst.DefNumber]
@@ -2143,6 +2307,172 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 			e.sendToPlayer(player.FirstName, []string{fmt.Sprintf("%s%s stands erect and closes with you.", capArticle(article), name)})
 		}
 		break
+	}
+}
+
+// ---- Monster attacks Monster ----
+
+func (e *GameEngine) monsterAttackMonster(
+	attacker *MonsterInstance,
+	attackerDef *gameworld.MonsterDef,
+	target *MonsterInstance,
+	targetDef *gameworld.MonsterDef,
+) {
+
+	if attacker == nil ||
+		target == nil ||
+		attackerDef == nil ||
+		targetDef == nil ||
+		!attacker.Alive ||
+		!target.Alive {
+		return
+	}
+
+	attackerName := FormatMonsterName(
+		attackerDef,
+		e.monAdjs,
+	)
+
+	targetName := FormatMonsterName(
+		targetDef,
+		e.monAdjs,
+	)
+
+	attackerArticle := articleFor(
+		attackerName,
+		attackerDef.Unique,
+	)
+
+	targetArticle := articleFor(
+		targetName,
+		targetDef.Unique,
+	)
+
+	capAttackerArticle := capArticle(attackerArticle)
+
+	weaponName := e.monsterWeaponName(attackerDef)
+
+	attackVerb, damageNoun :=
+		monsterAttackVerb(attackerDef, e.items)
+
+	// Same basic attack calculation used by monster -> player.
+	wMod := e.weatherMod(attacker.RoomNumber)
+
+	defRating :=
+		targetDef.Defense +
+			target.DefenseBonus
+
+	toHit := calcToHit(
+		attackerDef.Attack1+wMod,
+		defRating,
+	)
+
+	roll := rand.Intn(100) + 1
+
+	if roll < toHit {
+		if e.localRoomBroadcast != nil {
+			e.localRoomBroadcast(
+				attacker.RoomNumber,
+				[]string{
+					fmt.Sprintf(
+						"%s%s %s %s%s with its %s. [ToHit: %d, Roll: %d] Miss.",
+						capAttackerArticle,
+						attackerName,
+						attackVerb,
+						targetArticle,
+						targetName,
+						weaponName,
+						toHit,
+						roll,
+					),
+				},
+			)
+		}
+
+		return
+	}
+
+	hitLabel := "Hit!"
+
+	if roll >= 96 {
+		hitLabel = "Excellent Hit!"
+	}
+
+	dmg := monsterDamage(attackerDef)
+
+	// Monster armor is already a percentage value in the existing
+	// player -> monster combat path.
+	dmg = applyArmor(
+		dmg,
+		targetDef.Armor,
+	)
+
+	if dmg <= 0 {
+		dmg = 1
+	}
+
+	target.CurrentHP -= dmg
+
+	if target.CurrentHP < 0 {
+		target.CurrentHP = 0
+	}
+
+	// ------------------------------------------------------------
+	// RETALIATION
+	//
+	// If another monster actually hurts this monster, it turns
+	// its attention toward the attacker.
+	//
+	// Commanded creatures don't autonomously change targets.
+	// ------------------------------------------------------------
+
+	if target.CurrentHP > 0 &&
+		target.CommanderID == "" {
+
+		target.Target = ""
+		target.TargetMonsterID = attacker.ID
+	}
+
+	msg := fmt.Sprintf(
+		"%s%s %s %s%s with its %s. [ToHit: %d, Roll: %d] %s %s %s. [%d Damage]",
+		capAttackerArticle,
+		attackerName,
+		attackVerb,
+		targetArticle,
+		targetName,
+		weaponName,
+		toHit,
+		roll,
+		hitLabel,
+		damageSeverity(dmg),
+		damageNoun,
+		dmg,
+	)
+
+	if target.CurrentHP <= 0 {
+		target.Alive = false
+		target.DeathTime = time.Now()
+
+		// Attacker is finished with this target.
+		attacker.TargetMonsterID = 0
+
+		msg += fmt.Sprintf(
+			" %s%s slays %s%s.",
+			capAttackerArticle,
+			attackerName,
+			targetArticle,
+			targetName,
+		)
+
+		// Anything else targeting this dead monster will clear itself
+		// naturally on its next combat tick.
+	}
+
+	if e.localRoomBroadcast != nil {
+		e.localRoomBroadcast(
+			attacker.RoomNumber,
+			[]string{msg},
+		)
 	}
 }
 

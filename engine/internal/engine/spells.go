@@ -56,7 +56,7 @@ func init() {
 		{ID: 119, Name: "Ice Bolt", School: "Conjuration", Level: 3, ManaCost: 5, CastTime: 3, Effect: "damage", DmgMin: 4, DmgMax: 16, DmgType: "cold"},
 		{ID: 120, Name: "Frost Ray", School: "Conjuration", Level: 6, ManaCost: 8, CastTime: 3, Effect: "damage", DmgMin: 7, DmgMax: 22, DmgType: "cold"},
 		{ID: 121, Name: "Freezing Sphere", School: "Conjuration", Level: 9, ManaCost: 14, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 30, DmgType: "cold"},
-		{ID: 122, Name: "Summon Familiar", School: "Conjuration", Level: 2, ManaCost: 10, CastTime: 5, Effect: "utility"},
+		{ID: 122, Name: "Summon Familiar", School: "Conjuration", Level: 2, ManaCost: 10, CastTime: 5, Effect: "summon"},
 		{ID: 123, Name: "Summon Earth Elemental", School: "Conjuration", Level: 12, ManaCost: 25, CastTime: 5, Effect: "utility"},
 		{ID: 124, Name: "Inferno Glyph", School: "Conjuration", Level: 20, ManaCost: 25, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 55, DmgType: "heat"},
 		{ID: 125, Name: "Thunder Glyph", School: "Conjuration", Level: 10, ManaCost: 15, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 30, DmgType: "electric"},
@@ -515,6 +515,9 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 			true,
 		)
 
+	case "summon":
+		result = e.castSummonSpell(player, spell, args)
+
 	case "utility":
 
 		switch spell.ID {
@@ -618,6 +621,70 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	e.SavePlayer(ctx, player)
 
 	return result
+}
+
+func (e *GameEngine) castSummonSpell(player *Player, spell *SpellDef, args []string) *CommandResult {
+
+	if e.playerHasSummon(player) {
+		return &CommandResult{
+			Messages: []string{
+				"You already have a summoned creature under your control.",
+			},
+		}
+	}
+
+	switch spell.ID {
+	case 122: // Summon Familiar
+		familiarPool := []int{58, 9, 10, 11, 8, 7}
+		monsterNum := familiarPool[rand.Intn(len(familiarPool))]
+
+		def := e.monsters[monsterNum]
+
+		if def == nil || e.monsterMgr == nil {
+			return &CommandResult{
+				Messages: []string{"Your spell fails to summon a familiar."},
+			}
+		}
+
+		inst := e.monsterMgr.SpawnOne(monsterNum, player.RoomNumber, def.Body+def.ExtraBody)
+
+		inst.CommanderID = player.FirstName
+		inst.ControlType = "SUMMONED"
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("A %s appears before you.", def.Name),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("A %s appears before %s.", def.Name, player.FirstName),
+			},
+		}
+
+	default:
+		return &CommandResult{
+			Messages: []string{"Nothing answers your summons."},
+		}
+	}
+}
+
+func (e *GameEngine) playerHasSummon(player *Player) bool {
+	if e.monsterMgr == nil {
+		return false
+	}
+
+	e.monsterMgr.mu.Lock()
+	defer e.monsterMgr.mu.Unlock()
+
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if inst.Alive &&
+			inst.CommanderID == player.FirstName {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
