@@ -166,6 +166,7 @@ type GameEngine struct {
 	baseForageDefs       []gameworld.ForageDef
 	forageDefs           []gameworld.ForageDef
 	seasonalForageDefs   map[string][]gameworld.ForageDef // per-season forage values
+	mineDefs             []gameworld.MineDef              //MINING definitions GEMS AND MINERALS
 	PVals                map[int]int                      // persistent global values
 	NamedVars            map[string]int                   // VARIABLE-defined global named variables (DANWATER, etc.)
 	namedVarNames        map[string]bool                  // set of valid named variable names
@@ -552,6 +553,9 @@ func NewGameEngine(db *mongo.Database, parsed *gameworld.ParsedData) *GameEngine
 	e.forageDefs = parsed.ForageDefs
 	e.baseForageDefs = e.forageDefs
 	e.seasonalForageDefs = parsed.SeasonalForageDefs
+
+	// Load mining definitions
+	e.mineDefs = parsed.MineDefs
 
 	// Initialize event bus for admin monitoring
 	e.Events = NewEventBus()

@@ -673,6 +673,7 @@ func (e *GameEngine) monsterTick(tick int) {
 		}
 	}
 }
+
 func (e *GameEngine) moveMonsterDirection(idx int, inst *MonsterInstance, def *gameworld.MonsterDef, dir string) bool {
 	room := e.rooms[inst.RoomNumber]
 	if room == nil {

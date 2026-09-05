@@ -374,7 +374,7 @@ func (p *fileParser) parse() {
 			}
 
 			p.pos++
-		case "MINDEF":
+		case "MINEDEF":
 			if len(fields) >= 6 {
 				itemNum, _ := strconv.Atoi(fields[1])
 				adjNum, _ := strconv.Atoi(fields[2])
@@ -704,9 +704,7 @@ func (p *fileParser) parseItem(fields []string) {
 			p.readDescription()
 			continue
 		// Item types
-		case "AMMO", "ARMOR",
-			"BITE_WEAPON", "BOW_WEAPON", "CHARGE_WEAPON", "CLAW_WEAPON",
-			"FIST_WEAPON",
+		case "AMMO", "ARMOR", "BITE_WEAPON", "BOW_WEAPON", "CLAW_WEAPON",
 			"CRUSH_WEAPON", "DRAKIN_CRUSH", "DRAKIN_POLE", "DRAKIN_SLASH",
 			"DRAKIN_THROWN", "FOOD", "HANDGUN", "KEY", "LIQCONTAINER",
 			"LIQUID", "LOCKPICK", "MINETOOL", "MISC", "MONEY",
@@ -715,7 +713,6 @@ func (p *fileParser) parseItem(fields []string) {
 			"PORTAL_OVER", "PORTAL", "PUNCTURE_WEAPON",
 			"RIFLE", "SCROLL", "SHIELD", "SLASH_WEAPON", "STABTHROWN",
 			"THROWN_WEAPON", "TRAP", "TWOHAND_WEAPON", "ORE":
-
 			item.Type = cmd
 			//Shields are now offhand items, not worn armor. The engine will handle this automatically.
 			// Shields default to WORN_ARMOR if no explicit worn slot

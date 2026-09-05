@@ -1752,18 +1752,14 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 				)
 
 				if e.localRoomBroadcast != nil {
-					article := articleFor(
-						wepName,
-						false,
-					)
+					//	article := articleFor(wepName,	false,	)
 
 					e.localRoomBroadcast(
 						roomNumber,
 						[]string{
 							fmt.Sprintf(
-								"%s%s clatters to the ground.",
-								capArticle(article),
-								wepName,
+								"%s clatters to the ground.",
+								capArticle(wepName),
 							),
 						},
 					)
@@ -1774,18 +1770,10 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 
 	// Generate treasure drops based on monster's TREASURE level.
 	if def.Treasure > 0 && !def.Discorporate {
-		treasureMsgs := e.generateTreasure(
-			roomNumber,
-			def.Treasure,
-		)
+		treasureMsgs := e.generateTreasure(roomNumber, def.Treasure)
 
-		if len(treasureMsgs) > 0 &&
-			e.localRoomBroadcast != nil {
-
-			e.localRoomBroadcast(
-				roomNumber,
-				treasureMsgs,
-			)
+		if len(treasureMsgs) > 0 && e.localRoomBroadcast != nil {
+			e.localRoomBroadcast(roomNumber, treasureMsgs)
 		}
 	}
 }
@@ -1903,79 +1891,139 @@ func (e *GameEngine) doSearchMonster(ctx context.Context, player *Player, args [
 
 	matchCount := 0
 	monsters := e.monsterMgr.AllMonstersInRoom(player.RoomNumber)
+
 	for _, inst := range monsters {
 		if inst.Alive {
 			continue // can only search dead monsters
 		}
+
 		def := e.monsters[inst.DefNumber]
 		if def == nil {
 			continue
 		}
+
 		name := strings.ToLower(FormatMonsterName(def, e.monAdjs))
 		noun := strings.ToLower(def.Name)
+
 		if !strings.HasPrefix(name, target) && !strings.HasPrefix(noun, target) {
 			continue
 		}
+
 		matchCount++
 		if matchCount <= ordSkip {
 			continue
 		}
 
-		// Check if already searched — mark via monsterMgr
+		// Check whether this corpse has already been searched.
 		e.monsterMgr.mu.Lock()
 		idx := e.monsterMgr.indexOfID(inst.ID)
+
 		if idx >= 0 && e.monsterMgr.instances[idx].Searched {
 			e.monsterMgr.mu.Unlock()
-			return &CommandResult{Messages: []string{fmt.Sprintf("You have already searched the %s.", def.Name)}}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("You have already searched the %s.", def.Name),
+				},
+			}
 		}
-		if idx >= 0 {
-			e.monsterMgr.instances[idx].Searched = true
-		}
+
 		e.monsterMgr.mu.Unlock()
 
 		displayName := FormatMonsterName(def, e.monAdjs)
+
 		var msgs []string
-		msgs = append(msgs, fmt.Sprintf("You search %s%s.", articleFor(displayName, def.Unique), displayName))
 
-		// Treasure based on monster's Treasure level
+		msgs = append(
+			msgs,
+			fmt.Sprintf(
+				"You search %s%s.",
+				articleFor(displayName, def.Unique),
+				displayName,
+			),
+		)
+
+		// Generate the monster's treasure now, when the corpse is searched.
+		// generateTreasure places all generated loot directly into the room.
+		var found []string
+
 		if def.Treasure > 0 {
-			// Generate coins based on treasure level
-			copperAmount := rand.Intn(def.Treasure*20) + def.Treasure*5
-			gold := copperAmount / 100
-			silver := (copperAmount % 100) / 10
-			copper := copperAmount % 10
+			copperAmount := rand.Intn(def.Treasure*5 + 1)
 
-			var found []string
-			if gold > 0 {
+			if copperAmount > 0 {
+				gold := copperAmount / 100
+				silver := (copperAmount % 100) / 10
+				copper := copperAmount % 10
+
+				if gold > 0 {
+					if gold == 1 {
+						found = append(found, "1 gold coin")
+					} else {
+						found = append(found, fmt.Sprintf("%d gold coins", gold))
+					}
+				}
+
+				if silver > 0 {
+					if silver == 1 {
+						found = append(found, "1 silver coin")
+					} else {
+						found = append(found, fmt.Sprintf("%d silver coins", silver))
+					}
+				}
+
+				if copper > 0 {
+					if copper == 1 {
+						found = append(found, "1 copper coin")
+					} else {
+						found = append(found, fmt.Sprintf("%d copper coins", copper))
+					}
+				}
+
 				player.Gold += gold
-				found = append(found, fmt.Sprintf("%d gold", gold))
-			}
-			if silver > 0 {
 				player.Silver += silver
-				found = append(found, fmt.Sprintf("%d silver", silver))
-			}
-			if copper > 0 {
 				player.Copper += copper
-				found = append(found, fmt.Sprintf("%d copper", copper))
 			}
-			if len(found) > 0 {
-				msgs = append(msgs, fmt.Sprintf("You find %s.", joinWithAnd(found)))
-			} else {
-				msgs = append(msgs, "You find nothing.")
-			}
+		}
+
+		if len(found) > 0 {
+			msgs = append(
+				msgs,
+				fmt.Sprintf(
+					"You find %s.",
+					joinWithAnd(found),
+				),
+			)
 		} else {
 			msgs = append(msgs, "You find nothing.")
 		}
 
-		// Search roundtime
+		// Only mark the corpse searched after treasure generation completes.
+		e.monsterMgr.mu.Lock()
+
+		idx = e.monsterMgr.indexOfID(inst.ID)
+		if idx >= 0 {
+			e.monsterMgr.instances[idx].Searched = true
+		}
+
+		e.monsterMgr.mu.Unlock()
+
+		// Search roundtime.
 		player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
 		msgs = append(msgs, " [Round: 5 sec]")
 
 		e.SavePlayer(ctx, player)
+
 		return &CommandResult{
-			Messages:      msgs,
-			RoomBroadcast: []string{fmt.Sprintf("%s searches %s%s.", player.FirstName, articleFor(displayName, def.Unique), displayName)},
-			PlayerState:   player,
+			Messages: msgs,
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s searches %s%s.",
+					player.FirstName,
+					articleFor(displayName, def.Unique),
+					displayName,
+				),
+			},
+			PlayerState: player,
 		}
 	}
 
