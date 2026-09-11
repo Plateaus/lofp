@@ -789,8 +789,8 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		}
 
 		result.RoomBroadcast = append(result.RoomBroadcast,
-			fmt.Sprintf("%s gestures toward %s, studying it for signs of magic.",
-				player.FirstName, args),
+			fmt.Sprintf("%s gestures thoughtfully, studying something nearby for signs of magic.",
+				player.FirstName),
 		)
 	default:
 		result.Messages = []string{

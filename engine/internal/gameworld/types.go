@@ -67,6 +67,7 @@ type ItemDef struct {
 	Container  string        `bson:"container,omitempty" json:"container,omitempty"`
 	Interior   int           `bson:"interior,omitempty" json:"interior,omitempty"`
 	WornSlot   string        `bson:"wornSlot,omitempty" json:"wornSlot,omitempty"`
+	Droppable  bool          `bson:"droppable,omitempty" json:"droppable,omitempty"`
 	Flags      []string      `bson:"flags" json:"flags"`
 	Traits     []string      `bson:"traits,omitempty" json:"traits,omitempty"`
 	Scripts    []ScriptBlock `bson:"scripts,omitempty" json:"scripts,omitempty"`

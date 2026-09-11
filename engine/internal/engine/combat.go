@@ -544,6 +544,7 @@ func playerArmorPercent(player *Player, items map[int]*gameworld.ItemDef) int {
 		def := items[worn.Archetype]
 		if def != nil && def.Type == "ARMOR" {
 			total += def.Parameter1
+			total += worn.Val2 // magical armor bonus
 		}
 	}
 	if total > 85 {

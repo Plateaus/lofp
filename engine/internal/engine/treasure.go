@@ -163,7 +163,7 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 						item.Adj3,
 					)
 
-					found = append(found, fmt.Sprintf("%s clatters to the ground", name))
+					found = append(found, fmt.Sprintf("you see %s drop to the ground", name))
 				}
 			}
 
@@ -215,6 +215,10 @@ func (e *GameEngine) randomWeaponDrop(treasureLevel int) *gameworld.RoomItem {
 		if !isWeapon(def.Type) {
 			continue
 		}
+		if !def.Droppable {
+			continue
+		}
+
 		if def.Parameter1 <= 0 || def.Parameter1 > maxDmg {
 			continue
 		}
@@ -315,6 +319,58 @@ func (e *GameEngine) maybeEnchantWeapon(item *gameworld.RoomItem, treasureLevel 
 
 }
 
+func (e *GameEngine) maybeEnchantArmor(item *gameworld.RoomItem, treasureLevel int) {
+	if item == nil || treasureLevel <= 0 {
+		return
+	}
+
+	chance := 5 + treasureLevel/2
+	if chance > 35 {
+		chance = 35
+	}
+
+	if rand.Intn(100) >= chance {
+		return
+	}
+
+	maxPower := 1
+
+	switch {
+	case treasureLevel >= 50:
+		maxPower = 5
+	case treasureLevel >= 40:
+		maxPower = 4
+	case treasureLevel >= 30:
+		maxPower = 3
+	case treasureLevel >= 20:
+		maxPower = 2
+	}
+
+	power := rollWeaponMagicPower(maxPower)
+
+	var trait string
+
+	switch roll := rand.Intn(100); {
+	case roll < 40:
+		trait = fmt.Sprintf("MAGIC_PLUS_%d", power*5)
+
+	case roll < 60:
+		trait = fmt.Sprintf("FIRE_RESIST_%d", power*10)
+
+	case roll < 80:
+		trait = fmt.Sprintf("COLD_RESIST_%d", power*10)
+
+	default:
+		trait = fmt.Sprintf("ELECTRIC_RESIST_%d", power*10)
+	}
+
+	if e.traits[trait] == nil {
+		return
+	}
+
+	item.Traits = append(item.Traits, trait)
+}
+
 func rollWeaponMagicPower(maxPower int) int {
 	if maxPower <= 1 {
 		return 1
@@ -352,7 +408,13 @@ func (e *GameEngine) randomArmorDrop(treasureLevel int) *gameworld.RoomItem {
 		if def.Type != "ARMOR" {
 			continue
 		}
-		if def.Parameter1 <= 0 || def.Parameter1 > maxAC {
+
+		if !def.Droppable {
+			continue
+		}
+
+		//removed def.Parameter1 <= 0 || from this so we can drop armor with 0 AC (like a robe) for low level treasure
+		if def.Parameter1 > maxAC {
 			continue
 		}
 		if def.Weight >= 1000 {
@@ -360,6 +422,7 @@ func (e *GameEngine) randomArmorDrop(treasureLevel int) *gameworld.RoomItem {
 		}
 		candidates = append(candidates, num)
 	}
+
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -369,10 +432,13 @@ func (e *GameEngine) randomArmorDrop(treasureLevel int) *gameworld.RoomItem {
 		Archetype: chosen,
 	}
 
+	// Chance for magical trait based on treasure level.
+	e.maybeEnchantArmor(item, treasureLevel)
+
 	// Chance for magic bonus
-	if treasureLevel >= 20 && rand.Intn(100) < treasureLevel/4 {
-		item.Val2 = rand.Intn(treasureLevel/15+1) + 1
-	}
+	//if treasureLevel >= 20 && rand.Intn(100) < treasureLevel/4 {
+	//	item.Val2 = rand.Intn(treasureLevel/15+1) + 1
+	//}
 
 	return item
 }

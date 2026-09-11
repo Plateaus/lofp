@@ -3526,6 +3526,11 @@ func (e *GameEngine) itemEnchantments(item *InventoryItem, def *gameworld.ItemDe
 			return
 		}
 
+		// POWER_* traits are loot/quality tiers, not enchantments.
+		if strings.HasPrefix(name, "POWER_") {
+			return
+		}
+
 		trait := e.traits[name]
 		if trait == nil || trait.Power <= 0 {
 			return
@@ -3535,7 +3540,14 @@ func (e *GameEngine) itemEnchantments(item *InventoryItem, def *gameworld.ItemDe
 
 		if strings.HasPrefix(name, "MAGIC_PLUS_") {
 			bonus := strings.TrimPrefix(name, "MAGIC_PLUS_")
-			display = "Magic +" + bonus
+
+			if def.Type == "ARMOR" {
+				display = "Armor +" + bonus
+			} else if isWeapon(def.Type) {
+				display = "Attack +" + bonus
+			} else {
+				display = "Magic +" + bonus
+			}
 		} else {
 			display = strings.ReplaceAll(name, "_", " ")
 			display = strings.ToLower(display)
@@ -5091,9 +5103,8 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 
 		// Detect Magic only needs item resolution + magic power.
 		if verb == "DETECTMAGIC" {
-			return &CommandResult{
-				MagicPower: e.itemMagicPower(itemDef, &room.Items[i]),
-			}
+
+			return &CommandResult{MagicPower: e.itemMagicPower(itemDef, &room.Items[i])}
 		}
 
 		result := &CommandResult{}
@@ -6015,6 +6026,10 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 			parsedItemTarget, ordSkip := parseOrdinal(itemTarget)
 			skip := ordSkip
 
+			if strings.EqualFold(parsedItemTarget, "coins") {
+				parsedItemTarget = "coin"
+			}
+
 			for ii := range invContainer.Contents {
 				child := invContainer.Contents[ii]
 
@@ -6188,6 +6203,10 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 
 	parsedItemTarget, ordSkip := parseOrdinal(itemTarget)
 	skip := ordSkip
+
+	if strings.EqualFold(parsedItemTarget, "coins") {
+		parsedItemTarget = "coin"
+	}
 
 	// ------------------------------------------------------------
 	// Find only items PUT inside this specific container.

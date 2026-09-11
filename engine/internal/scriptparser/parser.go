@@ -731,6 +731,8 @@ func (p *fileParser) parseItem(fields []string) {
 			"HIDDEN", "LATCHABLE", "LIGHTABLE", "LOCKABLE", "OPENABLE",
 			"REAGENT", "SKIN", "TURNABLE", "SEALED", "MATERIAL2":
 			item.Flags = append(item.Flags, cmd)
+		case "DROPPABLE": //can drop as random loot
+			item.Droppable = true
 		case "TRAIT":
 			if len(fields) >= 2 {
 				item.Traits = append(item.Traits, strings.ToUpper(fields[1]))

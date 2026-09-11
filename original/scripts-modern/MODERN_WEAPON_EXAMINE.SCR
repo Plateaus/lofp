@@ -344,3 +344,39 @@ TRAITDEF KAIEKRA
         ECHO PLAYER A large two-handed bladed weapon balanced for broad, powerful cutting attacks.
     ENDIF
 ENDTRAIT
+
+TRAITDEF DEEPLANDER_AXE
+    IFPREVERB EXAMINE -1
+        ECHO PLAYER A brutal Deeplander axe of scarred metal and dark, battered wood. Its thick blade bears the nicks of hard use, built more for splitting bone than looking pretty.
+    ENDIF
+ENDTRAIT
+
+TRAITDEF DEEPLANDER_BATTLEAXE
+    IFPREVERB EXAMINE -1
+        ECHO PLAYER A massive Deeplander battleaxe, crude, scarred, and brutally heavy. The broad blade is chipped along its edge, but there is nothing delicate about the damage it was made to do.
+    ENDIF
+ENDTRAIT
+
+TRAITDEF BROADAXE
+    IFPREVERB EXAMINE -1
+        ECHO PLAYER A massive broad-headed axe built for powerful two-handed chopping blows, with substantial weight behind its cutting edge.
+    ENDIF
+ENDTRAIT
+
+TRAITDEF BOLA
+    IFPREVERB EXAMINE -1
+        ECHO PLAYER A throwing weapon of weighted ends joined by flexible cords, designed to whirl through the air and entangle or strike its target.
+    ENDIF
+ENDTRAIT
+
+TRAITDEF YORNAC
+    IFPREVERB EXAMINE -1
+        ECHO PLAYER A heavy striking weapon built to deliver punishing crushing blows through weight and momentum.
+    ENDIF
+ENDTRAIT
+
+TRAITDEF SCYTHE
+    IFPREVERB EXAMINE -1
+        ECHO PLAYER A long-handled weapon fitted with a broad curved blade, capable of delivering powerful sweeping cuts from considerable reach.
+    ENDIF
+ENDTRAIT

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,8 @@ func (e *GameEngine) processGMCommand(ctx context.Context, player *Player, verb 
 		return e.gmAddItem(ctx, player, args)
 	case "@DELETE":
 		return e.gmDelete(ctx, player, args)
+	case "@DROPPABLES":
+		return e.gmDroppables(ctx, player, args)
 	case "@RDATA":
 		return e.gmRData(player, args)
 	case "@HEAL":
@@ -324,6 +327,310 @@ func (e *GameEngine) gmAddItem(ctx context.Context, player *Player, args []strin
 	room.Items = append(room.Items, ri)
 	name := e.getItemNounName(itemDef)
 	return &CommandResult{Messages: []string{fmt.Sprintf("Added %s (archetype %d) to the room.", name, arch)}}
+}
+
+func (e *GameEngine) gmDroppables(ctx context.Context, player *Player, args []string) *CommandResult {
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"Room not found."},
+		}
+	}
+
+	// Monsters are assigned to rooms through the room's MONSTER_GROUP.
+	// MLIST.Room contains the monster group ID, not the actual room number.
+	groupID := room.MonsterGroup
+
+	if groupID == 0 {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"Room %d [%s] has no monster group.",
+					player.RoomNumber,
+					room.Name,
+				),
+			},
+		}
+	}
+
+	// Find every treasure level that can occur from monsters
+	// belonging to this room's monster group.
+	treasureLevels := make(map[int]bool)
+	var monsterLines []string
+
+	for _, ml := range e.monsterLists {
+		if ml.Room != groupID {
+			continue
+		}
+
+		def := e.monsters[ml.MonsterID]
+		if def == nil {
+			continue
+		}
+
+		// handleMonsterDeath only generates treasure when Treasure > 0
+		// and the monster does not discorporate.
+		if def.Treasure <= 0 || def.Discorporate {
+			continue
+		}
+
+		treasureLevels[def.Treasure] = true
+
+		monsterLines = append(
+			monsterLines,
+			fmt.Sprintf(
+				"  %s [%d] treasure=%d",
+				FormatMonsterName(def, e.monAdjs),
+				def.Number,
+				def.Treasure,
+			),
+		)
+	}
+
+	if len(treasureLevels) == 0 {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"No treasure-dropping monsters are configured for room %d [%s] (monster group %d).",
+					player.RoomNumber,
+					room.Name,
+					groupID,
+				),
+			},
+		}
+	}
+
+	// Sort treasure levels so output is consistent.
+	levels := make([]int, 0, len(treasureLevels))
+	for level := range treasureLevels {
+		levels = append(levels, level)
+	}
+	sort.Ints(levels)
+
+	sort.Strings(monsterLines)
+
+	var messages []string
+
+	messages = append(
+		messages,
+		fmt.Sprintf(
+			"=== Droppables: Room %d [%s] ===",
+			player.RoomNumber,
+			room.Name,
+		),
+		fmt.Sprintf("Monster Group: %d", groupID),
+		"Monsters:",
+	)
+
+	messages = append(messages, monsterLines...)
+
+	// ----------------------------------------------------
+	// COMBINED DROP POOL
+	//
+	// A room may contain monsters with several treasure levels.
+	// For @droppables, show the combined pool once using the
+	// highest treasure level available in the room.
+	// ----------------------------------------------------
+
+	minTreasure := levels[0]
+	maxTreasure := levels[len(levels)-1]
+
+	if minTreasure == maxTreasure {
+		messages = append(
+			messages,
+			"",
+			fmt.Sprintf("Treasure Level: %d", maxTreasure),
+		)
+	} else {
+		messages = append(
+			messages,
+			"",
+			fmt.Sprintf(
+				"Treasure Levels: %d-%d",
+				minTreasure,
+				maxTreasure,
+			),
+		)
+	}
+
+	// ----------------------------------------------------
+	// ARMOR
+	// ----------------------------------------------------
+
+	maxAC := maxTreasure
+	if maxAC > 50 {
+		maxAC = 50
+	}
+
+	var armorNums []int
+	var tooHighArmorNums []int
+
+	for num, def := range e.items {
+		if def == nil {
+			continue
+		}
+
+		if def.Type != "ARMOR" {
+			continue
+		}
+
+		if !def.Droppable {
+			continue
+		}
+
+		if def.Weight >= 1000 {
+			continue
+		}
+
+		// Parameter1 is armor value.
+		// Missing Parameter1 is 0 and is valid mundane armor.
+		if def.Parameter1 > maxAC {
+			tooHighArmorNums = append(tooHighArmorNums, num)
+			continue
+		}
+
+		armorNums = append(armorNums, num)
+	}
+
+	sort.Ints(armorNums)
+	sort.Ints(tooHighArmorNums)
+
+	messages = append(
+		messages,
+		"",
+		"Armor:",
+	)
+
+	if len(armorNums) == 0 {
+		messages = append(messages, "  None")
+	} else {
+		for _, num := range armorNums {
+			def := e.items[num]
+			name := e.getItemNounName(def)
+
+			messages = append(
+				messages,
+				fmt.Sprintf(
+					"  %4d  %-24s AC=%d",
+					num,
+					name,
+					def.Parameter1,
+				),
+			)
+		}
+	}
+
+	// ----------------------------------------------------
+	// ARMOR ABOVE THIS ROOM'S TREASURE LEVEL
+	// ----------------------------------------------------
+
+	messages = append(
+		messages,
+		"",
+		fmt.Sprintf(
+			"Droppable armor above Treasure %d:",
+			maxTreasure,
+		),
+	)
+
+	if len(tooHighArmorNums) == 0 {
+		messages = append(messages, "  None")
+	} else {
+		for _, num := range tooHighArmorNums {
+			def := e.items[num]
+			name := e.getItemNounName(def)
+
+			messages = append(
+				messages,
+				fmt.Sprintf(
+					"  %4d  %-24s AC=%d  [needs Treasure %d]",
+					num,
+					name,
+					def.Parameter1,
+					def.Parameter1,
+				),
+			)
+		}
+	}
+
+	// ----------------------------------------------------
+	// WEAPONS
+	// ----------------------------------------------------
+
+	maxDmg := maxTreasure / 2
+	if maxDmg < 3 {
+		maxDmg = 3
+	}
+	if maxDmg > 30 {
+		maxDmg = 30
+	}
+
+	var weaponNums []int
+
+	for num, def := range e.items {
+		if def == nil {
+			continue
+		}
+
+		if !isWeapon(def.Type) {
+			continue
+		}
+
+		if !def.Droppable {
+			continue
+		}
+
+		if def.Parameter1 <= 0 || def.Parameter1 > maxDmg {
+			continue
+		}
+
+		if def.Weight >= 1000 {
+			continue
+		}
+
+		weaponNums = append(weaponNums, num)
+	}
+
+	sort.Ints(weaponNums)
+
+	messages = append(
+		messages,
+		"",
+		"Weapons:",
+	)
+
+	if len(weaponNums) == 0 {
+		messages = append(messages, "  None")
+	} else {
+		for _, num := range weaponNums {
+			def := e.items[num]
+			name := e.getItemNounName(def)
+
+			messages = append(
+				messages,
+				fmt.Sprintf(
+					"  %4d  %-24s Damage=%d",
+					num,
+					name,
+					def.Parameter1,
+				),
+			)
+		}
+	}
+
+	messages = append(
+		messages,
+		"",
+		fmt.Sprintf(
+			"Eligible: %d armor, %d weapons",
+			len(armorNums),
+			len(weaponNums),
+		),
+	)
+
+	return &CommandResult{
+		Messages: messages,
+	}
 }
 
 func (e *GameEngine) gmDelete(ctx context.Context, player *Player, args []string) *CommandResult {
