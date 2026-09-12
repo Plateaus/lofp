@@ -7817,6 +7817,8 @@ func statName(stat StatID) string {
 		return "Mana"
 	case StatPsi:
 		return "Psioncic Energy"
+	case HeatResistance, ColdResistance:
+		return "%Resist"
 	default:
 		return "Unknown Stat"
 	}

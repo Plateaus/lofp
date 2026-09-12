@@ -34,6 +34,10 @@ type MonsterInstance struct {
 	TargetMonsterID int    `json:"-"` //track controlled monster target // -1 means no monster target
 	Guarding        string `json:"-"` //creature guarding a player (for summoned monsters)
 	Watching        bool   `json:"-"` //creature is watching wich broadcasts the room back to the player on move
+
+	PreparedSpell int
+	SpellReadyAt  time.Time
+	Mana          int
 }
 
 // monsterManager handles monster spawning and tracking.
@@ -147,6 +151,7 @@ func (e *GameEngine) spawnForRoom(roomNum int) {
 				CurrentHP:       hp,
 				DefenseBonus:    monsterPsiDefenseBonus(def.Disciplines),
 				TargetMonsterID: -1, // no monster target by default
+				Mana:            def.Mana,
 			}
 			idx := len(e.monsterMgr.instances)
 			e.monsterMgr.instances = append(e.monsterMgr.instances, inst)
@@ -170,7 +175,7 @@ func (e *GameEngine) spawnForRoom(roomNum int) {
 }
 
 // SpawnOne creates a single monster instance in a room. hp should include ExtraBody.
-func (mm *monsterManager) SpawnOne(defNum, roomNum, hp int) *MonsterInstance {
+func (mm *monsterManager) SpawnOne(defNum, roomNum, hp int, mana int) *MonsterInstance {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
@@ -181,6 +186,7 @@ func (mm *monsterManager) SpawnOne(defNum, roomNum, hp int) *MonsterInstance {
 		Alive:           true,
 		CurrentHP:       hp,
 		TargetMonsterID: -1, // no monster target by default
+		Mana:            mana,
 	}
 
 	idx := len(mm.instances)
@@ -678,6 +684,239 @@ func (e *GameEngine) monsterTick(tick int) {
 			}
 		}
 	}
+}
+
+func (e *GameEngine) chooseMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef) *SpellDef {
+
+	if inst == nil || def == nil {
+		return nil
+	}
+
+	var choices []*SpellDef
+
+	for _, spellID := range def.Spells {
+		spell := FindSpellByID(spellID)
+		if spell == nil {
+			continue
+		}
+
+		// Monster cannot cast above its configured cast level.
+		if def.CastLevel > 0 && spell.Level > def.CastLevel {
+			continue
+		}
+
+		// Must currently have enough mana.
+		if inst.Mana < spell.ManaCost {
+			continue
+		}
+
+		// For now, only cast offensive damage spells.
+		// We can add monster versions of Fear, Charm, buffs, etc. next.
+		if spell.Effect != "damage" {
+			continue
+		}
+
+		choices = append(choices, spell)
+	}
+
+	if len(choices) == 0 {
+		return nil
+	}
+
+	return choices[rand.Intn(len(choices))]
+}
+
+func (e *GameEngine) beginMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef, spell *SpellDef) string {
+
+	inst.PreparedSpell = spell.ID
+	inst.SpellReadyAt = time.Now().Add(
+		time.Duration(spell.CastTime) * time.Second,
+	)
+
+	name := FormatMonsterName(def, e.monAdjs)
+	article := articleFor(name, def.Unique)
+	monsterName := capArticle(article) + name
+
+	// TEXS appears to be the monster's preparation/incantation text.
+	if msg := def.TextOverrides["TEXS"]; msg != "" {
+		return msg
+	}
+
+	return fmt.Sprintf("%s incants a spell.", monsterName)
+}
+
+func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef, player *Player, spell *SpellDef) ([]string, []string) {
+
+	if inst == nil || def == nil || player == nil || spell == nil {
+		return nil, nil
+	}
+
+	name := FormatMonsterName(def, e.monAdjs)
+	article := articleFor(name, def.Unique)
+	monsterName := capArticle(article) + name
+
+	var playerMsgs []string
+	var roomMsgs []string
+
+	// If mana was drained while preparing, the spell cannot be released.
+	if inst.Mana < spell.ManaCost {
+		msg := fmt.Sprintf("%s's spell fades before it can be released.", monsterName)
+
+		roomMsgs = append(roomMsgs, msg)
+
+		return playerMsgs, roomMsgs
+	}
+
+	// Mana is spent on release, even if the casting roll fails.
+	inst.Mana -= spell.ManaCost
+
+	//playerMsgs = append(
+	//	playerMsgs,
+	//	fmt.Sprintf("%s gestures at %s.", monsterName, player.FirstName),
+	//)
+
+	//just room message it.
+	roomMsgs = append(
+		roomMsgs,
+		fmt.Sprintf("%s gestures at %s.", monsterName, player.FirstName),
+	)
+
+	// Monster spell skill appears to already be stored as a percentage.
+	castChance := def.SpellSkill
+
+	if castChance <= 0 {
+		castChance = 25
+	}
+
+	if castChance > 95 {
+		castChance = 95
+	}
+
+	roll := rand.Intn(100) + 1
+
+	if roll > castChance {
+		failMsg := def.TextOverrides["TEXQ"]
+
+		if failMsg == "" {
+			failMsg = fmt.Sprintf("%s's spell fizzles.", monsterName)
+		}
+
+		//	playerMsgs = append(playerMsgs, failMsg)
+		roomMsgs = append(roomMsgs, failMsg)
+
+		return playerMsgs, roomMsgs
+	}
+
+	// ------------------------------------------------------------
+	// DAMAGE SPELL
+	// ------------------------------------------------------------
+
+	if spell.Effect != "damage" {
+		return playerMsgs, roomMsgs
+	}
+
+	dmg := spell.DmgMin
+
+	if spell.DmgMax > spell.DmgMin {
+		dmg += rand.Intn(spell.DmgMax - spell.DmgMin + 1)
+	}
+
+	damageType := strings.ToUpper(spell.DmgType)
+
+	// Elemental resistance.
+	switch damageType {
+	case "HEAT", "FIRE", "BURN":
+		resistance := player.EffectiveStat(HeatResistance)
+
+		if resistance < 0 {
+			resistance = 0
+		}
+		if resistance > 100 {
+			resistance = 100
+		}
+
+		dmg = dmg * (100 - resistance) / 100
+
+	case "COLD", "ICE":
+		resistance := player.EffectiveStat(ColdResistance)
+
+		if resistance < 0 {
+			resistance = 0
+		}
+		if resistance > 100 {
+			resistance = 100
+		}
+
+		dmg = dmg * (100 - resistance) / 100
+	}
+
+	player.BodyPoints -= dmg
+
+	if player.BodyPoints < 0 {
+		player.BodyPoints = 0
+	}
+
+	part := randomBodyPart("HUMAN")
+	severity := damageSeverity(dmg)
+
+	damageNoun := "blast"
+
+	switch damageType {
+	case "HEAT", "FIRE", "BURN":
+		damageNoun = "burn"
+
+	case "COLD", "ICE":
+		damageNoun = "blast"
+
+	case "ELECTRIC", "LIGHTNING":
+		damageNoun = "shock"
+
+	case "CRUSHING":
+		damageNoun = "strike"
+	}
+
+	playerMsgs = append(
+		playerMsgs,
+		fmt.Sprintf(
+			"%s %s to %s. [%d Damage]",
+			severity,
+			damageNoun,
+			part,
+			dmg,
+		),
+	)
+
+	roomMsgs = append(
+		roomMsgs,
+		fmt.Sprintf(
+			"%s casts %s at %s.",
+			monsterName,
+			spell.Name,
+			player.FirstName,
+		),
+	)
+
+	if player.BodyPoints <= 0 {
+		if e.isArenaRoom(player.RoomNumber) {
+			player.BodyPoints = 1
+
+			playerMsgs = append(
+				playerMsgs,
+				"The arena's enchantment prevents your death!",
+			)
+		} else {
+
+			deathMsgs := e.handlePlayerDeath(player, name)
+			playerMsgs = append(playerMsgs, deathMsgs...)
+
+			roomMsgs = append(
+				roomMsgs,
+				fmt.Sprintf("%s slays %s!", monsterName, player.FirstName),
+			)
+		}
+	}
+
+	return playerMsgs, roomMsgs
 }
 
 func (e *GameEngine) moveMonsterDirection(idx int, inst *MonsterInstance, def *gameworld.MonsterDef, dir string) bool {

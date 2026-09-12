@@ -2085,7 +2085,7 @@ func (sc *ScriptContext) doGenMon(args []string) {
 		return
 	}
 	if sc.Engine.monsterMgr != nil {
-		sc.Engine.monsterMgr.SpawnOne(monNum, sc.Room.Number, def.Body)
+		sc.Engine.monsterMgr.SpawnOne(monNum, sc.Room.Number, def.Body, def.Mana)
 		name := FormatMonsterName(def, sc.Engine.monAdjs)
 		genText := def.TextOverrides["TEXG"]
 		if genText == "" {

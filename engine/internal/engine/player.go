@@ -59,6 +59,8 @@ const (
 	RemovePoison
 	RemoveDisease
 	StunnedEffect
+	HeatResistance
+	ColdResistance
 )
 
 const (
@@ -446,7 +448,7 @@ func (p *Player) EffectiveStat(stat StatID) int {
 	case StatEmpathy:
 		value = p.Empathy
 	default:
-		return 0
+		value = 0
 	}
 
 	for _, effect := range p.ActiveStatEffects {

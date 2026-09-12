@@ -1284,16 +1284,35 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 			armorPct := playerArmorPercent(player, e.items)
 			specDmg = applyArmor(specDmg, armorPct)
 
+			damageType := strings.ToUpper(specType)
+
 			// Endurance: 1% elemental damage reduction per rank (max 50%)
 			enduranceSkill := player.Skills[11]
-			if enduranceSkill > 0 && (specType == "Heat" || specType == "Cold" || specType == "Electric") {
+			if enduranceSkill > 0 &&
+				(damageType == "HEAT" || damageType == "COLD" || damageType == "ELECTRIC") {
+
 				reduction := enduranceSkill
 				if reduction > 50 {
 					reduction = 50
 				}
+
 				specDmg = specDmg * (100 - reduction) / 100
 			}
-			_ = specType
+
+			// Elemental shields
+			switch damageType {
+			case "HEAT":
+				if player.HasStatEffect(HeatResistance) {
+					resistance := player.EffectiveStat(HeatResistance)
+					specDmg = specDmg * (100 - resistance) / 100
+				}
+
+			case "COLD":
+				if player.HasStatEffect(ColdResistance) {
+					resistance := player.EffectiveStat(ColdResistance)
+					specDmg = specDmg * (100 - resistance) / 100
+				}
+			}
 
 			part := randomBodyPart("HUMAN")
 			severity := damageSeverity(specDmg)
@@ -2193,7 +2212,6 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 
 		target := &e.monsterMgr.instances[targetIdx]
 
-		// Target is gone, dead, or no longer in the same room.
 		if !target.Alive || target.RoomNumber != inst.RoomNumber {
 			inst.TargetMonsterID = 0
 			return
@@ -2212,8 +2230,6 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 			targetDef,
 		)
 
-		// If this monster is still alive after combat, it may flee
-		// according to its normal strategy.
 		if inst.Alive && inst.CurrentHP > 0 && inst.CommanderID == "" {
 			hpPct := inst.CurrentHP * 100 / max(
 				1,
@@ -2246,7 +2262,6 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 
 	// ------------------------------------------------------------
 	// MONSTER -> PLAYER
-	// Existing combat path.
 	// ------------------------------------------------------------
 
 	if e.sessions == nil {
@@ -2265,36 +2280,119 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 		}
 	}
 
-	// Player is no longer a valid target.
 	if target == nil ||
 		target.Hidden ||
 		target.Invisible ||
 		target.GMInvis {
 
 		inst.Target = ""
+		inst.PreparedSpell = 0
+		inst.SpellReadyAt = time.Time{}
 		return
 	}
 
-	// monsterAttackPlayer may touch systems that don't run under
-	// the monster manager lock.
-	e.monsterMgr.mu.Unlock()
+	var playerMsgs []string
+	var roomMsgs []string
 
-	playerMsgs, roomMsgs :=
-		e.monsterAttackPlayer(inst, def, target)
+	// ------------------------------------------------------------
+	// FINISH A PREPARED SPELL
+	// ------------------------------------------------------------
 
-	e.monsterMgr.mu.Lock()
+	if inst.PreparedSpell > 0 {
 
-	if e.sendToPlayer != nil && len(playerMsgs) > 0 {
-		e.sendToPlayer(
-			target.FirstName,
-			playerMsgs,
-		)
+		// Still preparing. No physical attack this tick.
+		if time.Now().Before(inst.SpellReadyAt) {
+			return
+		}
+
+		spell := FindSpellByID(inst.PreparedSpell)
+
+		// Clear preparation before resolving.
+		inst.PreparedSpell = 0
+		inst.SpellReadyAt = time.Time{}
+
+		if spell != nil {
+			e.monsterMgr.mu.Unlock()
+
+			playerMsgs, roomMsgs =
+				e.releaseMonsterSpell(inst, def, target, spell)
+
+			e.monsterMgr.mu.Lock()
+		}
+
+	} else if def.SpellUse > 0 &&
+		len(def.Spells) > 0 &&
+		rand.Intn(100) < def.SpellUse {
+
+		// ------------------------------------------------------------
+		// BEGIN PREPARING A SPELL
+		// ------------------------------------------------------------
+
+		spell := e.chooseMonsterSpell(inst, def)
+
+		if spell != nil {
+			msg := e.beginMonsterSpell(inst, def, spell)
+
+			e.monsterMgr.mu.Unlock()
+
+			if e.localRoomBroadcast != nil {
+				e.localRoomBroadcast(
+					inst.RoomNumber,
+					[]string{msg},
+				)
+			}
+
+			e.monsterMgr.mu.Lock()
+
+			// Preparing the spell consumed this action.
+			return
+		}
+
+		// No usable spell found: fall through to physical attack.
+		e.monsterMgr.mu.Unlock()
+
+		playerMsgs, roomMsgs =
+			e.monsterAttackPlayer(inst, def, target)
+
+		e.monsterMgr.mu.Lock()
+
+	} else {
+		// ------------------------------------------------------------
+		// NORMAL PHYSICAL ATTACK
+		// ------------------------------------------------------------
+
+		e.monsterMgr.mu.Unlock()
+
+		playerMsgs, roomMsgs =
+			e.monsterAttackPlayer(inst, def, target)
+
+		e.monsterMgr.mu.Lock()
 	}
 
+	// ------------------------------------------------------------
+	// SEND COMBAT OUTPUT
+	// ------------------------------------------------------------
+
+	// Send the visible combat action first:
+	//
+	//   A phantom caretaker gestures at Mad.
+	//   A phantom caretaker casts Ice Bolt at Mad.
+	//
 	if e.localRoomBroadcast != nil && len(roomMsgs) > 0 {
 		e.localRoomBroadcast(
 			inst.RoomNumber,
 			roomMsgs,
+		)
+	}
+
+	// Then send the result specifically to the player:
+	//
+	//   Grazing blast to back. [7 Damage]
+	//
+	if e.sendToPlayer != nil && len(playerMsgs) > 0 {
+		e.sendToPlayer(
+			target.FirstName,
+			playerMsgs,
 		)
 	}
 

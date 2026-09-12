@@ -132,8 +132,8 @@ func init() {
 	druid := []SpellDef{
 		{ID: 500, Name: "Plant Snare", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "utility"},
 		{ID: 505, Name: "Freedom", School: "Druidic", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility"},
-		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
-		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
+		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 50, Duration: 45 * time.Minute, Family: "heat shield", StatusType: ColdResistance, StatusMsg: "A translucent blue sphere surrounds you."},
+		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff", DefBonus: 50, Duration: 45 * time.Minute, Family: "cold shield", StatusType: HeatResistance, StatusMsg: "A translucent red sphere surrounds you."},
 		{ID: 511, Name: "Carapace", School: "Druidic", Level: 8, ManaCost: 10, CastTime: 3, Effect: "defense", DefBonus: 20, Duration: 45 * time.Minute},
 		{ID: 512, Name: "True Aim", School: "Druidic", Level: 15, ManaCost: 18, CastTime: 3, Effect: "buff"},
 		{ID: 513, Name: "Agility I", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "agility", StatusType: StatAgility},
@@ -878,6 +878,7 @@ func (e *GameEngine) summonCreature(player *Player, monsterNum int) *CommandResu
 		monsterNum,
 		player.RoomNumber,
 		def.Body+def.ExtraBody,
+		def.Mana,
 	)
 
 	if inst == nil {
