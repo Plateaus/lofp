@@ -1635,6 +1635,11 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		if len(args) == 0 {
 			return &CommandResult{Messages: []string{"Attack what?"}}
 		}
+		if player.CombatTarget == nil || !player.Joined {
+			return &CommandResult{
+				Messages: []string{"You are not engaged with anything."},
+			}
+		}
 		return e.doAttackMonster(ctx, player, strings.Join(args, " "))
 	case "FLEE":
 		return e.doFlee(ctx, player)
@@ -1643,8 +1648,19 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			return &CommandResult{Messages: []string{"Advance on what?"}}
 		}
 		target := strings.Join(args, " ")
-		// Try monster first
 		inst, def := e.findMonsterInRoom(player, target)
+
+		if player.Joined &&
+			player.CombatTarget != nil &&
+			player.CombatTarget.MonsterID == inst.ID {
+
+			return &CommandResult{
+				Messages: []string{"You are already engaging that opponent."},
+			}
+		}
+
+		// Try monster first
+
 		if inst != nil {
 			name := FormatMonsterName(def, e.monAdjs)
 			article := articleFor(name, def.Unique)
@@ -4231,6 +4247,12 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 		}
 	}
 
+	if player.Joined {
+		return &CommandResult{
+			Messages: []string{"You are engaged in combat! Try FLEE."},
+		}
+	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
@@ -4681,6 +4703,12 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 	if state == "CLOSED" || state == "LOCKED" {
 		portalName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
 		return &CommandResult{Messages: []string{fmt.Sprintf("The %s is closed.", e.getItemNounName(itemDef))}, RoomBroadcast: []string{fmt.Sprintf("%s bumps into %s.", player.FirstName, portalName)}}
+	}
+
+	if player.Joined {
+		return &CommandResult{
+			Messages: []string{"You are engaged in combat! Try FLEE."},
+		}
 	}
 
 	// Run IFPREVERB GO scripts (can CLEARVERB to block)
@@ -12441,7 +12469,7 @@ func isPortal(itemType string) bool {
 func isWeapon(itemType string) bool {
 	switch itemType {
 	case "SLASH_WEAPON", "CRUSH_WEAPON", "PUNCTURE_WEAPON", "POLE_WEAPON",
-		"TWOHAND_WEAPON", "BOW_WEAPON", "THROWN_WEAPON", "STABTHROWN",
+		"TWOHAND_WEAPON", "BOW_WEAPON", "THROWN_WEAPON", "STABTHROWN", "FIST_WEAPON",
 		"POLETHROWN", "HANDGUN", "RIFLE", "CLAW_WEAPON", "BITE_WEAPON",
 		"DRAKIN_CRUSH", "DRAKIN_POLE", "DRAKIN_SLASH", "DRAKIN_THROWN":
 		return true

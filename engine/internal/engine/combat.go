@@ -849,19 +849,42 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	}
 
 	inst, def := e.findMonsterInRoom(player, target)
+
 	if inst == nil {
 		// Check if they're trying to attack a player
 		if e.sessions != nil {
 			for _, p := range e.sessions.OnlinePlayers() {
-				if p.RoomNumber == player.RoomNumber && strings.HasPrefix(strings.ToUpper(p.FirstName), strings.ToUpper(target)) {
+				if p.RoomNumber == player.RoomNumber &&
+					strings.HasPrefix(strings.ToUpper(p.FirstName), strings.ToUpper(target)) {
+
 					if player.IsGM {
-						return &CommandResult{Messages: []string{fmt.Sprintf("[GM combat with players is not yet implemented. %s is here.]", p.FirstName)}}
+						return &CommandResult{
+							Messages: []string{
+								fmt.Sprintf("[GM combat with players is not yet implemented. %s is here.]", p.FirstName),
+							},
+						}
 					}
-					return &CommandResult{Messages: []string{"Player combat is not allowed here."}}
+
+					return &CommandResult{
+						Messages: []string{"Player combat is not allowed here."},
+					}
 				}
 			}
 		}
-		return &CommandResult{Messages: []string{fmt.Sprintf("You don't see '%s' here to attack.", target)}}
+
+		return &CommandResult{
+			Messages: []string{fmt.Sprintf("You don't see '%s' here to attack.", target)},
+		}
+	}
+
+	// Monster exists — now verify this is the opponent we're engaged with
+	if player.CombatTarget == nil ||
+		!player.CombatTarget.IsMonster ||
+		player.CombatTarget.MonsterID != inst.ID {
+
+		return &CommandResult{
+			Messages: []string{"You are not engaged with that opponent."},
+		}
 	}
 
 	// Check if a guard monster intervenes
@@ -1102,8 +1125,8 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 				msgs = append(msgs, " It collapses, dead.")
 			}
 			e.handleMonsterDeath(player, inst, def)
-			player.CombatTarget = nil
-			player.Joined = false
+			//	player.CombatTarget = nil
+			//	player.Joined = false
 		}
 
 		// Build simplified 3rd-person broadcast
@@ -1574,6 +1597,9 @@ func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int) bool 
 // ---- Monster Death ----
 
 func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, def *gameworld.MonsterDef) {
+
+	e.clearCombatTargetsForMonster(inst.ID)
+
 	// ------------------------------------------------------------
 	// Summoned creature backlash.
 	// ------------------------------------------------------------
@@ -1859,6 +1885,35 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 
 		if len(treasureMsgs) > 0 && e.localRoomBroadcast != nil {
 			e.localRoomBroadcast(roomNumber, treasureMsgs)
+		}
+	}
+}
+
+func (e *GameEngine) clearCombatTargetsForMonster(monsterID int) {
+	// Clear all players engaged with this monster.
+	if e.sessions != nil {
+		for _, p := range e.sessions.OnlinePlayers() {
+			if p.CombatTarget != nil &&
+				p.CombatTarget.IsMonster &&
+				p.CombatTarget.MonsterID == monsterID {
+
+				p.CombatTarget = nil
+				p.Joined = false
+			}
+		}
+	}
+
+	// Clear all monsters targeting this monster.
+	if e.monsterMgr != nil {
+		e.monsterMgr.mu.Lock()
+		defer e.monsterMgr.mu.Unlock()
+
+		for i := range e.monsterMgr.instances {
+			m := &e.monsterMgr.instances[i]
+
+			if m.TargetMonsterID == monsterID {
+				m.TargetMonsterID = -1
+			}
 		}
 	}
 }
@@ -2291,6 +2346,16 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 		return
 	}
 
+	// Player has no current engagement.
+	// Since this monster is already attacking them, it now closes with them.
+	if !target.Joined || target.CombatTarget == nil {
+		target.CombatTarget = &CombatTarget{
+			IsMonster: true,
+			MonsterID: inst.ID,
+		}
+		target.Joined = true
+	}
+
 	var playerMsgs []string
 	var roomMsgs []string
 
@@ -2514,6 +2579,17 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 			continue
 		}
 		inst.Target = player.FirstName
+
+		// If the player isn't already engaged, this monster closing
+		// with them establishes the player's engagement.
+		if player.CombatTarget == nil || !player.Joined {
+			player.CombatTarget = &CombatTarget{
+				IsMonster: true,
+				MonsterID: inst.ID,
+			}
+			player.Joined = true
+		}
+
 		name := FormatMonsterName(def, e.monAdjs)
 		article := articleFor(name, def.Unique)
 		if e.sendToPlayer != nil {

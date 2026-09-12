@@ -576,6 +576,16 @@ func (e *GameEngine) monsterTick(tick int) {
 
 					inst.Target = p.FirstName
 
+					// Only establish player-side engagement if the player
+					// isn't already engaged with another opponent.
+					if p.CombatTarget == nil || !p.Joined {
+						p.CombatTarget = &CombatTarget{
+							IsMonster: true,
+							MonsterID: inst.ID,
+						}
+						p.Joined = true
+					}
+
 					if e.sendToPlayer != nil {
 						e.sendToPlayer(
 							p.FirstName,
