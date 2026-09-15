@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jonradoff/lofp/internal/gameworld"
 )
 
 // SpellDef defines a spell in the game.
@@ -48,7 +50,7 @@ func init() {
 		{ID: 109, Name: "Summon Gargoyle", School: "Conjuration", Level: 16, ManaCost: 30, CastTime: 5, Effect: "summon"},
 		{ID: 112, Name: "Call Meteor", School: "Conjuration", Level: 20, ManaCost: 30, CastTime: 4, Effect: "damage", DmgMin: 25, DmgMax: 60, DmgType: "heat"},
 		{ID: 113, Name: "Light", School: "Conjuration", Level: 1, ManaCost: 2, CastTime: 2, Effect: "buff", Family: "light", Duration: 30 * time.Minute, StatusType: LightBuff, StatusMsg: "A soft light surrounds you."},
-		{ID: 114, Name: "Mystic Key", School: "Conjuration", Level: 2, ManaCost: 4, CastTime: 3, Effect: "utility"},
+		{ID: 114, Name: "Mystic Key", School: "Conjuration", Level: 2, ManaCost: 10, CastTime: 5, Effect: "utility"},
 		{ID: 115, Name: "Shockwave", School: "Conjuration", Level: 4, ManaCost: 6, CastTime: 3, Effect: "damage", DmgMin: 4, DmgMax: 15, DmgType: "crushing"},
 		{ID: 116, Name: "Thunder Call", School: "Conjuration", Level: 21, ManaCost: 28, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 50, DmgType: "electric"},
 		{ID: 117, Name: "Call Fire", School: "Conjuration", Level: 8, ManaCost: 12, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 25, DmgType: "heat"},
@@ -61,7 +63,7 @@ func init() {
 		{ID: 124, Name: "Inferno Glyph", School: "Conjuration", Level: 20, ManaCost: 25, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 55, DmgType: "heat"},
 		{ID: 125, Name: "Thunder Glyph", School: "Conjuration", Level: 10, ManaCost: 15, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 30, DmgType: "electric"},
 		{ID: 126, Name: "Ice Glyph", School: "Conjuration", Level: 15, ManaCost: 20, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 40, DmgType: "cold"},
-		{ID: 127, Name: "Web", School: "Conjuration", Level: 10, ManaCost: 12, CastTime: 3, Effect: "utility"},
+		{ID: 127, Name: "Web", School: "Conjuration", Level: 10, ManaCost: 12, CastTime: 3, Effect: "debuff", Duration: 2 * time.Minute, DefBonus: -25},
 		{ID: 130, Name: "Mass Protection", School: "Conjuration", Level: 23, ManaCost: 30, CastTime: 4, Effect: "defense", DefBonus: 25, Duration: 45 * time.Minute, Family: "armor"},
 		{ID: 131, Name: "Flaming Arrows", School: "Conjuration", Level: 18, ManaCost: 22, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 35, DmgType: "heat"},
 		{ID: 132, Name: "Chain Lightning", School: "Conjuration", Level: 23, ManaCost: 28, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 50, DmgType: "electric"},
@@ -536,7 +538,6 @@ func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResul
 }
 
 // doCastSpell handles CAST [target].
-// doCastSpell handles CAST [target].
 func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []string) *CommandResult {
 	if player.Dead {
 		return &CommandResult{Messages: []string{"You can't cast spells while dead."}}
@@ -717,81 +718,28 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		)
 
 	case "summon":
-		result = e.castSummonSpell(player, spell, args)
+		result = e.castSummonSpell(
+			player,
+			spell,
+			args,
+		)
+
+	case "debuff":
+		return e.castDebuff(
+			player,
+			spell,
+			args,
+			true,
+		)
 
 	case "utility":
-
-		switch spell.ID {
-
-		case 228: // Identify
-			if len(args) > 0 && strings.EqualFold(args[0], "on") {
-				args = args[1:]
-			}
-
-			result = e.doItemInteraction(
-				ctx,
-				player,
-				"IDENTIFY",
-				args,
-			)
-
-		case 400: // Detect Magic
-			if len(args) > 0 && strings.EqualFold(args[0], "on") {
-				args = args[1:]
-			}
-
-			result = e.doItemInteraction(
-				ctx,
-				player,
-				"DETECTMAGIC",
-				args,
-			)
-
-			// If item lookup failed, keep the lookup message.
-			if len(result.Messages) > 0 {
-				return result
-			}
-
-			switch {
-			case result.MagicPower == 0:
-				result.Messages = []string{
-					"You sense no magic.",
-				}
-
-			case result.MagicPower == 1:
-				result.Messages = []string{
-					"You sense a faint magical aura.",
-				}
-
-			case result.MagicPower <= 3:
-				result.Messages = []string{
-					"You sense a noticeable magical aura.",
-				}
-
-			case result.MagicPower <= 6:
-				result.Messages = []string{
-					"You sense a strong magical aura.",
-				}
-
-			default:
-				result.Messages = []string{
-					"You sense an overwhelming magical aura.",
-				}
-			}
-
-		default:
-			result.Messages = []string{
-				fmt.Sprintf(
-					"You gesture and cast %s.",
-					spell.Name,
-				),
-			}
-		}
-
-		result.RoomBroadcast = append(result.RoomBroadcast,
-			fmt.Sprintf("%s gestures thoughtfully, studying something nearby for signs of magic.",
-				player.FirstName),
+		result = e.castUtilitySpell(
+			ctx,
+			player,
+			spell,
+			args,
 		)
+
 	default:
 		result.Messages = []string{
 			fmt.Sprintf(
@@ -809,7 +757,7 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		}
 	}
 
-	// Prepend success roll message
+	// Prepend success roll message.
 	result.Messages = append(
 		[]string{successMsg},
 		result.Messages...,
@@ -820,6 +768,291 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	)
 
 	e.SavePlayer(ctx, player)
+
+	return result
+}
+
+func (e *GameEngine) castMysticKey(player *Player, args []string) *CommandResult {
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Cast Mystic Key on what?"},
+		}
+	}
+
+	// Allow:
+	// CAST CHEST
+	// CAST ON CHEST
+	if strings.EqualFold(args[0], "on") {
+		args = args[1:]
+	}
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Cast Mystic Key on what?"},
+		}
+	}
+
+	targetName := strings.ToLower(strings.Join(args, " "))
+	targetName = strings.TrimPrefix(targetName, "my ")
+
+	targetName, targetSkip := parseOrdinal(targetName)
+
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"You can't do that here."},
+		}
+	}
+
+	var inventoryTarget *InventoryItem
+	var roomTarget *gameworld.RoomItem
+	var targetDef *gameworld.ItemDef
+
+	// ------------------------------------------------------------
+	// Search carried containers first.
+	// ------------------------------------------------------------
+
+	skip := targetSkip
+
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
+		def := e.items[ii.Archetype]
+		if def == nil {
+			continue
+		}
+
+		if def.Container == "" {
+			continue
+		}
+
+		noun := e.getItemNounName(def)
+
+		matched :=
+			matchesTarget(
+				noun,
+				targetName,
+				e.getAdjName(ii.Adj1),
+			) ||
+				matchesTarget(
+					noun,
+					targetName,
+					e.getAdjName(ii.Adj2),
+				) ||
+				matchesTarget(
+					noun,
+					targetName,
+					e.getAdjName(ii.Adj3),
+				)
+
+		if !matched {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		inventoryTarget = ii
+		targetDef = def
+		break
+	}
+
+	// ------------------------------------------------------------
+	// If not carried, search room containers.
+	// ------------------------------------------------------------
+
+	if inventoryTarget == nil {
+		skip = targetSkip
+
+		for i := range room.Items {
+			ri := &room.Items[i]
+
+			if ri.IsPut {
+				continue
+			}
+
+			def := e.items[ri.Archetype]
+			if def == nil {
+				continue
+			}
+
+			if !containsFlag(def.Flags, "LOCKABLE") {
+				continue
+			}
+
+			noun := e.getItemNounName(def)
+
+			matched :=
+				matchesTarget(
+					noun,
+					targetName,
+					e.getAdjName(ri.Adj1),
+				) ||
+					matchesTarget(
+						noun,
+						targetName,
+						e.getAdjName(ri.Adj2),
+					) ||
+					matchesTarget(
+						noun,
+						targetName,
+						e.getAdjName(ri.Adj3),
+					)
+
+			if !matched {
+				continue
+			}
+
+			if skip > 0 {
+				skip--
+				continue
+			}
+
+			roomTarget = ri
+			targetDef = def
+			break
+		}
+	}
+
+	if inventoryTarget == nil && roomTarget == nil {
+		return &CommandResult{
+			Messages: []string{"You don't see that here."},
+		}
+	}
+
+	if targetDef == nil || !containsFlag(targetDef.Flags, "LOCKABLE") {
+		return &CommandResult{
+			Messages: []string{"That doesn't have a lock."},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Get current state and lock difficulty.
+	// ------------------------------------------------------------
+
+	state := ""
+	lockDifficulty := 0
+
+	if inventoryTarget != nil {
+		state = inventoryTarget.State
+		lockDifficulty = inventoryTarget.Val1
+	} else {
+		state = roomTarget.State
+		lockDifficulty = roomTarget.Val1
+	}
+
+	if !strings.EqualFold(state, "LOCKED") {
+		return &CommandResult{
+			Messages: []string{"It isn't locked."},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Mystic Key acts as exactly 7 ranks of Lockpicking.
+	//
+	// Same formula as PICK:
+	//
+	// 30
+	// + (ranks - 1) * 5
+	// + PER / 10
+	// - lock difficulty
+	// ------------------------------------------------------------
+
+	const mysticKeyRanks = 7
+
+	chance := 30 +
+		(mysticKeyRanks-1)*5 +
+		player.Perception/10 -
+		lockDifficulty
+
+	if chance < 1 {
+		chance = 1
+	}
+
+	if chance > 95 {
+		chance = 95
+	}
+
+	roll := rand.Intn(100) + 1
+
+	// ------------------------------------------------------------
+	// Display name.
+	// ------------------------------------------------------------
+
+	var displayName string
+
+	if inventoryTarget != nil {
+		displayName = e.formatItemName(
+			targetDef,
+			inventoryTarget.Adj1,
+			inventoryTarget.Adj2,
+			inventoryTarget.Adj3,
+		)
+	} else {
+		displayName = e.formatItemName(
+			targetDef,
+			roomTarget.Adj1,
+			roomTarget.Adj2,
+			roomTarget.Adj3,
+		)
+	}
+
+	result := &CommandResult{}
+
+	// ------------------------------------------------------------
+	// SUCCESS
+	// ------------------------------------------------------------
+
+	if roll <= chance {
+		if inventoryTarget != nil {
+			inventoryTarget.State = "CLOSED"
+		} else {
+			roomTarget.State = "CLOSED"
+		}
+
+		// Legacy Mystic Key does NOT show another success roll.
+		result.Messages = []string{
+			fmt.Sprintf(
+				"You hear a click from within %s.",
+				displayName,
+			),
+		}
+
+		result.RoomBroadcast = []string{
+			fmt.Sprintf(
+				"%s gestures toward %s.",
+				player.FirstName,
+				displayName,
+			),
+		}
+
+		return result
+	}
+
+	// ------------------------------------------------------------
+	// FAILURE
+	//
+	// Spell itself succeeded, but the magical lockpick attempt
+	// failed. Legacy behavior does not expose this hidden roll.
+	// ------------------------------------------------------------
+
+	result.Messages = []string{
+		fmt.Sprintf(
+			"%s shudders for a moment.",
+			capArticle(displayName),
+		),
+	}
+
+	result.RoomBroadcast = []string{
+		fmt.Sprintf(
+			"%s gestures toward %s.",
+			player.FirstName,
+			displayName,
+		),
+	}
 
 	return result
 }
@@ -862,6 +1095,100 @@ func (e *GameEngine) castSummonSpell(player *Player, spell *SpellDef, args []str
 		return &CommandResult{
 			Messages: []string{"Nothing answers your summons."},
 		}
+	}
+}
+func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Cast at what?"},
+		}
+	}
+
+	targetName := strings.Join(args, " ")
+
+	// ---------------------------------------------------------
+	// MONSTER TARGET
+	// ---------------------------------------------------------
+
+	inst, def := e.findMonsterInRoom(player, targetName)
+
+	if inst != nil {
+
+		switch spell.ID {
+
+		case 127: // Web
+			if !e.monsterMgr.MarkRestrained(inst.ID) {
+				return &CommandResult{
+					Messages: []string{"Nothing happens."},
+				}
+			}
+
+			name := FormatMonsterName(def, e.monAdjs)
+			article := articleFor(name, def.Unique)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"%s%s is covered with strands of sticky webbing!",
+						capArticle(article),
+						name,
+					),
+				},
+			}
+		}
+	}
+
+	// ---------------------------------------------------------
+	// PLAYER TARGET
+	// ---------------------------------------------------------
+
+	var target *Player
+
+	if e.sessions != nil {
+		for _, p := range e.sessions.OnlinePlayers() {
+			if p == nil || p.RoomNumber != player.RoomNumber {
+				continue
+			}
+
+			if strings.EqualFold(p.FirstName, targetName) {
+				target = p
+				break
+			}
+		}
+	}
+
+	if target != nil {
+
+		switch spell.ID {
+
+		case 127: // Web
+			/*	if target.IsRestrained() {
+					return &CommandResult{
+						Messages: []string{"Nothing happens."},
+					}
+				}
+			*/
+			/*
+				We'll put the actual player restraint assignment here
+				once we confirm how your permanent stat effects are stored.
+
+				Do NOT use castStatusSpell's duration handling because
+				duration == 0 becomes 30 minutes there.
+			*/
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"%s is covered with strands of sticky webbing!",
+						target.FirstName,
+					),
+				},
+			}
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{"You don't see that here."},
 	}
 }
 
@@ -1451,35 +1778,95 @@ func (e *GameEngine) traitAdjective(traitName string) int {
 	return 0
 }
 
-func (e *GameEngine) castUtilitySpell(player *Player, spell *SpellDef, args []string) *CommandResult {
+func (e *GameEngine) castUtilitySpell(ctx context.Context, player *Player, spell *SpellDef, args []string) *CommandResult {
+
+	result := &CommandResult{}
 
 	switch spell.ID {
+
+	case 114: // Mystic Key
+		result = e.castMysticKey(player, args)
+
+	case 228: // Identify
+		if len(args) > 0 && strings.EqualFold(args[0], "on") {
+			args = args[1:]
+		}
+
+		result = e.doItemInteraction(
+			ctx,
+			player,
+			"IDENTIFY",
+			args,
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			fmt.Sprintf(
+				"%s gestures thoughtfully, studying something nearby.",
+				player.FirstName,
+			))
+
 	case 400: // Detect Magic
-		// we'll put our item lookup + itemIsMagical() here
-	}
+		if len(args) > 0 && strings.EqualFold(args[0], "on") {
+			args = args[1:]
+		}
 
-	return &CommandResult{
-		Messages: []string{
-			fmt.Sprintf("You gesture and cast %s.", spell.Name),
-		},
-	}
-}
+		result = e.doItemInteraction(
+			ctx,
+			player,
+			"DETECTMAGIC",
+			args,
+		)
 
-/*
-func elementalImmunityType(dmgType string) int {
-	switch strings.ToLower(dmgType) {
-	case "heat":
-		return 3
-	case "electric":
-		return 4
-	case "cold":
-		return 5
-	case "crushing":
-		return 1
+		// If item lookup failed, keep the lookup message.
+		if len(result.Messages) > 0 {
+			return result
+		}
+
+		switch {
+		case result.MagicPower == 0:
+			result.Messages = []string{
+				"You sense no magic.",
+			}
+
+		case result.MagicPower == 1:
+			result.Messages = []string{
+				"You sense a faint magical aura.",
+			}
+
+		case result.MagicPower <= 3:
+			result.Messages = []string{
+				"You sense a noticeable magical aura.",
+			}
+
+		case result.MagicPower <= 6:
+			result.Messages = []string{
+				"You sense a strong magical aura.",
+			}
+
+		default:
+			result.Messages = []string{
+				"You sense an overwhelming magical aura.",
+			}
+		}
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			fmt.Sprintf(
+				"%s gestures thoughtfully, studying something nearby for signs of magic.",
+				player.FirstName,
+			))
+
 	default:
-		return -1
+		result.Messages = []string{
+			fmt.Sprintf(
+				"You gesture and cast %s.",
+				spell.Name,
+			),
+		}
 	}
-} */
+
+	return result
+}
 
 func (e *GameEngine) buildCastResult(
 	player *Player,

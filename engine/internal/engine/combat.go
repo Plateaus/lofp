@@ -848,7 +848,16 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		return &CommandResult{Messages: []string{fmt.Sprintf("[Wait %d seconds...]", remaining)}}
 	}
 
-	inst, def := e.findMonsterInRoom(player, target)
+	var inst *MonsterInstance
+	var def *gameworld.MonsterDef
+
+	// No target supplied: first try our existing combat target,
+	// then any monster currently attacking us.
+	if strings.TrimSpace(target) == "" {
+		inst, def = e.findCurrentCombatOpponent(player)
+	} else {
+		inst, def = e.findMonsterInRoom(player, target)
+	}
 
 	if inst == nil {
 		// Check if they're trying to attack a player
@@ -877,14 +886,28 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		}
 	}
 
-	// Monster exists — now verify this is the opponent we're engaged with
-	if player.CombatTarget == nil ||
-		!player.CombatTarget.IsMonster ||
-		player.CombatTarget.MonsterID != inst.ID {
+	// We may attack either:
+	//   1. our explicitly engaged combat target, OR
+	//   2. a monster which has engaged/attacked us.
+	engaged := player.CombatTarget != nil &&
+		player.CombatTarget.IsMonster &&
+		player.CombatTarget.MonsterID == inst.ID
 
+	attackingUs := strings.EqualFold(inst.Target, player.FirstName)
+
+	if !engaged && !attackingUs {
 		return &CommandResult{
 			Messages: []string{"You are not engaged with that opponent."},
 		}
+	}
+
+	// If the monster engaged us first, it now becomes our combat target too.
+	if !engaged && attackingUs {
+		player.CombatTarget = &CombatTarget{
+			IsMonster: true,
+			MonsterID: inst.ID,
+		}
+		player.Joined = true
 	}
 
 	// Check if a guard monster intervenes
@@ -982,8 +1005,11 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	//apply room lighting conditions
 	vMod := e.visibilityCombatModifier(player, player.RoomNumber)
 
+	//apply retrained modifiers
+	vRestrainedMod := player.EffectiveStat(RestrainedEffect)
+
 	// Resolve to-hit
-	attackRating := playerAttackRating(player, weaponDef) + wMod - fatPenalty + vMod
+	attackRating := playerAttackRating(player, weaponDef) + wMod - fatPenalty + vMod + vRestrainedMod
 
 	if player.Wielded != nil {
 		weaponBonus, _, _ := e.weaponMagicStats(player.Wielded, weaponDef)
@@ -1188,6 +1214,45 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	return result
 }
 
+func (e *GameEngine) findCurrentCombatOpponent(player *Player) (*MonsterInstance, *gameworld.MonsterDef) {
+	e.monsterMgr.mu.Lock()
+	defer e.monsterMgr.mu.Unlock()
+
+	// First preference: exact existing combat target.
+	if player.CombatTarget != nil && player.CombatTarget.IsMonster {
+		for i := range e.monsterMgr.instances {
+			inst := &e.monsterMgr.instances[i]
+
+			if inst.ID == player.CombatTarget.MonsterID &&
+				inst.Alive &&
+				inst.RoomNumber == player.RoomNumber {
+
+				def := e.monsters[inst.DefNumber]
+				if def != nil {
+					return inst, def
+				}
+			}
+		}
+	}
+
+	// Otherwise find a monster which is actually attacking us.
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if inst.Alive &&
+			inst.RoomNumber == player.RoomNumber &&
+			strings.EqualFold(inst.Target, player.FirstName) {
+
+			def := e.monsters[inst.DefNumber]
+			if def != nil {
+				return inst, def
+			}
+		}
+	}
+
+	return nil, nil
+}
+
 // doBackstab handles a backstab attack from hiding — bonus damage.
 // Requires puncture weapon (daggers, rapiers).
 func (e *GameEngine) doBackstab(ctx context.Context, player *Player, target string) *CommandResult {
@@ -1216,6 +1281,42 @@ func (e *GameEngine) doBackstab(ctx context.Context, player *Player, target stri
 func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.MonsterDef, player *Player) (playerMsgs []string, roomMsgs []string) {
 	if player.Dead || !inst.Alive {
 		return nil, nil
+	}
+
+	//monster is restrained (webbed, trapped, etc.) — check for escape
+	if inst.Restrained {
+		name := FormatMonsterName(def, e.monAdjs)
+		article := articleFor(name, def.Unique)
+
+		// Small chance based on the monster's physical toughness.
+		chance := (def.Body + def.ExtraBody) / 10
+
+		if chance < 5 {
+			chance = 5
+		}
+		if chance > 25 {
+			chance = 25
+		}
+
+		if rand.Intn(100) < chance {
+			inst.Restrained = false
+
+			return nil, []string{
+				fmt.Sprintf(
+					"%s%s tears free of the thick web!",
+					capArticle(article),
+					name,
+				),
+			}
+		}
+
+		return nil, []string{
+			fmt.Sprintf(
+				"%s%s struggles against the thick web.",
+				capArticle(article),
+				name,
+			),
+		}
 	}
 
 	// Commanded creature guard redirect.
@@ -1325,13 +1426,13 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 			// Elemental shields
 			switch damageType {
 			case "HEAT":
-				if player.HasStatEffect(HeatResistance) {
+				if _, ok := player.HasStatEffect(HeatResistance); ok {
 					resistance := player.EffectiveStat(HeatResistance)
 					specDmg = specDmg * (100 - resistance) / 100
 				}
 
 			case "COLD":
-				if player.HasStatEffect(ColdResistance) {
+				if _, ok := player.HasStatEffect(ColdResistance); ok {
 					resistance := player.EffectiveStat(ColdResistance)
 					specDmg = specDmg * (100 - resistance) / 100
 				}
@@ -1367,7 +1468,11 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 	defRating := e.playerDefenseRating(player)
 
 	visionMod := e.visibilityCombatModifier(player, player.RoomNumber)
-	defRating += visionMod / 2
+
+	//apply retrained modifiers
+	vRestrainedMod := player.EffectiveStat(RestrainedEffect)
+
+	defRating += visionMod/2 + vRestrainedMod
 
 	// Multi-attacker penalty: -5 per 2 additional attackers beyond the first
 	if e.monsterMgr != nil {
@@ -1927,8 +2032,11 @@ func (e *GameEngine) doFlee(ctx context.Context, player *Player) *CommandResult 
 	if player.Dead {
 		return &CommandResult{Messages: []string{"You can't flee. You are dead."}}
 	}
-	if player.Immobilized {
-		return &CommandResult{Messages: []string{"You are rooted to the spot!"}}
+
+	if player.EffectiveStat(RestrainedEffect) != 0 {
+		return &CommandResult{
+			Messages: []string{"You are restrained and cannot flee!"},
+		}
 	}
 
 	room := e.rooms[player.RoomNumber]
@@ -2247,11 +2355,11 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 		return
 	}
 
-	// Stunned monsters skip one combat tick and recover.
-	if inst.Stunned {
-		inst.Stunned = false
-		return
-	}
+	// Stunned monsters skip one combat tick and recover.  (moved to combat tick)
+	//if inst.Stunned {
+	//		inst.Stunned = false
+	//		return
+	//	}
 
 	// ------------------------------------------------------------
 	// MONSTER -> MONSTER
@@ -2347,8 +2455,10 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 	}
 
 	// Player has no current engagement.
-	// Since this monster is already attacking them, it now closes with them.
-	if !target.Joined || target.CombatTarget == nil {
+	// A restrained monster cannot close with them.
+	if !inst.Restrained &&
+		(!target.Joined || target.CombatTarget == nil) {
+
 		target.CombatTarget = &CombatTarget{
 			IsMonster: true,
 			MonsterID: inst.ID,
@@ -2580,6 +2690,10 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 		}
 		inst.Target = player.FirstName
 
+		if inst.Restrained {
+			break
+		}
+
 		// If the player isn't already engaged, this monster closing
 		// with them establishes the player's engagement.
 		if player.CombatTarget == nil || !player.Joined {
@@ -2592,9 +2706,17 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 
 		name := FormatMonsterName(def, e.monAdjs)
 		article := articleFor(name, def.Unique)
+
 		if e.sendToPlayer != nil {
-			e.sendToPlayer(player.FirstName, []string{fmt.Sprintf("%s%s stands erect and closes with you.", capArticle(article), name)})
+			e.sendToPlayer(player.FirstName, []string{
+				fmt.Sprintf(
+					"%s%s stands erect and closes with you.",
+					capArticle(article),
+					name,
+				),
+			})
 		}
+
 		break
 	}
 }

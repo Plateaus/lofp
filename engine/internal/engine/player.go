@@ -61,6 +61,7 @@ const (
 	StunnedEffect
 	HeatResistance
 	ColdResistance
+	RestrainedEffect
 )
 
 const (
@@ -83,6 +84,7 @@ const (
 	EffectSourceScript
 	EffectSourceEncumbrance
 	EffectStunned
+	EffectRestrained
 )
 
 // Gender constants

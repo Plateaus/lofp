@@ -13364,7 +13364,8 @@ Chandra.
 
 A water elemental acknowledges your command.
 
-> go
+> go pat
+
 What are you referring to?  Please be more specific.
 
 > e

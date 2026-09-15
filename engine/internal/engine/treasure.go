@@ -690,7 +690,7 @@ func (e *GameEngine) generateChestContents(room *gameworld.Room, chestRef int, t
 	addMoney(MoneyCopper, copper)
 
 	// Chests always contain at least one useful item.
-	switch rand.Intn(3) {
+	switch rand.Intn(4) {
 	case 0:
 		addItem(e.randomWeaponDrop(treasureLevel))
 	case 1:

@@ -1643,55 +1643,123 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doAttackMonster(ctx, player, strings.Join(args, " "))
 	case "FLEE":
 		return e.doFlee(ctx, player)
-	case "ADVANCE":
+	case "ADVANCE", "ADV":
 		if len(args) == 0 {
 			return &CommandResult{Messages: []string{"Advance on what?"}}
 		}
+
 		target := strings.Join(args, " ")
-		inst, def := e.findMonsterInRoom(player, target)
 
-		if player.Joined &&
-			player.CombatTarget != nil &&
-			player.CombatTarget.MonsterID == inst.ID {
-
-			return &CommandResult{
-				Messages: []string{"You are already engaging that opponent."},
+		// Restraint blocks advancing, but don't use checkPlayerCanMove()
+		// because that also blocks anyone who is already engaged.
+		if effect, ok := player.HasStatEffect(RestrainedEffect); ok {
+			switch effect.EffectID {
+			case 127:
+				return &CommandResult{
+					Messages: []string{"You struggle against the thick webbing but cannot advance."},
+				}
+			default:
+				return &CommandResult{
+					Messages: []string{"You are restrained and cannot advance."},
+				}
 			}
 		}
 
 		// Try monster first
+		inst, def := e.findMonsterInRoom(player, target)
 
 		if inst != nil {
+
+			if player.Joined &&
+				player.CombatTarget != nil &&
+				player.CombatTarget.IsMonster &&
+				player.CombatTarget.MonsterID == inst.ID {
+
+				return &CommandResult{
+					Messages: []string{"You are already engaging that opponent."},
+				}
+			}
+
+			// Already engaged with somebody else
+			if player.Joined {
+				return &CommandResult{
+					Messages: []string{"You are already engaged with another opponent. Retreat first."},
+				}
+			}
+
 			name := FormatMonsterName(def, e.monAdjs)
 			article := articleFor(name, def.Unique)
-			player.CombatTarget = &CombatTarget{IsMonster: true, MonsterID: inst.ID}
+
+			player.CombatTarget = &CombatTarget{
+				IsMonster: true,
+				MonsterID: inst.ID,
+			}
 			player.Joined = true
+
 			e.monsterMgr.mu.Lock()
 			for i := range e.monsterMgr.instances {
-				if e.monsterMgr.instances[i].ID == inst.ID && e.monsterMgr.instances[i].Target == "" {
+				if e.monsterMgr.instances[i].ID == inst.ID &&
+					e.monsterMgr.instances[i].Target == "" {
+
 					e.monsterMgr.instances[i].Target = player.FirstName
 				}
 			}
 			e.monsterMgr.mu.Unlock()
+
 			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You advance toward %s%s.", article, name)},
-				RoomBroadcast: []string{fmt.Sprintf("%s advances toward %s%s.", player.FirstName, article, name)},
+				Messages: []string{
+					fmt.Sprintf("You advance toward %s%s.", article, name),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf("%s advances toward %s%s.", player.FirstName, article, name),
+				},
 			}
 		}
+
 		// Try player
 		found := e.findPlayerInRoom(player, strings.ToLower(target))
 		if found != nil {
+			if player.Joined {
+				return &CommandResult{
+					Messages: []string{"You are already engaged with another opponent. Retreat first."},
+				}
+			}
+
 			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You advance toward %s.", found.FirstName)},
-				RoomBroadcast: []string{fmt.Sprintf("%s advances toward %s.", player.FirstName, found.FirstName)},
+				Messages: []string{
+					fmt.Sprintf("You advance toward %s.", found.FirstName),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf("%s advances toward %s.", player.FirstName, found.FirstName),
+				},
 			}
 		}
-		return &CommandResult{Messages: []string{fmt.Sprintf("You don't see '%s' here.", target)}}
+
+		return &CommandResult{
+			Messages: []string{fmt.Sprintf("You don't see '%s' here.", target)},
+		}
 	case "RETREAT":
 		if player.CombatTarget == nil && !player.Joined {
-			return &CommandResult{Messages: []string{"You are not engaged with anything."}}
+			return &CommandResult{
+				Messages: []string{"You are not engaged with anything."},
+			}
 		}
+
+		if effect, ok := player.HasStatEffect(RestrainedEffect); ok {
+			switch effect.EffectID {
+			case 127:
+				return &CommandResult{
+					Messages: []string{"You struggle against the thick webbing but cannot retreat."},
+				}
+			default:
+				return &CommandResult{
+					Messages: []string{"You are restrained and cannot retreat."},
+				}
+			}
+		}
+
 		e.disengageCombat(player)
+
 		return &CommandResult{
 			Messages:      []string{"You retreat."},
 			RoomBroadcast: []string{fmt.Sprintf("%s retreats.", player.FirstName)},
@@ -3506,6 +3574,12 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			result.Messages = append(result.Messages, sm)
 		}
 
+		if itemDef.Type == "ARMOR" {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf("Armor: %d", itemDef.Parameter2),
+			)
+		}
 		if ii.Identified {
 			enchantments := e.itemEnchantments(&ii, itemDef)
 
@@ -4003,16 +4077,21 @@ func (e *GameEngine) findMonsterInRoomIncludeDead(player *Player, target string)
 }
 
 func (e *GameEngine) findMonsterInRoomEx(player *Player, target string, includeDead bool) (*MonsterInstance, *gameworld.MonsterDef) {
+
 	if e.monsterMgr == nil {
 		return nil, nil
 	}
+
 	var monsters []MonsterInstance
+
 	if includeDead {
 		monsters = e.monsterMgr.AllMonstersInRoom(player.RoomNumber)
 	} else {
 		monsters = e.monsterMgr.MonstersInRoom(player.RoomNumber)
 	}
+
 	target = strings.ToLower(strings.TrimSpace(target))
+
 	// Strip leading articles so "a skeleton" matches "skeleton"
 	for _, article := range []string{"a ", "an ", "the ", "some "} {
 		if strings.HasPrefix(target, article) {
@@ -4020,17 +4099,44 @@ func (e *GameEngine) findMonsterInRoomEx(player *Player, target string, includeD
 			break
 		}
 	}
+
+	// Parse an optional ordinal:
+	// "spider 2"       -> target "spider", ordinal 2
+	// "giant spider 3" -> target "giant spider", ordinal 3
+	ordinal := 1
+
+	parts := strings.Fields(target)
+	if len(parts) > 1 {
+		last := parts[len(parts)-1]
+
+		if n, err := strconv.Atoi(last); err == nil && n > 0 {
+			ordinal = n
+			target = strings.Join(parts[:len(parts)-1], " ")
+		}
+	}
+
+	matchCount := 0
+
 	for i := range monsters {
+
 		def := e.monsters[monsters[i].DefNumber]
 		if def == nil {
 			continue
 		}
+
 		name := strings.ToLower(FormatMonsterName(def, e.monAdjs))
 		noun := strings.ToLower(def.Name)
+
 		if strings.HasPrefix(name, target) || strings.HasPrefix(noun, target) {
-			return &monsters[i], def
+
+			matchCount++
+
+			if matchCount == ordinal {
+				return &monsters[i], def
+			}
 		}
 	}
+
 	return nil, nil
 }
 
@@ -4247,10 +4353,8 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 		}
 	}
 
-	if player.Joined {
-		return &CommandResult{
-			Messages: []string{"You are engaged in combat! Try FLEE."},
-		}
+	if result := e.checkPlayerCanMove(player); result != nil {
+		return result
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
@@ -4674,6 +4778,29 @@ func (e *GameEngine) applyGoScriptResult(
 	return false
 }
 
+func (e *GameEngine) checkPlayerCanMove(player *Player) *CommandResult {
+	if effect, ok := player.HasStatEffect(RestrainedEffect); ok {
+		switch effect.EffectID {
+		case 127:
+			return &CommandResult{
+				Messages: []string{"You struggle against the thick webbing but cannot move."},
+			}
+		default:
+			return &CommandResult{
+				Messages: []string{"You are restrained and cannot move."},
+			}
+		}
+	}
+
+	if player.Joined {
+		return &CommandResult{
+			Messages: []string{"You are engaged in combat! Try FLEE."},
+		}
+	}
+
+	return nil
+}
+
 func (e *GameEngine) movePlayerToRoom(ctx context.Context, player *Player, roomNum int, result *CommandResult) {
 	room := e.rooms[roomNum]
 	if room == nil {
@@ -4705,10 +4832,8 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 		return &CommandResult{Messages: []string{fmt.Sprintf("The %s is closed.", e.getItemNounName(itemDef))}, RoomBroadcast: []string{fmt.Sprintf("%s bumps into %s.", player.FirstName, portalName)}}
 	}
 
-	if player.Joined {
-		return &CommandResult{
-			Messages: []string{"You are engaged in combat! Try FLEE."},
-		}
+	if result := e.checkPlayerCanMove(player); result != nil {
+		return result
 	}
 
 	// Run IFPREVERB GO scripts (can CLEARVERB to block)
@@ -7747,6 +7872,8 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 			name = "Stunned"
 		case EffectSourceEncumbrance:
 			name = "Encumbered"
+		case EffectRestrained:
+			name = "Restrained"
 		}
 
 		// Permanent effects
@@ -7847,6 +7974,8 @@ func statName(stat StatID) string {
 		return "Psioncic Energy"
 	case HeatResistance, ColdResistance:
 		return "%Resist"
+	case RestrainedEffect:
+		return "Restrained"
 	default:
 		return "Unknown Stat"
 	}
@@ -9929,15 +10058,17 @@ func (e *GameEngine) doSell(ctx context.Context, player *Player, args []string) 
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Sell what?"}}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
 		return &CommandResult{Messages: []string{"You can't sell anything here."}}
 	}
 
-	// Check if room has any BUY_ modifier
+	// Check if room has any BUY_ modifier.
 	canBuy := false
 	for _, mod := range room.Modifiers {
 		if strings.HasPrefix(mod, "BUY_") {
@@ -9945,8 +10076,11 @@ func (e *GameEngine) doSell(ctx context.Context, player *Player, args []string) 
 			break
 		}
 	}
+
 	if !canBuy {
-		return &CommandResult{Messages: []string{"Nobody here is interested in buying anything."}}
+		return &CommandResult{
+			Messages: []string{"Nobody here is interested in buying anything."},
+		}
 	}
 
 	for i, ii := range player.Inventory {
@@ -9954,47 +10088,160 @@ func (e *GameEngine) doSell(ctx context.Context, player *Player, args []string) 
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			displayName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			// Sell value: VAL1 on item is copper value, fallback to weight-based estimate
-			sellValue := ii.Val1
-			if sellValue <= 0 {
-				sellValue = itemDef.Weight + 1 // minimal fallback
-			}
-			// Merchants pay ~50% of value
-			sellValue = sellValue / 2
-			if sellValue < 1 {
-				sellValue = 1
-			}
-			player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
-			// Add coins
-			player.Gold += sellValue / 100
-			player.Silver += (sellValue % 100) / 10
-			player.Copper += sellValue % 10
-			e.SavePlayer(ctx, player)
-			return &CommandResult{Messages: []string{
-				fmt.Sprintf("The merchant inspects %s closely.", displayName),
-				fmt.Sprintf("The merchant takes the item and hands you %s.", formatPrice(sellValue)),
-			}}
+
+		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		displayName := e.formatItemName(
+			itemDef,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
+
+		sellValue := e.itemSellValue(ii, itemDef)
+
+		player.Inventory = append(
+			player.Inventory[:i],
+			player.Inventory[i+1:]...,
+		)
+
+		player.Gold += sellValue / 100
+		player.Silver += (sellValue % 100) / 10
+		player.Copper += sellValue % 10
+
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"The merchant inspects %s closely.",
+					displayName,
+				),
+				fmt.Sprintf(
+					"The merchant takes the item and hands you %s.",
+					formatPrice(sellValue),
+				),
+			},
 		}
 	}
 
 	return &CommandResult{Messages: []string{"You don't have that."}}
 }
 
+func sellTraitPower(trait string) int {
+	trait = strings.ToUpper(trait)
+
+	prefixes := []string{
+		"MAGIC_PLUS_",
+		"FLAMING_",
+		"FREEZING_",
+		"SHOCKING_",
+	}
+
+	for _, prefix := range prefixes {
+		if !strings.HasPrefix(trait, prefix) {
+			continue
+		}
+
+		var amount int
+		if _, err := fmt.Sscanf(
+			strings.TrimPrefix(trait, prefix),
+			"%d",
+			&amount,
+		); err != nil {
+			return 0
+		}
+
+		// _5 = power 1, _10 = power 2, etc.
+		if amount >= 5 {
+			return amount / 5
+		}
+	}
+
+	return 0
+}
+
+func (e *GameEngine) itemSellValue(ii InventoryItem, itemDef *gameworld.ItemDef) int {
+	if itemDef == nil {
+		return 1
+	}
+
+	// Explicit runtime value takes precedence.
+	// Gems currently use Val1 from MINEDEF.
+	value := ii.Val1
+
+	if value <= 0 {
+		switch {
+		case isWeapon(itemDef.Type):
+			// Mundane weapon value = damage * 2.
+			value = itemDef.Parameter1 * 2
+
+			if value < 2 {
+				value = 2
+			}
+
+			// Only identified magic contributes to value.
+			if ii.Identified {
+				for _, trait := range ii.Traits {
+					power := sellTraitPower(trait)
+					if power > 0 {
+						value *= power * 10
+					}
+				}
+			}
+
+		case itemDef.Type == "ARMOR":
+			// Mundane armor value = armor rating * 2.
+			value = itemDef.Parameter2 * 2
+
+			if value < 2 {
+				value = 2
+			}
+
+			// Only identified magic contributes to value.
+			if ii.Identified {
+				for _, trait := range ii.Traits {
+					power := sellTraitPower(trait)
+					if power > 0 {
+						value *= power * 10
+					}
+				}
+			}
+
+		default:
+			// Temporary fallback for everything else.
+			value = 2
+		}
+	}
+
+	sellValue := value / 2
+
+	if sellValue < 1 {
+		sellValue = 1
+	}
+
+	return sellValue
+}
+
 func (e *GameEngine) doAppraise(player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Appraise what?"}}
 	}
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
 		return &CommandResult{Messages: []string{"You can't do that here."}}
 	}
+
 	canBuy := false
 	for _, mod := range room.Modifiers {
 		if strings.HasPrefix(mod, "BUY_") {
@@ -10002,38 +10249,57 @@ func (e *GameEngine) doAppraise(player *Player, args []string) *CommandResult {
 			break
 		}
 	}
+
 	if !canBuy {
-		return &CommandResult{Messages: []string{"There is no merchant here to appraise your items."}}
+		return &CommandResult{
+			Messages: []string{"There is no merchant here to appraise your items."},
+		}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
+
 	for _, ii := range player.Inventory {
 		itemDef := e.items[ii.Archetype]
 		if itemDef == nil {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
-			if skip > 0 {
-				skip--
-				continue
-			}
-			displayName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			sellValue := ii.Val1
-			if sellValue <= 0 {
-				sellValue = itemDef.Weight + 1
-			}
-			sellValue = sellValue / 2
-			if sellValue < 1 {
-				sellValue = 1
-			}
-			return &CommandResult{Messages: []string{
-				fmt.Sprintf("The merchant examines %s carefully.", displayName),
-				fmt.Sprintf("\"I'd give you %s for that.\"", formatPrice(sellValue)),
-			}}
+
+		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		displayName := e.formatItemName(
+			itemDef,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
+
+		sellValue := e.itemSellValue(ii, itemDef)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"The merchant examines %s carefully.",
+					displayName,
+				),
+				fmt.Sprintf(
+					"\"I'd give you %s for that.\"",
+					formatPrice(sellValue),
+				),
+			},
 		}
 	}
+
 	return &CommandResult{Messages: []string{"You don't have that."}}
 }
 
@@ -13507,9 +13773,11 @@ func (e *GameEngine) roomVisibility(player *Player, room *gameworld.Room) Visibi
 		return VisibilityClear
 	}
 
-	// Personal night vision  PARTIAL_DARKNESS
-	if player != nil && player.HasStatEffect(NightVisionBuff) {
-		return VisibilityClear
+	// Personal night vision PARTIAL_DARKNESS
+	if player != nil {
+		if _, ok := player.HasStatEffect(NightVisionBuff); ok {
+			return VisibilityClear
+		}
 	}
 
 	// Any active light source in the room illuminates it for everyone.
@@ -13541,20 +13809,16 @@ func (e *GameEngine) roomVisibility(player *Player, room *gameworld.Room) Visibi
 	}
 }
 
-func (p *Player) HasStatEffect(stat StatID) bool {
-	now := time.Now()
+func (p *Player) HasStatEffect(stat StatID) (*StatEffect, bool) {
+	for i := range p.ActiveStatEffects {
+		effect := &p.ActiveStatEffects[i]
 
-	for _, effect := range p.ActiveStatEffects {
-		if effect.Stat != stat {
-			continue
-		}
-
-		if effect.Permanent || effect.ExpiresAt.After(now) {
-			return true
+		if effect.Stat == stat {
+			return effect, true
 		}
 	}
 
-	return false
+	return nil, false
 }
 
 func (e *GameEngine) visibilityCombatModifier(player *Player, RoomNumber int) int {

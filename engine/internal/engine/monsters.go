@@ -21,6 +21,7 @@ type MonsterInstance struct {
 	Sedated        bool                  `json:"sedated"`
 	Stunned        bool                  `json:"-"` // stunned: skip next combat tick, easier to hit
 	Skinned        bool                  `json:"-"` // already skinned
+	Restrained     bool                  `json:"-"` // webbed/ snared/ etc
 	DefenseBonus   int                   `json:"-"` // from active psi defenses
 	CurrentHP      int                   `json:"currentHP"`
 	Target         string                `json:"-"`
@@ -275,6 +276,26 @@ func (mm *monsterManager) MarkSkinned(instanceID int) bool {
 		}
 
 		mm.instances[i].Skinned = true
+		return true
+	}
+
+	return false
+}
+
+func (mm *monsterManager) MarkRestrained(instanceID int) bool {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+
+	for i := range mm.instances {
+		if mm.instances[i].ID != instanceID {
+			continue
+		}
+
+		if mm.instances[i].Restrained {
+			return false
+		}
+
+		mm.instances[i].Restrained = true
 		return true
 	}
 
@@ -547,6 +568,12 @@ func (e *GameEngine) monsterTick(tick int) {
 		//   TargetMonsterID = monster
 		// ------------------------------------------------------------
 
+		// Stunned monsters lose their next action and recover.
+		if inst.Stunned {
+			inst.Stunned = false
+			continue
+		}
+
 		if inst.Target != "" || inst.TargetMonsterID >= 0 {
 			e.monsterCombatTick(inst, def)
 			continue
@@ -722,7 +749,7 @@ func (e *GameEngine) chooseMonsterSpell(inst *MonsterInstance, def *gameworld.Mo
 
 		// For now, only cast offensive damage spells.
 		// We can add monster versions of Fear, Charm, buffs, etc. next.
-		if spell.Effect != "damage" {
+		if spell.Effect != "damage" && spell.Effect != "debuff" {
 			continue
 		}
 
@@ -755,7 +782,12 @@ func (e *GameEngine) beginMonsterSpell(inst *MonsterInstance, def *gameworld.Mon
 	return fmt.Sprintf("%s incants a spell.", monsterName)
 }
 
-func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef, player *Player, spell *SpellDef) ([]string, []string) {
+func (e *GameEngine) releaseMonsterSpell(
+	inst *MonsterInstance,
+	def *gameworld.MonsterDef,
+	player *Player,
+	spell *SpellDef,
+) ([]string, []string) {
 
 	if inst == nil || def == nil || player == nil || spell == nil {
 		return nil, nil
@@ -770,25 +802,25 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 
 	// If mana was drained while preparing, the spell cannot be released.
 	if inst.Mana < spell.ManaCost {
-		msg := fmt.Sprintf("%s's spell fades before it can be released.", monsterName)
+		msg := fmt.Sprintf(
+			"%s's spell fades before it can be released.",
+			monsterName,
+		)
 
 		roomMsgs = append(roomMsgs, msg)
-
 		return playerMsgs, roomMsgs
 	}
 
 	// Mana is spent on release, even if the casting roll fails.
 	inst.Mana -= spell.ManaCost
 
-	//playerMsgs = append(
-	//	playerMsgs,
-	//	fmt.Sprintf("%s gestures at %s.", monsterName, player.FirstName),
-	//)
-
-	//just room message it.
 	roomMsgs = append(
 		roomMsgs,
-		fmt.Sprintf("%s gestures at %s.", monsterName, player.FirstName),
+		fmt.Sprintf(
+			"%s gestures at %s.",
+			monsterName,
+			player.FirstName,
+		),
 	)
 
 	// Monster spell skill appears to already be stored as a percentage.
@@ -811,12 +843,46 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 			failMsg = fmt.Sprintf("%s's spell fizzles.", monsterName)
 		}
 
-		//	playerMsgs = append(playerMsgs, failMsg)
 		roomMsgs = append(roomMsgs, failMsg)
-
 		return playerMsgs, roomMsgs
 	}
 
+	// ------------------------------------------------------------
+	// DEBUFF SPELL
+	// ------------------------------------------------------------
+
+	if spell.Effect == "debuff" {
+		switch spell.ID {
+
+		case 127: // Web
+			if _, ok := player.HasStatEffect(RestrainedEffect); ok {
+				roomMsgs = append(roomMsgs, "Nothing happens.")
+				return playerMsgs, roomMsgs
+			}
+
+			player.ApplyStatEffect(
+				spell.ID,
+				EffectSourceSpell,
+				RestrainedEffect,
+				spell.DefBonus,
+				spell.Duration,
+			)
+
+			releaseMsg := def.TextOverrides["TEXL"]
+			if releaseMsg == "" {
+				releaseMsg = fmt.Sprintf("%s casts Web.", monsterName)
+			}
+
+			roomMsgs = append(roomMsgs, releaseMsg)
+
+			playerMsgs = append(
+				playerMsgs,
+				"You are covered with strands of sticky webbing!",
+			)
+
+			return playerMsgs, roomMsgs
+		}
+	}
 	// ------------------------------------------------------------
 	// DAMAGE SPELL
 	// ------------------------------------------------------------
@@ -835,6 +901,7 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 
 	// Elemental resistance.
 	switch damageType {
+
 	case "HEAT", "FIRE", "BURN":
 		resistance := player.EffectiveStat(HeatResistance)
 
@@ -872,6 +939,7 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 	damageNoun := "blast"
 
 	switch damageType {
+
 	case "HEAT", "FIRE", "BURN":
 		damageNoun = "burn"
 
@@ -915,13 +983,16 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 				"The arena's enchantment prevents your death!",
 			)
 		} else {
-
 			deathMsgs := e.handlePlayerDeath(player, name)
 			playerMsgs = append(playerMsgs, deathMsgs...)
 
 			roomMsgs = append(
 				roomMsgs,
-				fmt.Sprintf("%s slays %s!", monsterName, player.FirstName),
+				fmt.Sprintf(
+					"%s slays %s!",
+					monsterName,
+					player.FirstName,
+				),
 			)
 		}
 	}

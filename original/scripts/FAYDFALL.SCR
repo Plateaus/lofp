@@ -384,6 +384,12 @@ ITEM 0 396
 ITEM 1 202
 ITEM 9 693 ADJ1=10
 
+
+;ITEM 0 168 VAL3=114
+;ITEM 1 168 VAL3=114
+;ITEM 2 168 VAL3=114
+
+
 *DESCRIPTION_START ITEM ON 0
 There is a manuscript detailing the items for sale by the Armorers Guild here.
 *DESCRIPTION_END
