@@ -62,6 +62,7 @@ const (
 	HeatResistance
 	ColdResistance
 	RestrainedEffect
+	ClawGrowth
 )
 
 const (

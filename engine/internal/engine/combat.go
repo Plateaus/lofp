@@ -462,10 +462,12 @@ func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef) int {
 	rating := 50
 	rating += player.Level * 3
 
+	clawGrowth := player.EffectiveStat(ClawGrowth)
+
 	if weaponDef != nil {
 		skillID := weaponSkillForType(weaponDef.Type)
 		rating += player.Skills[skillID] * 5
-	} else if player.WolfForm {
+	} else if player.WolfForm || clawGrowth > 0 {
 		// Wolfling natural weapons
 		rating += player.Skills[4] * 5
 	} else {
@@ -556,11 +558,19 @@ func playerArmorPercent(player *Player, items map[int]*gameworld.ItemDef) int {
 // ---- Damage Calculation ----
 
 func playerDamage(player *Player, weaponDef *gameworld.ItemDef) int {
+
+	clawGrowth := player.EffectiveStat(ClawGrowth)
+
 	if weaponDef == nil {
-		if player.WolfForm {
-			// Wolf form: claw/bite — higher base damage
+		if player.WolfForm || clawGrowth > 0 {
+			// Wolf form + Claw Growth gets enhanced claws.
+			if player.WolfForm && clawGrowth > 0 {
+				return rand.Intn(9) + clawGrowth + player.EffectiveStat(StatStrength)/10
+			}
+			// Normal claws.
 			return rand.Intn(8) + 3 + player.EffectiveStat(StatStrength)/10
 		}
+
 		// Martial Arts: +1 base damage per rank, +1 max damage per 2 ranks
 		maSkill := player.Skills[24]
 		baseDmg := rand.Intn(3+maSkill/2) + 1 + maSkill + player.EffectiveStat(StatStrength)/20
@@ -783,8 +793,10 @@ func weaponImmunityType(weaponDef *gameworld.ItemDef) int {
 }
 
 func (e *GameEngine) weaponDisplayName(player *Player, weaponDef *gameworld.ItemDef) string {
+	clawGrowth := player.EffectiveStat(ClawGrowth)
+
 	if weaponDef == nil {
-		if player.WolfForm {
+		if player.WolfForm || clawGrowth > 0 {
 			return "claws"
 		}
 		return "fists"
@@ -1025,7 +1037,8 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	roll := rand.Intn(100) + 1
 
 	var selfVerb, thirdVerb, dmgNoun string
-	if weaponDef == nil && player.WolfForm {
+	clawGrowth := player.EffectiveStat(ClawGrowth)
+	if weaponDef == nil && (player.WolfForm || clawGrowth > 0) {
 		selfVerb, thirdVerb, dmgNoun = "claw", "claws", "claw"
 	} else {
 		selfVerb, thirdVerb, dmgNoun = attackVerb(weaponDef)
@@ -1535,10 +1548,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 				time.Duration(def.DiseaseLevel)*time.Minute,
 			)
 
-			playerMsgs = append(
-				playerMsgs,
-				" You feel a sickness taking hold!",
-			)
+			playerMsgs = append(playerMsgs, "You feel a sickness taking hold!")
 		}
 
 		if def.FatigueChance > 0 && rand.Intn(100) < def.FatigueChance {

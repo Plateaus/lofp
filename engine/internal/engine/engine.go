@@ -7976,6 +7976,8 @@ func statName(stat StatID) string {
 		return "%Resist"
 	case RestrainedEffect:
 		return "Restrained"
+	case ClawGrowth:
+		return "Claw Damage"
 	default:
 		return "Unknown Stat"
 	}
