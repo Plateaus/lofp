@@ -618,9 +618,13 @@ func (e *GameEngine) randomGemDrop(treasureLevel int) *gameworld.RoomItem {
 		qualityAdj = 129 // flawless
 	}
 
+	// Adjust the gem's base value according to the legacy
+	// size and quality rating system.
+	adjustedValue := gemValue(md.Value, sizeAdj, qualityAdj)
+
 	item := &gameworld.RoomItem{
 		Archetype: md.ItemNum,
-		Val1:      md.Value,
+		Val1:      adjustedValue,
 		Val2:      md.Val2,
 		Adj1:      sizeAdj,
 		Adj2:      qualityAdj,
@@ -633,7 +637,6 @@ func (e *GameEngine) randomGemDrop(treasureLevel int) *gameworld.RoomItem {
 
 	return item
 }
-
 func (e *GameEngine) generateChestContents(room *gameworld.Room, chestRef int, treasureLevel int) {
 	addItem := func(item *gameworld.RoomItem) {
 		if item == nil {
@@ -714,6 +717,56 @@ func (e *GameEngine) generateChestContents(room *gameworld.Room, chestRef int, t
 			addItem(e.randomGemDrop(treasureLevel))
 		}
 	}
+}
+
+func gemValue(baseValue, sizeAdj, qualityAdj int) int {
+	// Legacy gem rating starts at 2.
+	// Use half-points so we don't need floating point:
+	//
+	// Size:
+	// tiny -1, small -0.5, normal 0, large +2, huge +4
+	//
+	// Quality:
+	// damaged -1.5, chipped -1, normal 0, polished +1,
+	// faceted +2, brilliant +3, flawless +4
+
+	ratingHalf := 4 // 2.0 baseline
+
+	switch sizeAdj {
+	case 327: // tiny
+		ratingHalf -= 2
+	case 294: // small
+		ratingHalf -= 1
+	case 178: // large
+		ratingHalf += 4
+	case 163: // huge
+		ratingHalf += 8
+	}
+
+	switch qualityAdj {
+	case 83: // damaged
+		ratingHalf -= 3
+	case 53: // chipped
+		ratingHalf -= 2
+	case 241: // polished
+		ratingHalf += 2
+	case 118: // faceted
+		ratingHalf += 4
+	case 37: // brilliant
+		ratingHalf += 6
+	case 129: // flawless
+		ratingHalf += 8
+	}
+
+	// md.Value represents a normal-size, normal-quality gem,
+	// which corresponds to the baseline rating of 2.0 (4 half-points).
+	value := baseValue * ratingHalf / 4
+
+	if value < 1 {
+		value = 1
+	}
+
+	return value
 }
 
 func (e *GameEngine) findBaseMoneyArchetype(denomination int) int {

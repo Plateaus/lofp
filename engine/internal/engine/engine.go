@@ -13127,6 +13127,8 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 							item := InventoryItem{
 								Archetype: si.Archetype,
 								Adj1:      adj,
+								Val1:      si.Value, // SKINITEM copper value
+								Val2:      si.Magic, // SKINITEM magic/spell-component value
 							}
 							player.Inventory = append(player.Inventory, item)
 							skinMsgs = append(skinMsgs, fmt.Sprintf("You carefully skin %s%s and obtain %s.", articleFor(displayName, def.Unique), displayName, skinName))
