@@ -13099,40 +13099,114 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 			}
 		}
 
-		// Check for skin items
+		// Check for skin items.
 		if len(def.SkinItems) == 0 && def.SkinAdj == 0 {
-			return &CommandResult{Messages: []string{fmt.Sprintf("You can't skin a %s.", def.Name)}}
+			return &CommandResult{
+				Messages: []string{fmt.Sprintf("You can't skin a %s.", def.Name)},
+			}
 		}
 
-		// Weighted random skin selection
+		// Skinning requires either Woodlore (18) or Sagecraft (32).
+		// If the player has both, use the higher skill.
+		woodlore := player.Skills[18]
+		sagecraft := player.Skills[32]
+
+		skill := woodlore
+		if sagecraft > skill {
+			skill = sagecraft
+		}
+
+		if skill <= 0 {
+			return &CommandResult{
+				Messages: []string{"You lack the skill to properly skin this creature."},
+			}
+		}
+
 		displayName := FormatMonsterName(def, e.monAdjs)
+
+		// Use the monster's XP calculation as its skinning difficulty.
+		baseXP := def.Body +
+			def.Attack1/5 +
+			def.Defense/5 +
+			def.Armor/2
+
+		// LOFP-style skill check:
+		// 25% base + 5% per skill rank, reduced by monster difficulty.
+		chance := 25 + skill*5 - baseXP/10
+
+		if chance < 1 {
+			chance = 1
+		}
+		if chance > 95 {
+			chance = 95
+		}
+
+		skinRoll := rand.Intn(100) + 1
+
+		// Skinning takes 5 seconds.
+		player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
+
+		// A skinning attempt consumes the corpse whether it succeeds or fails.
+		e.monsterMgr.MarkSkinned(inst.ID)
+
+		if skinRoll > chance {
+			e.SavePlayer(ctx, player)
+			return &CommandResult{
+				Messages: []string{
+					"You fail to salvage an intact specimen.",
+					"[Round: 5 sec]",
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf("%s attempts to skin %s%s.",
+						player.FirstName,
+						articleFor(displayName, def.Unique),
+						displayName),
+				},
+			}
+		}
+
+		// Successful skinning attempt.
+		// Choose the specimen using the SKINITEM weighted probabilities.
 		var skinMsgs []string
 
 		if len(def.SkinItems) > 0 {
-			// Sum probabilities for weighted selection
 			totalProb := 0
 			for _, si := range def.SkinItems {
 				totalProb += si.Probability
 			}
+
 			if totalProb > 0 {
 				roll := rand.Intn(totalProb)
 				cumProb := 0
+
 				for _, si := range def.SkinItems {
 					cumProb += si.Probability
+
 					if roll < cumProb {
 						skinDef := e.items[si.Archetype]
 						if skinDef != nil {
 							adj := def.SkinAdj
 							skinName := e.formatItemName(skinDef, adj, 0, 0)
+
 							item := InventoryItem{
 								Archetype: si.Archetype,
 								Adj1:      adj,
 								Val1:      si.Value, // SKINITEM copper value
 								Val2:      si.Magic, // SKINITEM magic/spell-component value
 							}
+
 							player.Inventory = append(player.Inventory, item)
-							skinMsgs = append(skinMsgs, fmt.Sprintf("You carefully skin %s%s and obtain %s.", articleFor(displayName, def.Unique), displayName, skinName))
+
+							skinMsgs = append(
+								skinMsgs,
+								fmt.Sprintf(
+									"You remove %s.",
+									skinName,
+								),
+							)
+							skinMsgs = append(skinMsgs, "[Round: 5 sec]")
 						}
+
 						break
 					}
 				}
@@ -13140,18 +13214,34 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 		}
 
 		if len(skinMsgs) == 0 {
-			skinMsgs = append(skinMsgs, fmt.Sprintf("You skin %s %s but find nothing useful.", articleFor(displayName, def.Unique), displayName))
+			skinMsgs = append(
+				skinMsgs,
+				fmt.Sprintf(
+					"You skin %s%s but find nothing useful.",
+					articleFor(displayName, def.Unique),
+					displayName,
+				),
+			)
 		}
 
-		e.monsterMgr.MarkSkinned(inst.ID)
 		e.SavePlayer(ctx, player)
+
 		return &CommandResult{
-			Messages:      skinMsgs,
-			RoomBroadcast: []string{fmt.Sprintf("%s skins %s %s.", player.FirstName, articleFor(displayName, def.Unique), displayName)},
+			Messages: skinMsgs,
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s skins %s%s.",
+					player.FirstName,
+					articleFor(displayName, def.Unique),
+					displayName,
+				),
+			},
 		}
 	}
 
-	return &CommandResult{Messages: []string{"You don't see a dead creature to skin here."}}
+	return &CommandResult{
+		Messages: []string{"You don't see a dead creature to skin here."},
+	}
 }
 
 // ---- TEACH command ----
