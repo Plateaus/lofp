@@ -800,20 +800,6 @@ func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandR
 
 	terrain := room.Terrain
 
-	hasForage := false
-	//checks if youre in a valid foraging area
-	for _, def := range e.forageDefs {
-		if strings.EqualFold(def.Terrain, terrain) {
-			hasForage = true
-			break
-		}
-	}
-
-	if !hasForage {
-		return &CommandResult{
-			Messages: []string{"There is nothing to forage here."},
-		}
-	}
 	// Find FORAGEDEF entries matching this terrain.
 	var candidates []gameworld.ForageDef
 
@@ -823,20 +809,42 @@ func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandR
 		}
 	}
 
-	// Every valid forage attempt takes 20 seconds.
-	rtSec := 20
-	player.RoundTimeExpiry = time.Now().Add(time.Duration(rtSec) * time.Second)
-
-	// No real forage table for this terrain: use generic fallback.
+	// No forage table for this terrain.
 	if len(candidates) == 0 {
-		result := e.doForageFallback(ctx, player, terrain)
-		result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSec))
-
-		return result
+		return &CommandResult{
+			Messages: []string{"There is nothing to forage here."},
+		}
 	}
 
-	// 30% chance of finding nothing.
-	if rand.Intn(100) < 30 {
+	// Foraging requires Woodlore (skill 18).
+	woodlore := player.Skills[18]
+
+	if woodlore <= 0 {
+		return &CommandResult{
+			Messages: []string{
+				"You lack the woodlore necessary to forage effectively.",
+			},
+		}
+	}
+
+	// Every valid forage attempt takes 20 seconds.
+	rtSec := 20
+	player.RoundTimeExpiry = time.Now().Add(
+		time.Duration(rtSec) * time.Second,
+	)
+
+	// LOFP-style skill check:
+	// 25% base + 5% per Woodlore rank.
+	chance := 25 + woodlore*5
+
+	if chance > 95 {
+		chance = 95
+	}
+
+	forageRoll := rand.Intn(100) + 1
+
+	// Failed forage attempt.
+	if forageRoll > chance {
 		e.SavePlayer(ctx, player)
 
 		return &CommandResult{
@@ -845,13 +853,18 @@ func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandR
 				fmt.Sprintf("[Round: %d sec]", rtSec),
 			},
 			RoomBroadcast: []string{
-				fmt.Sprintf("%s forages in the area.", player.FirstName),
+				fmt.Sprintf(
+					"%s forages in the area.",
+					player.FirstName,
+				),
 			},
 			PlayerState: player,
 		}
 	}
 
-	// Calculate total weight of all possible forage results.
+	// Successful forage attempt.
+	// Ratio determines the relative probability of which
+	// forageable item is found.
 	totalRatio := 0
 
 	for _, fd := range candidates {
@@ -860,14 +873,26 @@ func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandR
 		}
 	}
 
-	// Broken/empty forage table: fall back instead.
+	// Invalid/empty forage table.
 	if totalRatio <= 0 {
-		result := e.doForageFallback(ctx, player, terrain)
-		result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSec))
-		return result
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				"You search the area but find nothing useful.",
+				fmt.Sprintf("[Round: %d sec]", rtSec),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s forages in the area.",
+					player.FirstName,
+				),
+			},
+			PlayerState: player,
+		}
 	}
 
-	// Weighted random selection.
+	// Weighted random selection from the FORAGEDEF table.
 	roll := rand.Intn(totalRatio)
 	cumulative := 0
 
@@ -913,25 +938,31 @@ func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandR
 					"You search the area and find %s!",
 					itemName,
 				),
-
 				fmt.Sprintf("[Round: %d sec]", rtSec),
 			},
 			RoomBroadcast: []string{
-				fmt.Sprintf("%s forages in the area.", player.FirstName),
+				fmt.Sprintf(
+					"%s forages in the area.",
+					player.FirstName,
+				),
 			},
 			PlayerState: player,
 		}
 	}
 
-	// We shouldn't normally reach this, but handle bad item references safely.
+	// Bad item reference or otherwise unusable forage entry.
 	e.SavePlayer(ctx, player)
 
 	return &CommandResult{
 		Messages: []string{
 			"You search the area but find nothing useful.",
+			fmt.Sprintf("[Round: %d sec]", rtSec),
 		},
 		RoomBroadcast: []string{
-			fmt.Sprintf("%s forages in the area.", player.FirstName),
+			fmt.Sprintf(
+				"%s forages in the area.",
+				player.FirstName,
+			),
 		},
 		PlayerState: player,
 	}
