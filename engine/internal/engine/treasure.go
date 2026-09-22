@@ -103,7 +103,7 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 				}
 			}
 
-		case roll < 40:
+		case roll < 35:
 			// Scroll drop
 			if item := e.randomScrollDrop(treasureLevel); item != nil {
 				item.Ref = len(room.Items)
@@ -115,11 +115,26 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 						fmt.Sprintf("you see a scroll of %s", spell.Name),
 					)
 				} else {
-					found = append(found, "you see a scroll ")
+					found = append(found, "you see a scroll")
 				}
 			}
 
-		case roll < 55:
+		case roll < 45:
+			// Potion drop
+			if item := e.randomPotionDrop(treasureLevel); item != nil {
+				item.Ref = len(room.Items)
+				room.Items = append(room.Items, *item)
+
+				found = append(
+					found,
+					fmt.Sprintf(
+						"you see a %s drop to the ground",
+						potionDescription(item.Val3),
+					),
+				)
+			}
+
+		case roll < 60:
 			// Locked container
 			if item := e.randomChestDrop(treasureLevel); item != nil {
 				ref := len(room.Items)
@@ -129,8 +144,6 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 
 				room.Items = append(room.Items, *item)
 
-				// Generate the contents now. The container is already
-				// populated before anyone opens it.
 				e.generateChestContents(
 					room,
 					ref,
@@ -145,11 +158,14 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 						item.Adj3,
 					)
 
-					found = append(found, fmt.Sprintf("%s thumps to the ground", name))
+					found = append(
+						found,
+						fmt.Sprintf("%s thumps to the ground", name),
+					)
 				}
 			}
 
-		case roll < 75:
+		case roll < 80:
 			// Armor drop
 			if item := e.randomArmorDrop(treasureLevel); item != nil {
 				item.Ref = len(room.Items)
@@ -163,11 +179,14 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 						item.Adj3,
 					)
 
-					found = append(found, fmt.Sprintf("you see %s drop to the ground", name))
+					found = append(
+						found,
+						fmt.Sprintf("you see %s drop to the ground", name),
+					)
 				}
 			}
 
-		case roll < 100:
+		default:
 			// Gem drop
 			if item := e.randomGemDrop(treasureLevel); item != nil {
 				item.Ref = len(room.Items)
@@ -181,8 +200,13 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 						item.Adj3,
 					)
 
-					found = append(found, fmt.Sprintf("you hear a ping as a %s drops to the ground", name))
-
+					found = append(
+						found,
+						fmt.Sprintf(
+							"you hear a ping as a %s drops to the ground",
+							name,
+						),
+					)
 				}
 			}
 		}
@@ -197,6 +221,98 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 	}
 
 	return found
+}
+
+func (e *GameEngine) randomPotionDrop(treasureLevel int) *gameworld.RoomItem {
+	// Known liquid containers suitable for potion drops.
+	containerArchetypes := []int{
+		1326, // mug      - capacity 10
+		140,  // ewer     - capacity 6
+		141,  // flagon   - capacity 6
+		159,  // flask    - capacity 5
+		158,  // bottle   - capacity 10
+		167,  // vial     - capacity 2
+	}
+
+	// Remove any container archetypes that aren't actually loaded.
+	var containers []int
+
+	for _, arch := range containerArchetypes {
+		def := e.items[arch]
+		if def == nil {
+			continue
+		}
+
+		if def.Type != "LIQCONTAINER" || def.Interior <= 0 {
+			continue
+		}
+
+		containers = append(containers, arch)
+	}
+
+	if len(containers) == 0 {
+		return nil
+	}
+
+	// Potion availability scales using the recipe's Alchemy level.
+	//
+	// This intentionally mirrors scroll progression:
+	// Treasure 27 allows level-9 scrolls and level-9 Alchemy recipes.
+	maxAlchemyLevel := treasureLevel / 3
+
+	if maxAlchemyLevel < 1 {
+		maxAlchemyLevel = 1
+	}
+
+	var candidates []alchemyRecipe
+
+	for _, recipe := range alchemyRecipes {
+		if recipe.level > maxAlchemyLevel {
+			continue
+		}
+
+		// Don't generate potions for spells that don't exist.
+		if FindSpellByID(recipe.spellID) == nil {
+			continue
+		}
+
+		candidates = append(candidates, recipe)
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	recipe := candidates[rand.Intn(len(candidates))]
+
+	// Pick the physical container.
+	containerArch := containers[rand.Intn(len(containers))]
+	containerDef := e.items[containerArch]
+
+	// Normal potion size is 2-5 sips.
+	maxSips := 5
+
+	// Never exceed the physical container's capacity.
+	if containerDef.Interior < maxSips {
+		maxSips = containerDef.Interior
+	}
+
+	minSips := 2
+	if maxSips < minSips {
+		minSips = maxSips
+	}
+
+	sips := minSips
+
+	if maxSips > minSips {
+		sips += rand.Intn(maxSips - minSips + 1)
+	}
+
+	return &gameworld.RoomItem{
+		Archetype: containerArch,
+		Val2:      sips,
+		Val3:      recipe.spellID,
+	}
 }
 
 // randomWeaponDrop selects a random weapon appropriate for the treasure level.
@@ -637,7 +753,11 @@ func (e *GameEngine) randomGemDrop(treasureLevel int) *gameworld.RoomItem {
 
 	return item
 }
-func (e *GameEngine) generateChestContents(room *gameworld.Room, chestRef int, treasureLevel int) {
+func (e *GameEngine) generateChestContents(
+	room *gameworld.Room,
+	chestRef int,
+	treasureLevel int,
+) {
 	addItem := func(item *gameworld.RoomItem) {
 		if item == nil {
 			return
@@ -672,7 +792,33 @@ func (e *GameEngine) generateChestContents(room *gameworld.Room, chestRef int, t
 		)
 	}
 
-	// Always include a better coin reward than loose treasure.
+	// Pick one useful treasure item.
+	// Potions are included alongside weapons, armor,
+	// scrolls, and gems.
+	addRandomTreasure := func() {
+		switch rand.Intn(5) {
+		case 0:
+			addItem(e.randomWeaponDrop(treasureLevel))
+
+		case 1:
+			addItem(e.randomArmorDrop(treasureLevel))
+
+		case 2:
+			addItem(e.randomScrollDrop(treasureLevel))
+
+		case 3:
+			addItem(e.randomGemDrop(treasureLevel))
+
+		case 4:
+			addItem(e.randomPotionDrop(treasureLevel))
+		}
+	}
+
+	// --------------------------------------------------
+	// Money
+	// --------------------------------------------------
+
+	// Chests contain a better coin reward than loose treasure.
 	copperBase := treasureLevel * 15
 
 	if copperBase < 1 {
@@ -687,34 +833,50 @@ func (e *GameEngine) generateChestContents(room *gameworld.Room, chestRef int, t
 	silver := remaining / 10
 	copper := remaining % 10
 
-	// <-- Put these three lines HERE
 	addMoney(MoneyGold, gold)
 	addMoney(MoneySilver, silver)
 	addMoney(MoneyCopper, copper)
 
-	// Chests always contain at least one useful item.
-	switch rand.Intn(4) {
-	case 0:
-		addItem(e.randomWeaponDrop(treasureLevel))
-	case 1:
-		addItem(e.randomArmorDrop(treasureLevel))
-	case 2:
-		addItem(e.randomScrollDrop(treasureLevel))
-	case 3:
-		addItem(e.randomGemDrop(treasureLevel))
+	// --------------------------------------------------
+	// Useful treasure
+	// --------------------------------------------------
+
+	// Every chest contains at least one useful item.
+	addRandomTreasure()
+
+	// Chance for a second item:
+	//
+	// Treasure 10  -> 25%
+	// Treasure 20  -> 30%
+	// Treasure 40  -> 40%
+	// Treasure 60  -> 50%
+	// Treasure 80+ -> 60%
+	secondItemChance := 20 + treasureLevel/2
+
+	if secondItemChance > 60 {
+		secondItemChance = 60
 	}
 
-	// Better chests have a chance at another useful item.
-	if treasureLevel >= 20 && rand.Intn(100) < 50 {
-		switch rand.Intn(3) {
-		case 0:
-			addItem(e.randomWeaponDrop(treasureLevel))
-		case 1:
-			addItem(e.randomArmorDrop(treasureLevel))
-		case 2:
-			addItem(e.randomScrollDrop(treasureLevel))
-		case 3:
-			addItem(e.randomGemDrop(treasureLevel))
+	if rand.Intn(100) < secondItemChance {
+		addRandomTreasure()
+	}
+
+	// Higher-level treasure can occasionally contain
+	// a third useful item.
+	//
+	// Treasure 20 -> 5%
+	// Treasure 40 -> 10%
+	// Treasure 60 -> 15%
+	// Treasure 80 -> 20%
+	if treasureLevel >= 20 {
+		thirdItemChance := treasureLevel / 4
+
+		if thirdItemChance > 20 {
+			thirdItemChance = 20
+		}
+
+		if rand.Intn(100) < thirdItemChance {
+			addRandomTreasure()
 		}
 	}
 }

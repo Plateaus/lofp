@@ -486,7 +486,7 @@ func (p *fileParser) parseRoom(fields []string) {
 			cmd == "MNUMBER" ||
 			cmd == "REGIONDEF" ||
 			cmd == "FORAGEDEF" ||
-			cmd == "MINDEF" ||
+			cmd == "MINEDEF" ||
 			cmd == "MLIST" ||
 			cmd == "MONEYDEF" ||
 			cmd == "NOUNDEF" ||
@@ -654,7 +654,21 @@ func (p *fileParser) parseItem(fields []string) {
 		fields := strings.Fields(line)
 		cmd := strings.ToUpper(fields[0])
 
-		if cmd == "NUMBER" || cmd == "INUMBER" || cmd == "MNUMBER" {
+		// A top-level definition ends the current item block.
+		// Don't advance p.pos — parse() needs to process this line.
+		if cmd == "NUMBER" ||
+			cmd == "INUMBER" ||
+			cmd == "MNUMBER" ||
+			cmd == "TRAITDEF" ||
+			cmd == "REGIONDEF" ||
+			cmd == "FORAGEDEF" ||
+			cmd == "MINEDEF" ||
+			cmd == "MLIST" ||
+			cmd == "MONEYDEF" ||
+			cmd == "NOUNDEF" ||
+			cmd == "ADJDEF" ||
+			cmd == "MACRO" ||
+			cmd == "MADJDEF" {
 			break
 		}
 
@@ -900,6 +914,10 @@ func (p *fileParser) parseMonster(fields []string) {
 				if len(fields) >= 5 {
 					sd.Magic, _ = strconv.Atoi(fields[4])
 				}
+				if len(fields) >= 6 {
+					sd.Val5, _ = strconv.Atoi(fields[5])
+				}
+
 				if sd.Probability <= 0 {
 					sd.Probability = 10
 				}

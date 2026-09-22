@@ -95,7 +95,8 @@ func (e *GameEngine) processGMCommand(ctx context.Context, player *Player, verb 
 		return e.gmSpawn(player, args)
 	case "@ACTIVATE":
 		return e.gmActivate(player, args)
-
+	case "@FORAGEDEFS":
+		return e.gmForageDefs(player, args)
 	case "@SEDATE":
 		return e.gmSedate(player, args)
 	case "@ZAP":
@@ -175,7 +176,7 @@ func (e *GameEngine) processGMCommand(ctx context.Context, player *Player, verb 
 	case "@OLDCOMP":
 		return &CommandResult{Messages: []string{"Script compilation is not available in this version."}}
 	case "@EDITEM":
-		return &CommandResult{Messages: []string{"Item editor not yet implemented."}}
+		return e.doEditItem(ctx, player, args)
 	case "@EDN":
 		return &CommandResult{Messages: []string{"Item editor not yet implemented."}}
 	case "@GET":
@@ -1999,6 +2000,132 @@ func (e *GameEngine) gmExclude(args []string, rawInput string) *CommandResult {
 	return &CommandResult{Messages: []string{fmt.Sprintf("[Room echo, excluding %s] %s", args[0], text)}}
 }
 
+func (e *GameEngine) doEditItem(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{
+				"Usage: @EDITEM <item> [VAL1|VAL2|VAL3|VAL4|VAL5 <value>]",
+			},
+		}
+	}
+
+	// --------------------------------------------------------
+	// EDIT VALUE
+	// --------------------------------------------------------
+
+	editField := ""
+	editValue := 0
+	targetArgs := args
+
+	if len(args) >= 3 {
+		field := strings.ToUpper(args[len(args)-2])
+
+		switch field {
+		case "VAL1", "VAL2", "VAL3", "VAL4", "VAL5":
+			value, err := strconv.Atoi(args[len(args)-1])
+			if err != nil {
+				return &CommandResult{
+					Messages: []string{"Value must be a number."},
+				}
+			}
+
+			editField = field
+			editValue = value
+			targetArgs = args[:len(args)-2]
+		}
+	}
+
+	target := strings.ToLower(strings.Join(targetArgs, " "))
+
+	// --------------------------------------------------------
+	// FIND INVENTORY ITEM
+	// --------------------------------------------------------
+
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
+		def := e.items[ii.Archetype]
+		if def == nil {
+			continue
+		}
+
+		name := strings.ToLower(e.getItemNounName(def))
+
+		if !strings.HasPrefix(name, target) &&
+			!strings.Contains(name, target) {
+			continue
+		}
+
+		// ----------------------------------------------------
+		// EDIT
+		// ----------------------------------------------------
+
+		if editField != "" {
+			switch editField {
+			case "VAL1":
+				ii.Val1 = editValue
+			case "VAL2":
+				ii.Val2 = editValue
+			case "VAL3":
+				ii.Val3 = editValue
+			case "VAL4":
+				ii.Val4 = editValue
+			case "VAL5":
+				ii.Val5 = editValue
+			}
+
+			e.SavePlayer(ctx, player)
+		}
+
+		// ----------------------------------------------------
+		// DISPLAY
+		// ----------------------------------------------------
+
+		displayName := e.formatItemName(
+			def,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
+
+		msgs := []string{
+			fmt.Sprintf("=== %s ===", displayName),
+			fmt.Sprintf("Archetype: %d", ii.Archetype),
+			fmt.Sprintf(
+				"Adj1: %d  Adj2: %d  Adj3: %d",
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			),
+			fmt.Sprintf(
+				"Val1: %d  Val2: %d  Val3: %d  Val4: %d  Val5: %d",
+				ii.Val1,
+				ii.Val2,
+				ii.Val3,
+				ii.Val4,
+				ii.Val5,
+			),
+		}
+
+		if editField != "" {
+			msgs = append(
+				msgs,
+				fmt.Sprintf("%s set to %d.", editField, editValue),
+			)
+		}
+
+		return &CommandResult{
+			Messages:    msgs,
+			PlayerState: player,
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{"You don't have that item."},
+	}
+}
+
 func (e *GameEngine) gmGet(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) < 1 {
 		return &CommandResult{Messages: []string{"Usage: @get <archetype#>"}}
@@ -2168,6 +2295,53 @@ func (e *GameEngine) gmSedate(player *Player, args []string) *CommandResult {
 	}
 
 	return &CommandResult{Messages: []string{"Monster not found."}}
+}
+
+func (e *GameEngine) gmForageDefs(player *Player, args []string) *CommandResult {
+	var msgs []string
+
+	msgs = append(msgs,
+		fmt.Sprintf("Base forage defs: %d", len(e.baseForageDefs)),
+		fmt.Sprintf("Active forage defs: %d", len(e.forageDefs)),
+		fmt.Sprintf("Current season: %s", e.currentSeason),
+		"",
+	)
+
+	// Group active definitions by terrain.
+	byTerrain := make(map[string][]gameworld.ForageDef)
+	var terrains []string
+
+	for _, fd := range e.forageDefs {
+		if _, exists := byTerrain[fd.Terrain]; !exists {
+			terrains = append(terrains, fd.Terrain)
+		}
+		byTerrain[fd.Terrain] = append(byTerrain[fd.Terrain], fd)
+	}
+
+	sort.Strings(terrains)
+
+	for _, terrain := range terrains {
+		defs := byTerrain[terrain]
+
+		msgs = append(msgs,
+			fmt.Sprintf("=== %s (%d) ===", terrain, len(defs)),
+		)
+
+		for _, fd := range defs {
+			msgs = append(msgs, fmt.Sprintf(
+				"item=%d adj=%d ratio=%d val2=%d val5=%d",
+				fd.ItemNum,
+				fd.AdjNum,
+				fd.Ratio,
+				fd.Val2,
+				fd.Val5,
+			))
+		}
+
+		msgs = append(msgs, "")
+	}
+
+	return &CommandResult{Messages: msgs}
 }
 
 func (e *GameEngine) gmActivate(player *Player, args []string) *CommandResult {

@@ -3574,12 +3574,6 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			result.Messages = append(result.Messages, sm)
 		}
 
-		if itemDef.Type == "ARMOR" {
-			result.Messages = append(
-				result.Messages,
-				fmt.Sprintf("Armor: %d", itemDef.Parameter2),
-			)
-		}
 		if ii.Identified {
 			enchantments := e.itemEnchantments(&ii, itemDef)
 
@@ -10337,81 +10331,295 @@ func formatPrice(copper int) string {
 }
 
 func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string) *CommandResult {
+
 	if len(args) == 0 {
-		return &CommandResult{Messages: []string{"Drink what?"}}
+		return &CommandResult{
+			Messages: []string{"Drink what?"},
+		}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
-	for i, ii := range player.Inventory {
+
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
 		itemDef := e.items[ii.Archetype]
 		if itemDef == nil {
 			continue
 		}
-		if itemDef.Type != "LIQUID" && itemDef.Type != "LIQCONTAINER" && itemDef.Type != "FOOD" {
+
+		if itemDef.Type != "LIQUID" &&
+			itemDef.Type != "LIQCONTAINER" &&
+			itemDef.Type != "FOOD" {
 			continue
 		}
+
 		name := e.getItemNounName(itemDef)
-		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+
+		// A brewed potion can be referred to by its physical container
+		// OR by its potion description:
+		//
+		//   DRINK FLASK
+		//   DRINK POTION
+		//   DRINK GREEN POTION
+		//
+		matched := matchesTarget(
+			name,
+			target,
+			e.getAdjName(ii.Adj1),
+		)
+
+		if itemDef.Type == "LIQCONTAINER" && ii.Val3 > 0 && ii.Val2 > 0 {
+			potionName := potionDescription(ii.Val3)
+
+			if strings.EqualFold(target, "potion") ||
+				strings.EqualFold(target, potionName) {
+				matched = true
+			}
+		}
+
+		if !matched {
 			continue
 		}
+
 		if skip > 0 {
 			skip--
 			continue
 		}
-		displayName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
+
+		displayName := e.formatItemName(
+			itemDef,
+			ii.Adj1,
+			ii.Adj2,
+			ii.Adj3,
+		)
+
+		// FOOD uses the normal EAT command.
 		if itemDef.Type == "FOOD" {
-			// EAT logic — redirect to doEat
 			return e.doEat(ctx, player, args)
 		}
 
-		// Sip tracking: initialize Val2 from Parameter1 on first sip
+		// ------------------------------------------------------------
+		// BREWED POTION
+		//
+		// Val2 = remaining sips
+		// Val3 = spell/effect ID
+		// ------------------------------------------------------------
+		if itemDef.Type == "LIQCONTAINER" &&
+			ii.Val2 > 0 &&
+			ii.Val3 > 0 {
+
+			currentSips := ii.Val2
+			spellNum := ii.Val3
+			potionName := potionDescription(spellNum)
+
+			var msgs []string
+
+			// Consume one sip.
+			if currentSips == 1 {
+				// Empty the flask, but keep the flask itself.
+				ii.Val2 = 0
+				ii.Val3 = 0
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						"You drink the last of the %s.",
+						potionName,
+					),
+				)
+			} else {
+				ii.Val2--
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						"You take a sip of the %s. (%d sips remaining)",
+						potionName,
+						ii.Val2,
+					),
+				)
+			}
+
+			// --------------------------------------------------------
+			// APPLY POTION EFFECT
+			// --------------------------------------------------------
+			spell := FindSpellByID(spellNum)
+
+			if spell == nil {
+				msgs = append(
+					msgs,
+					"The potion's magic flickers and fades.",
+				)
+			} else {
+				var effectResult *CommandResult
+
+				switch spell.Effect {
+
+				case "heal":
+					effectResult = e.castHealSpell(
+						player,
+						spell,
+						nil,
+						false,
+					)
+
+				case "defense", "buff":
+					effectResult = e.castStatusSpell(
+						player,
+						spell,
+						nil,
+						false,
+					)
+
+				default:
+					effectResult = &CommandResult{
+						Messages: []string{
+							fmt.Sprintf(
+								"The %s has no implemented potion effect yet.",
+								potionName,
+							),
+						},
+					}
+				}
+
+				if effectResult != nil {
+					msgs = append(
+						msgs,
+						effectResult.Messages...,
+					)
+				}
+			}
+
+			e.SavePlayer(ctx, player)
+
+			return &CommandResult{
+				Messages: msgs,
+
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s takes a drink of a %s.",
+						player.FirstName,
+						potionName,
+					),
+				},
+
+				PlayerState: player,
+			}
+		}
+
+		// ------------------------------------------------------------
+		// NORMAL / LEGACY DRINK
+		// ------------------------------------------------------------
+
 		currentSips := ii.Val2
+
 		if currentSips == 0 && itemDef.Parameter1 > 0 {
 			currentSips = itemDef.Parameter1
 		}
-		isFirstSip := (currentSips == 0 && itemDef.Parameter1 == 0) || (ii.Val2 == 0 && itemDef.Parameter1 > 0)
 
-		// Run item scripts for spell effects
+		// Run the item's scripts.
 		room := e.rooms[player.RoomNumber]
-		tempRI := gameworld.RoomItem{Ref: -1, Archetype: ii.Archetype,
-			Adj1: ii.Adj1, Adj2: ii.Adj2, Adj3: ii.Adj3,
-			Val1: ii.Val1, Val2: ii.Val2, Val3: ii.Val3, Val4: ii.Val4, Val5: ii.Val5}
-		sc := e.RunItemScripts(player, room, &tempRI, itemDef)
+
+		tempRI := gameworld.RoomItem{
+			Ref:       -1,
+			Archetype: ii.Archetype,
+			Adj1:      ii.Adj1,
+			Adj2:      ii.Adj2,
+			Adj3:      ii.Adj3,
+			Val1:      ii.Val1,
+			Val2:      ii.Val2,
+			Val3:      ii.Val3,
+			Val4:      ii.Val4,
+			Val5:      ii.Val5,
+		}
+
+		sc := e.RunItemScripts(
+			player,
+			room,
+			&tempRI,
+			itemDef,
+		)
+
 		spellNum := tempRI.Val3
 
 		var msgs []string
+
+		// Consume one sip.
 		if currentSips <= 1 {
-			// Last sip (or single-sip drink) — remove from inventory
-			player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
-			msgs = []string{fmt.Sprintf("You finish drinking %s.", displayName)}
+			player.Inventory = append(
+				player.Inventory[:i],
+				player.Inventory[i+1:]...,
+			)
+
+			msgs = append(
+				msgs,
+				fmt.Sprintf(
+					"You finish drinking %s.",
+					displayName,
+				),
+			)
 		} else {
 			newVal := currentSips - 1
 			player.Inventory[i].Val2 = newVal
-			msgs = []string{fmt.Sprintf("You take a sip from %s. (%d sips remaining)", displayName, newVal)}
+
+			msgs = append(
+				msgs,
+				fmt.Sprintf(
+					"You take a sip from %s. (%d sips remaining)",
+					displayName,
+					newVal,
+				),
+			)
 		}
 
 		msgs = append(msgs, sc.Messages...)
 
-		// Spell effect fires on FIRST sip only
-		if isFirstSip && spellNum != 0 {
+		// Any magical drink applies its effect on every sip.
+		if spellNum != 0 {
+			// Keep existing special case until it is moved into the
+			// normal spell-effect system.
 			if spellNum == 403 {
-				//TODO:This needs to be cast 403  or put in script
 				player.TelepathyActive = true
 				player.TelepathyExpiry = time.Now().Add(1 * time.Hour)
-				msgs = append(msgs, "You feel your mind open to the thoughts of others.")
+
+				msgs = append(
+					msgs,
+					"You feel your mind open to the thoughts of others.",
+				)
 			} else {
-				msgs = append(msgs, fmt.Sprintf("[Spell #%d effect coming soon.]", spellNum))
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						"[Spell #%d effect coming soon.]",
+						spellNum,
+					),
+				)
 			}
 		}
+
 		e.SavePlayer(ctx, player)
+
 		return &CommandResult{
-			Messages:      msgs,
-			RoomBroadcast: []string{fmt.Sprintf("%s drinks from %s.", player.FirstName, displayName)},
-			PlayerState:   player,
+			Messages: msgs,
+
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s drinks from %s.",
+					player.FirstName,
+					displayName,
+				),
+			},
+
+			PlayerState: player,
 		}
 	}
-	return &CommandResult{Messages: []string{"You don't have that."}}
+
+	return &CommandResult{
+		Messages: []string{"You don't have that."},
+	}
 }
 
 func (e *GameEngine) doLight(
@@ -12448,6 +12656,20 @@ func (e *GameEngine) getAdjName(adjID int) string {
 	return ""
 }
 
+func potionDescription(spellID int) string {
+	for _, recipe := range alchemyRecipes {
+		if recipe.spellID == spellID {
+			if recipe.color != "" {
+				return strings.ToLower(recipe.color) + " potion"
+			}
+
+			return "potion"
+		}
+	}
+
+	return "potion"
+}
+
 func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii *InventoryItem) *CommandResult {
 
 	name := e.formatItemName(
@@ -12472,6 +12694,31 @@ func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii 
 	found := false
 	usedVolume := 0
 
+	// ------------------------------------------------------------
+	// POTION LIQUID
+	//
+	// Brewed potions are stored directly on the liquid container:
+	//
+	//   Val2 = remaining sips
+	//   Val3 = spell/effect ID
+	//
+	// They are not child InventoryItems.
+	// ------------------------------------------------------------
+	if ii.Val3 > 0 && ii.Val2 > 0 {
+		potionName := potionDescription(ii.Val3)
+
+		msgs = append(
+			msgs,
+			fmt.Sprintf("You see a %s.", potionName),
+		)
+
+		usedVolume = ii.Val2
+		found = true
+	}
+
+	// ------------------------------------------------------------
+	// ORDINARY CONTAINER CONTENTS
+	// ------------------------------------------------------------
 	for _, child := range ii.Contents {
 		childDef := e.items[child.Archetype]
 		if childDef == nil {
@@ -12514,7 +12761,11 @@ func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii 
 	if def.Interior > 0 {
 		msgs = append(
 			msgs,
-			fmt.Sprintf("Capacity: %d/%d", usedVolume, def.Interior),
+			fmt.Sprintf(
+				"Capacity: %d/%d",
+				usedVolume,
+				def.Interior,
+			),
 		)
 	}
 
@@ -12526,7 +12777,6 @@ func (e *GameEngine) lookInContainer(player *Player, def *gameworld.ItemDef, ii 
 		Messages: msgs,
 	}
 }
-
 func (e *GameEngine) examineRoomItem(player *Player, room *gameworld.Room, def *gameworld.ItemDef, ri *gameworld.RoomItem) *CommandResult {
 
 	result := &CommandResult{}
@@ -13193,6 +13443,7 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 								Adj1:      adj,
 								Val1:      si.Value, // SKINITEM copper value
 								Val2:      si.Magic, // SKINITEM magic/spell-component value
+								Val5:      si.Val5,  //alchemy reagent type
 							}
 
 							player.Inventory = append(player.Inventory, item)

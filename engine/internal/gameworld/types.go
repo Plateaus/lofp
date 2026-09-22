@@ -149,6 +149,7 @@ type SkinDrop struct {
 	Probability int `bson:"probability" json:"probability"` // weighted probability
 	Value       int `bson:"value" json:"value"`             // copper value
 	Magic       int `bson:"magic" json:"magic"`             // 0 = non-magical
+	Val5        int `bson:"val5" json:"val5"`               // reagent type, if present
 }
 
 // MonsterWeapon represents a weapon a monster can use.

@@ -1027,6 +1027,84 @@ func (e *GameEngine) doForageFallback(ctx context.Context, player *Player, terra
 	}
 }
 
+func (e *GameEngine) resolveReagentType(item *InventoryItem) int {
+	if item == nil {
+		return 0
+	}
+
+	// An explicit value on this particular item always wins.
+	// This handles normally foraged, skinned, and scripted reagents.
+	if item.Val5 > 0 {
+		return item.Val5
+	}
+
+	matchesForage := func(fd gameworld.ForageDef) bool {
+		if fd.ItemNum != item.Archetype || fd.Val5 <= 0 {
+			return false
+		}
+
+		if fd.AdjNum <= 0 {
+			return true
+		}
+
+		return item.Adj1 == fd.AdjNum ||
+			item.Adj2 == fd.AdjNum ||
+			item.Adj3 == fd.AdjNum
+	}
+
+	// Check permanent/base forage definitions.
+	for _, fd := range e.baseForageDefs {
+		if matchesForage(fd) {
+			item.Val5 = fd.Val5
+			return item.Val5
+		}
+	}
+
+	// Check every seasonal forage definition.
+	for _, defs := range e.seasonalForageDefs {
+		for _, fd := range defs {
+			if matchesForage(fd) {
+				item.Val5 = fd.Val5
+				return item.Val5
+			}
+		}
+	}
+
+	// No FORAGEDEF matched. Check monster SKINITEM definitions.
+	// This handles shop-bought creature components such as newt eyes:
+	// STOREITEM gives us the archetype/adjective but not Val5.
+	for _, mon := range e.monsters {
+		if mon == nil || mon.SkinAdj <= 0 {
+			continue
+		}
+
+		// The shop item's adjective must identify the same creature skin.
+		if item.Adj1 != mon.SkinAdj &&
+			item.Adj2 != mon.SkinAdj &&
+			item.Adj3 != mon.SkinAdj {
+			continue
+		}
+
+		for _, sd := range mon.SkinItems {
+			if sd.Archetype == item.Archetype && sd.Val5 > 0 {
+				item.Val5 = sd.Val5
+				return item.Val5
+			}
+		}
+	}
+
+	// Legacy store-only reagent: newt eye.
+	// The alchemy guide classifies newt eyes as Mild Magic,
+	// corresponding to reagent type 9 (Miscellaneous, common).
+	if item.Archetype == 520 &&
+		(item.Adj1 == 1105 || item.Adj2 == 1105 || item.Adj3 == 1105) {
+		item.Val5 = 9
+		return item.Val5
+	}
+
+	return 0
+}
+
 // ---- DYEING ----
 
 func (e *GameEngine) doDye(ctx context.Context, player *Player, args []string) *CommandResult {
@@ -1109,13 +1187,20 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 	}
 	target := strings.ToLower(strings.Join(args, " "))
 
-	for _, ii := range player.Inventory {
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
 		def := e.items[ii.Archetype]
 		if def == nil {
 			continue
 		}
-		name := strings.ToLower(e.getItemNounName(def))
-		if !strings.HasPrefix(name, target) {
+		nounName := strings.ToLower(e.getItemNounName(def))
+		fullName := strings.ToLower(
+			e.formatItemName(def, ii.Adj1, ii.Adj2, ii.Adj3),
+		)
+
+		if !strings.HasPrefix(nounName, target) &&
+			!strings.HasPrefix(fullName, target) {
 			continue
 		}
 
@@ -1141,12 +1226,23 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 		// Reagent analysis for alchemy
 		if containsFlag(def.Flags, "REAGENT") {
 			reagentTypes := map[int]string{
-				1: "Power (mild)", 2: "Power (strong)", 3: "Power (very strong)",
-				4: "Health", 5: "Harm", 6: "Body", 7: "Resist",
-				8: "Enhancement", 9: "Misc (common)", 10: "Misc (uncommon)",
-				11: "Misc (rare)", 12: "Mind", 13: "Protection",
+				1:  "Power 1",
+				2:  "Power 2",
+				3:  "Power 3",
+				4:  "Health",
+				5:  "Harm",
+				6:  "Body",
+				7:  "Resist",
+				8:  "Enhancement",
+				9:  "Miscellaneous, common",
+				10: "Miscellaneous, uncommon",
+				11: "Miscellaneous, rare",
+				12: "Mind",
+				13: "Protect",
 			}
-			rType := ii.Val5
+			//rType := ii.Val5
+			// Val5 isn't always stored, so resolve it from FORAGEDEF if necessary.
+			rType := e.resolveReagentType(ii)
 			typeName := reagentTypes[rType]
 			if typeName == "" {
 				typeName = "unknown"
@@ -1212,189 +1308,332 @@ var alchemyRecipes = []alchemyRecipe{
 
 // Reagent type letters mapped to val5 values
 var reagentLetters = map[int]string{
-	6: "A", 4: "B", 0: "C", 13: "D", 12: "E", 5: "F",
-	8: "G", 9: "H", 10: "I", 11: "J",
+	6:  "A",
+	4:  "B",
+	7:  "C", // Resist
+	13: "D",
+	12: "E",
+	5:  "F",
+	8:  "G",
+	9:  "H",
+	10: "I",
+	11: "J",
 }
+
 var catalystFromVal5 = map[int]int{1: 1, 2: 2, 3: 3}
 
 func (e *GameEngine) doBrew(ctx context.Context, player *Player, args []string) *CommandResult {
 	if player.Skills[31] < 1 {
 		return &CommandResult{Messages: []string{"You have no training in Alchemy."}}
 	}
+
 	if len(args) == 0 {
-		// List known recipes
 		var msgs []string
 		msgs = append(msgs, "=== Alchemy Recipes (by level) ===")
+
 		for _, r := range alchemyRecipes {
 			if r.level <= player.Skills[31] {
-				msgs = append(msgs, fmt.Sprintf("  Level %2d: %s (%s)", r.level, r.name, r.color))
+				msgs = append(
+					msgs,
+					fmt.Sprintf("  Level %2d: %s (%s)", r.level, r.name, r.color),
+				)
 			}
 		}
+
 		if len(msgs) == 1 {
 			msgs = append(msgs, "  You don't know any recipes at your current level.")
 		}
+
 		return &CommandResult{Messages: msgs}
 	}
 
 	// BREW <reagent> IN <container>
 	raw := strings.ToLower(strings.Join(args, " "))
 	reagentTarget, containerTarget := parseInClause(raw)
+
 	if containerTarget == "" {
-		return &CommandResult{Messages: []string{"Brew in what? Usage: BREW <reagent> IN <flask/vial>"}}
+		return &CommandResult{
+			Messages: []string{"Brew in what? Usage: BREW <reagent> IN <flask/vial>"},
+		}
 	}
 
-	// Find the reagent
+	// Find the reagent.
 	reagentIdx := -1
-	var reagentItem *InventoryItem
-	for i, ii := range player.Inventory {
+
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
 		def := e.items[ii.Archetype]
 		if def == nil {
 			continue
 		}
+
 		if !containsFlag(def.Flags, "REAGENT") {
 			continue
 		}
+
 		name := strings.ToLower(e.getItemNounName(def))
-		if strings.HasPrefix(name, reagentTarget) || strings.Contains(name, reagentTarget) {
+
+		if strings.HasPrefix(name, reagentTarget) ||
+			strings.Contains(name, reagentTarget) {
 			reagentIdx = i
-			reagentItem = &player.Inventory[i]
 			break
 		}
 	}
-	if reagentIdx < 0 || reagentItem == nil {
-		return &CommandResult{Messages: []string{"You don't have that reagent."}}
+
+	if reagentIdx < 0 {
+		return &CommandResult{
+			Messages: []string{"You don't have that reagent."},
+		}
 	}
 
-	// Find the container (flask, vial, bottle)
+	// Resolve the reagent type before doing anything with the inventory.
+	reagentItem := &player.Inventory[reagentIdx]
+	reagentVal5 := e.resolveReagentType(reagentItem)
+
+	if reagentVal5 <= 0 {
+		return &CommandResult{
+			Messages: []string{"That ingredient has no known alchemical properties."},
+		}
+	}
+
+	reagentDef := e.items[reagentItem.Archetype]
+	reagentName := "the reagent"
+
+	if reagentDef != nil {
+		reagentName = e.getItemNounName(reagentDef)
+	}
+
+	// Find the container.
 	containerIdx := -1
-	for i, ii := range player.Inventory {
+
+	for i := range player.Inventory {
+		if i == reagentIdx {
+			continue
+		}
+
+		ii := &player.Inventory[i]
 		def := e.items[ii.Archetype]
 		if def == nil {
 			continue
 		}
+
 		name := strings.ToLower(e.getItemNounName(def))
+
 		if def.Type == "LIQCONTAINER" || def.Container == "IN" {
-			if strings.HasPrefix(name, containerTarget) || strings.Contains(name, containerTarget) {
+			if strings.HasPrefix(name, containerTarget) ||
+				strings.Contains(name, containerTarget) {
 				containerIdx = i
 				break
 			}
 		}
 	}
+
 	if containerIdx < 0 {
-		return &CommandResult{Messages: []string{"You don't have a suitable container. You need a flask, vial, or bottle."}}
-	}
-
-	// Add reagent to the brew (track via container's Val fields)
-	// Val3 = accumulated recipe code character, Val5 = number of ingredients added
-	container := &player.Inventory[containerIdx]
-	reagentType := reagentLetters[reagentItem.Val5]
-	if reagentType == "" {
-		reagentType = "H" // default to mild magic
-	}
-
-	// Consume reagent
-	player.Inventory = append(player.Inventory[:reagentIdx], player.Inventory[reagentIdx+1:]...)
-	// Fix index if container was after reagent
-	if containerIdx > reagentIdx {
-		containerIdx--
-	}
-	container = &player.Inventory[containerIdx]
-
-	// Track ingredients in container's Val fields
-	ingredients := container.Val5
-	container.Val5 = ingredients + 1
-
-	// Store reagent type codes: Val4 encodes up to 3 ingredient types
-	// Simple encoding: multiply previous by 100 and add new
-	container.Val4 = container.Val4*100 + reagentItem.Val5
-
-	reagentDef := e.items[reagentItem.Archetype]
-	reagentName := "the reagent"
-	if reagentDef != nil {
-		reagentName = e.getItemNounName(reagentDef)
-	}
-
-	if container.Val5 < 3 {
-		e.SavePlayer(ctx, player)
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("You add %s to the brew. (%d/3 ingredients)", reagentName, container.Val5)},
-			RoomBroadcast: []string{fmt.Sprintf("%s adds an ingredient to a bubbling brew.", player.FirstName)},
-			PlayerState:   player,
+			Messages: []string{
+				"You don't have a suitable container. You need a flask, vial, or bottle.",
+			},
 		}
 	}
 
-	// 3 ingredients added — attempt to brew!
-	// Decode the three ingredients
+	// Consume the reagent.
+	player.Inventory = append(
+		player.Inventory[:reagentIdx],
+		player.Inventory[reagentIdx+1:]...,
+	)
+
+	// Removing the reagent may shift the container index.
+	if containerIdx > reagentIdx {
+		containerIdx--
+	}
+
+	container := &player.Inventory[containerIdx]
+
+	// Val5 = number of ingredients currently in the brew.
+	container.Val5++
+
+	// Val4 stores the reagent Val5 values.
+	// Each reagent occupies two decimal digits.
+	container.Val4 = container.Val4*100 + reagentVal5
+
+	// We don't have a complete potion yet.
+	if container.Val5 < 3 {
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You add %s to the brew. (%d/3 ingredients)",
+					reagentName,
+					container.Val5,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s adds an ingredient to a bubbling brew.",
+					player.FirstName,
+				),
+			},
+			PlayerState: player,
+		}
+	}
+
+	// Three ingredients have been added.
 	code3 := container.Val4 % 100
 	code2 := (container.Val4 / 100) % 100
 	code1 := (container.Val4 / 10000) % 100
 
-	letter1 := reagentLetters[code1]
-	letter2 := reagentLetters[code2]
-	letter3 := reagentLetters[code3]
+	codes := []int{code1, code2, code3}
 
-	// Determine catalyst level from first ingredient
-	catLevel := catalystFromVal5[code1]
-	if catLevel == 0 {
-		catLevel = 1
+	// Find exactly one catalyst and exactly two normal reagents.
+	catLevel := 0
+	var reagentCodes []int
+
+	for _, code := range codes {
+		if catalyst := catalystFromVal5[code]; catalyst > 0 {
+			// More than one catalyst is invalid.
+			if catLevel != 0 {
+				container.Val4 = 0
+				container.Val5 = 0
+
+				e.SavePlayer(ctx, player)
+
+				return &CommandResult{
+					Messages: []string{
+						"A foul odor rises from the brew. The combination produces nothing useful.",
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf("%s's brew emits a foul odor.", player.FirstName),
+					},
+					PlayerState: player,
+				}
+			}
+
+			catLevel = catalyst
+			continue
+		}
+
+		// Must be a recognized non-catalyst reagent.
+		if _, ok := reagentLetters[code]; ok {
+			reagentCodes = append(reagentCodes, code)
+		}
 	}
 
-	// Try to match a recipe
+	// A valid potion requires:
+	//   1 catalyst
+	//   2 reagent categories
+	if catLevel == 0 || len(reagentCodes) != 2 {
+		container.Val4 = 0
+		container.Val5 = 0
+
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				"A foul odor rises from the brew. The combination produces nothing useful.",
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s's brew emits a foul odor.", player.FirstName),
+			},
+			PlayerState: player,
+		}
+	}
+
+	reagent1 := reagentLetters[reagentCodes[0]]
+	reagent2 := reagentLetters[reagentCodes[1]]
+
+	// Find the recipe.
 	for _, recipe := range alchemyRecipes {
 		if recipe.catalyst != catLevel {
 			continue
 		}
-		// Check if ingredients match (order doesn't matter for reagent1/reagent2)
-		match := false
-		if (letter2 == recipe.reagent1 && letter3 == recipe.reagent2) ||
-			(letter2 == recipe.reagent2 && letter3 == recipe.reagent1) ||
-			(letter1 == recipe.reagent1 && letter3 == recipe.reagent2) ||
-			(letter1 == recipe.reagent2 && letter3 == recipe.reagent1) {
-			match = true
-		}
-		_ = letter1 // catalyst is consumed too
-		if !match {
+
+		// Reagent order does not matter.
+		if !((reagent1 == recipe.reagent1 && reagent2 == recipe.reagent2) ||
+			(reagent1 == recipe.reagent2 && reagent2 == recipe.reagent1)) {
 			continue
 		}
 
-		// Check alchemy skill
+		// Valid recipe, but the player's Alchemy skill is too low.
 		if player.Skills[31] < recipe.level {
 			container.Val4 = 0
 			container.Val5 = 0
+
 			e.SavePlayer(ctx, player)
+
 			return &CommandResult{
 				Messages: []string{
 					"The brew bubbles violently! It's a valid recipe, but beyond your current skill.",
-					fmt.Sprintf("(Requires Alchemy level %d, you have %d)", recipe.level, player.Skills[31]),
+					fmt.Sprintf(
+						"(Requires Alchemy level %d, you have %d)",
+						recipe.level,
+						player.Skills[31],
+					),
 				},
 				PlayerState: player,
 			}
 		}
 
-		// Success! Create potion
-		container.Val3 = recipe.spellID // spell stored in container
+		// Success.
+		container.Val3 = recipe.spellID
+		// Potions normally contain 2-5 sips, limited by container capacity.
+		maxSips := 5
+
+		if containerDef := e.items[container.Archetype]; containerDef != nil &&
+			containerDef.Interior > 0 &&
+			containerDef.Interior < maxSips {
+			maxSips = containerDef.Interior
+		}
+
+		minSips := 2
+		if maxSips < minSips {
+			minSips = maxSips
+		}
+
+		container.Val2 = minSips
+		if maxSips > minSips {
+			container.Val2 += rand.Intn(maxSips - minSips + 1)
+		}
+
+		// Clear the temporary brewing state.
 		container.Val4 = 0
 		container.Val5 = 0
-		container.Val2 = 2 + rand.Intn(4) // 2-5 sips
+
 		e.SavePlayer(ctx, player)
 
 		return &CommandResult{
 			Messages: []string{
-				fmt.Sprintf("The brew shimmers magically! You have created a %s potion! (%s, %d sips)", recipe.name, recipe.color, container.Val2),
+				fmt.Sprintf(
+					"The brew shimmers magically! You have created a %s potion! (%s, %d sips)",
+					recipe.name,
+					recipe.color,
+					container.Val2,
+				),
 			},
-			RoomBroadcast: []string{fmt.Sprintf("%s completes a potion that shimmers with magical energy!", player.FirstName)},
-			PlayerState:   player,
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s completes a potion that shimmers with magical energy!",
+					player.FirstName,
+				),
+			},
+			PlayerState: player,
 		}
 	}
 
-	// No match — failed recipe
+	// Three legitimate ingredients, but they don't form a known recipe.
 	container.Val4 = 0
 	container.Val5 = 0
+
 	e.SavePlayer(ctx, player)
+
 	return &CommandResult{
-		Messages:      []string{"A foul odor rises from the brew. The combination produces nothing useful."},
-		RoomBroadcast: []string{fmt.Sprintf("%s's brew emits a foul odor.", player.FirstName)},
-		PlayerState:   player,
+		Messages: []string{
+			"A foul odor rises from the brew. The combination produces nothing useful.",
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf("%s's brew emits a foul odor.", player.FirstName),
+		},
+		PlayerState: player,
 	}
 }
 

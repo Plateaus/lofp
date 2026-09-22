@@ -1563,8 +1563,8 @@ func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []strin
 		}
 
 	default:
-
 		heal := rand.Intn(spell.HealMax-spell.HealMin+1) + spell.HealMin
+
 		target.BodyPoints += heal
 		if target.BodyPoints > target.MaxBodyPoints {
 			target.BodyPoints = target.MaxBodyPoints
@@ -1573,17 +1573,65 @@ func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []strin
 		if showCastMessage {
 			if target == player {
 				return &CommandResult{
-					Messages:      []string{fmt.Sprintf("You gesture and cast %s on yourself, healing %d body points. [BP: %d/%d]", spell.Name, heal, target.BodyPoints, target.MaxBodyPoints)},
-					RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name)},
+					Messages: []string{
+						fmt.Sprintf(
+							"You gesture and cast %s on yourself, healing %d body points. [BP: %d/%d]",
+							spell.Name,
+							heal,
+							target.BodyPoints,
+							target.MaxBodyPoints,
+						),
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf(
+							"%s gestures and casts %s.",
+							player.FirstName,
+							spell.Name,
+						),
+					},
 				}
 			}
 
 			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You gesture and cast %s on %s, healing %d body points.", spell.Name, targetName, heal)},
-				RoomBroadcast: []string{fmt.Sprintf("%s gestures and casts %s on %s.", player.FirstName, spell.Name, targetName)},
-				TargetName:    target.FirstName,
-				TargetMsg:     []string{fmt.Sprintf("%s casts %s on you, healing %d body points. [BP: %d/%d]", player.FirstName, spell.Name, heal, target.BodyPoints, target.MaxBodyPoints)},
+				Messages: []string{
+					fmt.Sprintf(
+						"You gesture and cast %s on %s, healing %d body points.",
+						spell.Name,
+						targetName,
+						heal,
+					),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s gestures and casts %s on %s.",
+						player.FirstName,
+						spell.Name,
+						targetName,
+					),
+				},
+				TargetName: target.FirstName,
+				TargetMsg: []string{
+					fmt.Sprintf(
+						"%s casts %s on you, healing %d body points. [BP: %d/%d]",
+						player.FirstName,
+						spell.Name,
+						heal,
+						target.BodyPoints,
+						target.MaxBodyPoints,
+					),
+				},
 			}
+		}
+
+		// Potion / other non-cast application.
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You feel a little better. [BP: %d/%d]",
+					target.BodyPoints,
+					target.MaxBodyPoints,
+				),
+			},
 		}
 	}
 
