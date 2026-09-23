@@ -2741,6 +2741,16 @@ func (e *GameEngine) disengageCombat(player *Player) {
 // ---- Stances ----
 
 func (e *GameEngine) doStance(player *Player, stance int) *CommandResult {
+
+	// Berserk/Frenzy is Murg-only.
+	if stance == StanceBerserk && player.Race != RaceMurg {
+		return &CommandResult{
+			Messages: []string{
+				"Only Murgs can enter a berserk frenzy.",
+			},
+		}
+	}
+
 	player.Stance = stance
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You adopt a %s combat stance.", stanceNames[stance])},

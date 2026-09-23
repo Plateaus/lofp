@@ -822,53 +822,103 @@ func (sc *ScriptContext) doSub(args []string) {
 
 // doNewItem handles NEWITEM ref archetype [ADJ1=n] [ADJ2=n] [VAL1=n] ...
 // ref -1 means add to player inventory.
+// doNewItem handles NEWITEM ref archetype [ADJ1=n] [ADJ2=n] [VAL1=n] ...
+// ref -1 means add to player inventory.
+// Otherwise ref is the room item reference number.
 func (sc *ScriptContext) doNewItem(args []string) {
 	if len(args) < 2 {
 		return
 	}
+
 	ref, err := strconv.Atoi(args[0])
 	if err != nil {
 		return
 	}
+
 	archetype, err := strconv.Atoi(args[1])
 	if err != nil {
 		return
 	}
 
-	item := InventoryItem{Archetype: archetype}
+	// Parse optional values once.
+	adj1, adj2, adj3 := 0, 0, 0
+	val1, val2, val3, val4, val5 := 0, 0, 0, 0, 0
+
 	for _, arg := range args[2:] {
 		parts := strings.SplitN(arg, "=", 2)
 		if len(parts) != 2 {
 			continue
 		}
+
 		key := strings.ToUpper(parts[0])
 		val, err := strconv.Atoi(parts[1])
 		if err != nil {
 			continue
 		}
+
 		switch key {
 		case "ADJ1":
-			item.Adj1 = val
+			adj1 = val
 		case "ADJ2":
-			item.Adj2 = val
+			adj2 = val
 		case "ADJ3":
-			item.Adj3 = val
+			adj3 = val
 		case "VAL1":
-			item.Val1 = val
+			val1 = val
 		case "VAL2":
-			item.Val2 = val
+			val2 = val
 		case "VAL3":
-			item.Val3 = val
+			val3 = val
 		case "VAL4":
-			item.Val4 = val
+			val4 = val
 		case "VAL5":
-			item.Val5 = val
+			val5 = val
 		}
 	}
 
+	// -1 means create the item in the player's inventory.
 	if ref == -1 {
+		item := InventoryItem{
+			Archetype: archetype,
+			Adj1:      adj1,
+			Adj2:      adj2,
+			Adj3:      adj3,
+			Val1:      val1,
+			Val2:      val2,
+			Val3:      val3,
+			Val4:      val4,
+			Val5:      val5,
+		}
+
 		sc.Player.Inventory = append(sc.Player.Inventory, item)
+		return
 	}
+
+	// Otherwise create the item in the room using the supplied
+	// room item reference number.
+	item := gameworld.RoomItem{
+		Ref:       ref,
+		Archetype: archetype,
+		Adj1:      adj1,
+		Adj2:      adj2,
+		Adj3:      adj3,
+		Val1:      val1,
+		Val2:      val2,
+		Val3:      val3,
+		Val4:      val4,
+		Val5:      val5,
+	}
+
+	// NEWITEM for an existing ref replaces that room item.
+	for i := range sc.Room.Items {
+		if sc.Room.Items[i].Ref == ref {
+			sc.Room.Items[i] = item
+			return
+		}
+	}
+
+	// Ref isn't currently present, so add it.
+	sc.Room.Items = append(sc.Room.Items, item)
 }
 
 // doGMMsg broadcasts a message to all online GMs.
