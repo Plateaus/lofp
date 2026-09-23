@@ -1270,7 +1270,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			wDef := e.items[player.Wielded.Archetype]
 			if wDef != nil {
 				wieldedNoun := strings.ToLower(e.getItemNounName(wDef))
-				wieldedFullName := e.formatItemName(wDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3)
+				wieldedFullName := e.formatItemName(wDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3, player.Wielded.State)
 				if strings.Contains(wieldedNoun, "staff") || strings.Contains(strings.ToLower(wieldedFullName), "staff") {
 					room := e.rooms[player.RoomNumber]
 					isDark := room != nil && (room.Terrain == "CAVE" || room.Terrain == "DEEPCAVE" || room.Terrain == "UNDERGROUND")
@@ -4297,7 +4297,7 @@ func (e *GameEngine) examinePlayer(observer *Player, target *Player) *CommandRes
 	if target.Wielded != nil {
 		wDef := e.items[target.Wielded.Archetype]
 		if wDef != nil {
-			name := e.formatItemName(wDef, target.Wielded.Adj1, target.Wielded.Adj2, target.Wielded.Adj3)
+			name := e.formatItemName(wDef, target.Wielded.Adj1, target.Wielded.Adj2, target.Wielded.Adj3, target.Wielded.State)
 			if isSelf {
 				msgs = append(msgs, fmt.Sprintf("You are wielding %s.", name))
 			} else {
@@ -4309,7 +4309,7 @@ func (e *GameEngine) examinePlayer(observer *Player, target *Player) *CommandRes
 	for _, worn := range target.Worn {
 		wDef := e.items[worn.Archetype]
 		if wDef != nil {
-			wornNames = append(wornNames, e.formatItemName(wDef, worn.Adj1, worn.Adj2, worn.Adj3))
+			wornNames = append(wornNames, e.formatItemName(wDef, worn.Adj1, worn.Adj2, worn.Adj3, worn.State))
 		}
 	}
 	if len(wornNames) > 0 {
@@ -7697,6 +7697,10 @@ func (e *GameEngine) doInventory(player *Player) *CommandResult {
 				player.Wielded.Adj3,
 			)
 
+			if player.Wielded.State == "DAMAGED" {
+				name = "a damaged " + strings.TrimPrefix(name, "a ")
+			}
+
 			msgs = append(
 				msgs,
 				fmt.Sprintf("  %s (wielded)", name),
@@ -7714,6 +7718,10 @@ func (e *GameEngine) doInventory(player *Player) *CommandResult {
 				player.Offhand.Adj2,
 				player.Offhand.Adj3,
 			)
+
+			if player.Offhand.State == "DAMAGED" {
+				name = "a damaged " + strings.TrimPrefix(name, "a ")
+			}
 
 			msgs = append(
 				msgs,
@@ -7750,6 +7758,10 @@ func (e *GameEngine) doInventory(player *Player) *CommandResult {
 				ii.Adj2,
 				ii.Adj3,
 			)
+
+			if ii.State == "DAMAGED" && isWeapon(itemDef.Type) {
+				name = "a damaged " + strings.TrimPrefix(name, "a ")
+			}
 
 			msgs = append(
 				msgs,
@@ -7807,7 +7819,7 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 	if player.Wielded != nil {
 		weaponDef = e.items[player.Wielded.Archetype]
 	}
-	atkRating := playerAttackRating(player, weaponDef)
+	atkRating := playerAttackRating(player, weaponDef, false)
 	defRating := e.playerDefenseRating(player)
 	stanceLabel := stanceNames[player.Stance]
 
@@ -8012,6 +8024,22 @@ func (e *GameEngine) doHealth(player *Player) *CommandResult {
 	}}
 }
 
+func canDualWieldWeapon(itemDef *gameworld.ItemDef) bool {
+	if itemDef == nil {
+		return false
+	}
+
+	switch itemDef.Type {
+	case "SLASH_WEAPON",
+		"PUNCTURE_WEAPON",
+		"DRAKIN_SLASH":
+		return true
+
+	default:
+		return false
+	}
+}
+
 func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Wield what?"}}
@@ -8029,7 +8057,9 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
-		return &CommandResult{Messages: []string{"You can't do that here."}}
+		return &CommandResult{
+			Messages: []string{"You can't do that here."},
+		}
 	}
 
 	for i, ii := range player.Inventory {
@@ -8070,37 +8100,15 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 		if !isShield(itemDef) &&
 			itemDef.WornSlot != "" &&
 			!isWeapon(itemDef.Type) {
+
 			return e.doWear(ctx, player, args)
 		}
 
-		// ------------------------------------------------------------
+		// ============================================================
 		// SHIELD -> OFFHAND
-		// ------------------------------------------------------------
+		// ============================================================
 
 		if isShield(itemDef) {
-			if player.Offhand != nil {
-				offDef := e.items[player.Offhand.Archetype]
-				offName := "something"
-
-				if offDef != nil {
-					offName = e.formatItemName(
-						offDef,
-						player.Offhand.Adj1,
-						player.Offhand.Adj2,
-						player.Offhand.Adj3,
-					)
-				}
-
-				return &CommandResult{
-					Messages: []string{
-						fmt.Sprintf(
-							"You are already wielding %s in your off hand.",
-							offName,
-						),
-					},
-				}
-			}
-
 			// Can't use a shield while wielding a two-handed weapon.
 			if player.Wielded != nil {
 				mainDef := e.items[player.Wielded.Archetype]
@@ -8144,20 +8152,32 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 
 			if sc.Blocked {
 				if len(result.Messages) == 0 {
-					result.Messages = []string{"You can't wield that."}
+					result.Messages = []string{
+						"You can't wield that.",
+					}
 				}
 
 				e.SavePlayer(ctx, player)
 				return result
 			}
 
-			// Move shield from inventory to offhand.
+			// Remove the new shield from inventory.
 			shield := player.Inventory[i]
 
 			player.Inventory = append(
 				player.Inventory[:i],
 				player.Inventory[i+1:]...,
 			)
+
+			// Whatever is currently in the offhand goes back
+			// into inventory. This allows a shield to replace
+			// a secondary weapon.
+			if player.Offhand != nil {
+				player.Inventory = append(
+					player.Inventory,
+					*player.Offhand,
+				)
+			}
 
 			player.Offhand = &shield
 
@@ -8179,7 +8199,6 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 				itemDef,
 			)
 
-			// Script text overrides the built-in player message.
 			if len(verbSC.Messages) > 0 {
 				result.Messages = append(
 					result.Messages,
@@ -8195,7 +8214,6 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 				)
 			}
 
-			// Script room text overrides the built-in room message.
 			if len(verbSC.RoomMsgs) > 0 {
 				result.RoomBroadcast = append(
 					result.RoomBroadcast,
@@ -8220,26 +8238,142 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			return result
 		}
 
-		// ------------------------------------------------------------
-		// NORMAL WEAPON
-		// ------------------------------------------------------------
+		// ============================================================
+		// WEAPON
+		// ============================================================
 
 		if !isWeapon(itemDef.Type) {
 			return &CommandResult{
-				Messages: []string{"You can't wield that."},
-			}
-		}
-
-		// Two-handed weapons require an empty offhand.
-		if isTwoHandedWeapon(itemDef) && player.Offhand != nil {
-			return &CommandResult{
 				Messages: []string{
-					"You need both hands free to wield that.",
+					"You can't wield that.",
 				},
 			}
 		}
 
-		// Run IFPREVERB WIELD before the action.
+		// If a primary weapon already exists, this WIELD command
+		// is attempting to equip the new weapon in the offhand.
+		useOffhand := player.Wielded != nil
+
+		// ============================================================
+		// SECONDARY WEAPON VALIDATION
+		// ============================================================
+
+		if useOffhand {
+			mainDef := e.items[player.Wielded.Archetype]
+
+			if mainDef == nil {
+				return &CommandResult{
+					Messages: []string{
+						"You can't wield that right now.",
+					},
+				}
+			}
+
+			// Two-handed primary weapons cannot be paired
+			// with a second weapon.
+			if isTwoHandedWeapon(mainDef) {
+				return &CommandResult{
+					Messages: []string{
+						"You can't wield a second weapon while using a two-handed weapon.",
+					},
+				}
+			}
+
+			// A two-handed weapon can never be the secondary weapon.
+			if isTwoHandedWeapon(itemDef) {
+				return &CommandResult{
+					Messages: []string{
+						"You can't wield a two-handed weapon in your off hand.",
+					},
+				}
+			}
+
+			// Only eligible one-handed weapon types may be used
+			// with Two Weapons.
+			//
+			// Allowed:
+			//   SLASH_WEAPON
+			//   PUNCTURE_WEAPON
+			//   DRAKIN_SLASH
+			//
+			// This excludes crushing, blunt, pole, missile,
+			// thrown, natural, and other weapon types.
+			if !canDualWieldWeapon(itemDef) {
+				return &CommandResult{
+					Messages: []string{
+						"You can't use that weapon in your off hand.",
+					},
+				}
+			}
+
+			// Skill 1 = Two Weapons.
+			if player.Skills[1] < 1 {
+				return &CommandResult{
+					Messages: []string{
+						"You lack the skill to fight with two weapons.",
+					},
+				}
+			}
+
+			// Secondary weapon must be strictly lighter
+			// than the primary weapon.
+			if itemDef.Weight >= mainDef.Weight {
+				return &CommandResult{
+					Messages: []string{
+						"Your secondary weapon must be lighter than your primary weapon.",
+					},
+				}
+			}
+
+		} else {
+			// --------------------------------------------------------
+			// PRIMARY WEAPON VALIDATION
+			// --------------------------------------------------------
+
+			// A two-handed primary weapon requires an empty offhand.
+			if isTwoHandedWeapon(itemDef) &&
+				player.Offhand != nil {
+
+				return &CommandResult{
+					Messages: []string{
+						"You need both hands free to wield that.",
+					},
+				}
+			}
+
+			// It is legal to have an empty primary hand while a
+			// secondary weapon remains equipped. If the player then
+			// equips a new primary weapon, it must still satisfy the
+			// primary/secondary weight relationship.
+			//
+			// Example:
+			//   primary: empty
+			//   offhand: stiletto
+			//
+			// The player may fight unarmed + stiletto, but if they
+			// later wield a primary weapon it must be heavier than
+			// the stiletto.
+			if player.Offhand != nil {
+				offDef := e.items[player.Offhand.Archetype]
+
+				if offDef != nil &&
+					isWeapon(offDef.Type) {
+
+					if itemDef.Weight <= offDef.Weight {
+						return &CommandResult{
+							Messages: []string{
+								"Your secondary weapon must be lighter than your primary weapon.",
+							},
+						}
+					}
+				}
+			}
+		}
+
+		// ============================================================
+		// IFPREVERB WIELD
+		// ============================================================
+
 		scriptItem := gameworld.RoomItem{
 			Ref:       -1,
 			Archetype: ii.Archetype,
@@ -8269,41 +8403,59 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 
 		if sc.Blocked {
 			if len(result.Messages) == 0 {
-				result.Messages = []string{"You can't wield that."}
+				result.Messages = []string{
+					"You can't wield that.",
+				}
 			}
 
 			e.SavePlayer(ctx, player)
 			return result
 		}
 
-		// Put currently wielded weapon back into inventory.
-		if player.Wielded != nil {
-			player.Inventory = append(
-				player.Inventory,
-				*player.Wielded,
-			)
-		}
+		// ============================================================
+		// REMOVE SELECTED WEAPON FROM INVENTORY
+		// ============================================================
 
-		// Move selected weapon into main hand.
-		wielded := player.Inventory[i]
+		weapon := player.Inventory[i]
 
 		player.Inventory = append(
 			player.Inventory[:i],
 			player.Inventory[i+1:]...,
 		)
 
-		player.Wielded = &wielded
+		// ============================================================
+		// EQUIP
+		// ============================================================
+
+		if useOffhand {
+			// Existing shield or secondary weapon returns
+			// to inventory.
+			if player.Offhand != nil {
+				player.Inventory = append(
+					player.Inventory,
+					*player.Offhand,
+				)
+			}
+
+			player.Offhand = &weapon
+
+		} else {
+			player.Wielded = &weapon
+		}
 
 		e.SavePlayer(ctx, player)
 
 		fullName := e.formatItemName(
 			itemDef,
-			wielded.Adj1,
-			wielded.Adj2,
-			wielded.Adj3,
+			weapon.Adj1,
+			weapon.Adj2,
+			weapon.Adj3,
 		)
 
-		// Run IFVERB WIELD after the successful action.
+		// ============================================================
+		// IFVERB WIELD
+		// ============================================================
+
 		verbSC := e.RunVerbScripts(
 			player,
 			room,
@@ -8319,10 +8471,23 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 				verbSC.Messages...,
 			)
 		} else {
-			result.Messages = append(
-				result.Messages,
-				fmt.Sprintf("You wield %s.", fullName),
-			)
+			if useOffhand {
+				result.Messages = append(
+					result.Messages,
+					fmt.Sprintf(
+						"You wield %s in your off hand.",
+						fullName,
+					),
+				)
+			} else {
+				result.Messages = append(
+					result.Messages,
+					fmt.Sprintf(
+						"You wield %s.",
+						fullName,
+					),
+				)
+			}
 		}
 
 		// Script room text overrides the built-in room message.
@@ -8351,7 +8516,9 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 	}
 
 	return &CommandResult{
-		Messages: []string{"You don't have that."},
+		Messages: []string{
+			"You don't have that.",
+		},
 	}
 }
 
@@ -12566,29 +12733,45 @@ func (e *GameEngine) SavePlayer(ctx context.Context, player *Player) {
 
 // Helper: format item name with adjectives
 // formatItemNameNoArticle returns item name with adjectives but no article prefix.
-func (e *GameEngine) formatItemNameNoArticle(def *gameworld.ItemDef, adj1, adj2, adj3 int) string {
+// formatItemNameNoArticle returns item name with adjectives but no article prefix.
+func (e *GameEngine) formatItemNameNoArticle(def *gameworld.ItemDef, adj1, adj2, adj3 int, state ...string) string {
 	var parts []string
+
+	// Optional instance state.
+	if len(state) > 0 && state[0] == "DAMAGED" {
+		parts = append(parts, "damaged")
+	}
+
 	if adj1 > 0 {
 		if name, ok := e.adjectives[adj1]; ok {
 			parts = append(parts, name)
 		}
 	}
+
 	if adj2 > 0 {
 		if name, ok := e.adjectives[adj2]; ok {
 			parts = append(parts, name)
 		}
 	}
+
 	if adj3 > 0 {
 		if name, ok := e.adjectives[adj3]; ok {
 			parts = append(parts, name)
 		}
 	}
+
 	parts = append(parts, e.getItemNounName(def))
+
 	return strings.Join(parts, " ")
 }
-
-func (e *GameEngine) formatItemName(def *gameworld.ItemDef, adj1, adj2, adj3 int) string {
+func (e *GameEngine) formatItemName(def *gameworld.ItemDef, adj1, adj2, adj3 int, state ...string) string {
 	var parts []string
+
+	// Optional instance state.
+	if len(state) > 0 && state[0] == "DAMAGED" {
+		parts = append(parts, "damaged")
+	}
+
 	if adj1 > 0 {
 		if name, ok := e.adjectives[adj1]; ok {
 			parts = append(parts, name)
@@ -12604,19 +12787,22 @@ func (e *GameEngine) formatItemName(def *gameworld.ItemDef, adj1, adj2, adj3 int
 			parts = append(parts, name)
 		}
 	}
+
 	nounName := e.getItemNounName(def)
 	parts = append(parts, nounName)
 
 	name := strings.Join(parts, " ")
 	article := strings.ToUpper(def.Article)
+
 	if article == "" || article == "A" {
-		// Auto-detect "an" for words starting with a vowel sound
+		// Auto-detect "an" for words starting with a vowel sound.
 		first := strings.ToLower(name[:1])
 		if first == "a" || first == "e" || first == "i" || first == "o" || first == "u" {
 			return "an " + name
 		}
 		return "a " + name
 	}
+
 	if article == "AN" {
 		return "an " + name
 	}
@@ -12626,6 +12812,7 @@ func (e *GameEngine) formatItemName(def *gameworld.ItemDef, adj1, adj2, adj3 int
 	if article == "SOME" {
 		return "some " + name
 	}
+
 	return strings.ToLower(article) + " " + name
 }
 

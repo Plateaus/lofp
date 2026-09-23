@@ -458,7 +458,7 @@ func calcToHit(attackRating, defenseRating int) int {
 	return toHit
 }
 
-func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef) int {
+func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef, offhand bool) int {
 	rating := 50
 	rating += player.Level * 3
 
@@ -466,7 +466,18 @@ func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef) int {
 
 	if weaponDef != nil {
 		skillID := weaponSkillForType(weaponDef.Type)
-		rating += player.Skills[skillID] * 5
+		weaponSkill := player.Skills[skillID]
+
+		// Secondary weapon skill is limited by Two Weapons skill.
+		if offhand {
+			twoWeaponSkill := player.Skills[1]
+
+			if twoWeaponSkill < weaponSkill {
+				weaponSkill = twoWeaponSkill
+			}
+		}
+
+		rating += weaponSkill * 5
 	} else if player.WolfForm || clawGrowth > 0 {
 		// Wolfling natural weapons
 		rating += player.Skills[4] * 5
@@ -475,11 +486,15 @@ func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef) int {
 		rating += player.Skills[24] * 5
 	}
 
-	if weaponDef != nil && (weaponDef.Type == "BOW_WEAPON" || weaponDef.Type == "THROWN_WEAPON") {
+	if weaponDef != nil &&
+		(weaponDef.Type == "BOW_WEAPON" ||
+			weaponDef.Type == "THROWN_WEAPON") {
+
 		rating += player.EffectiveStat(StatAgility) / 5
 	} else {
 		rating += player.EffectiveStat(StatStrength) / 5
 	}
+
 	switch player.Stance {
 	case StanceOffensive:
 		rating += 15
@@ -490,6 +505,7 @@ func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef) int {
 	case StanceWary:
 		rating -= 5
 	}
+
 	switch player.Position {
 	case 1:
 		rating -= 20
@@ -498,6 +514,7 @@ func playerAttackRating(player *Player, weaponDef *gameworld.ItemDef) int {
 	case 3:
 		rating -= 10
 	}
+
 	return rating
 }
 
@@ -803,7 +820,7 @@ func (e *GameEngine) weaponDisplayName(player *Player, weaponDef *gameworld.Item
 	}
 	// Return name WITHOUT article — caller adds "your" prefix
 	if player.Wielded != nil {
-		return e.formatItemNameNoArticle(weaponDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3)
+		return e.formatItemNameNoArticle(weaponDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3, player.Wielded.State)
 	}
 	return strings.ToLower(e.nouns[weaponDef.NameID])
 }
@@ -842,22 +859,40 @@ func (e *GameEngine) isArenaRoom(roomNum int) bool {
 // ---- Player attacks Monster ----
 
 func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target string) *CommandResult {
+
 	if player.Dead {
-		return &CommandResult{Messages: []string{"You can't do that. You are dead."}}
+		return &CommandResult{
+			Messages: []string{"You can't do that. You are dead."},
+		}
 	}
+
 	if player.Stunned {
-		return &CommandResult{Messages: []string{"You are stunned and cannot attack!"}}
+		return &CommandResult{
+			Messages: []string{"You are stunned and cannot attack!"},
+		}
 	}
+
 	if player.Immobilized {
-		return &CommandResult{Messages: []string{"You are rooted to the spot!"}}
+		return &CommandResult{
+			Messages: []string{"You are rooted to the spot!"},
+		}
 	}
+
 	if player.Position == 2 {
-		return &CommandResult{Messages: []string{"You can't attack while laying down! Stand up first."}}
+		return &CommandResult{
+			Messages: []string{
+				"You can't attack while laying down! Stand up first.",
+			},
+		}
 	}
 
 	if player.RoundTimeExpiry.After(time.Now()) {
 		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
-		return &CommandResult{Messages: []string{fmt.Sprintf("[Wait %d seconds...]", remaining)}}
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %d seconds...]", remaining),
+			},
+		}
 	}
 
 	var inst *MonsterInstance
@@ -872,29 +907,42 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	}
 
 	if inst == nil {
-		// Check if they're trying to attack a player
+		// Check if they're trying to attack a player.
 		if e.sessions != nil {
 			for _, p := range e.sessions.OnlinePlayers() {
 				if p.RoomNumber == player.RoomNumber &&
-					strings.HasPrefix(strings.ToUpper(p.FirstName), strings.ToUpper(target)) {
+					strings.HasPrefix(
+						strings.ToUpper(p.FirstName),
+						strings.ToUpper(target),
+					) {
 
 					if player.IsGM {
 						return &CommandResult{
 							Messages: []string{
-								fmt.Sprintf("[GM combat with players is not yet implemented. %s is here.]", p.FirstName),
+								fmt.Sprintf(
+									"[GM combat with players is not yet implemented. %s is here.]",
+									p.FirstName,
+								),
 							},
 						}
 					}
 
 					return &CommandResult{
-						Messages: []string{"Player combat is not allowed here."},
+						Messages: []string{
+							"Player combat is not allowed here.",
+						},
 					}
 				}
 			}
 		}
 
 		return &CommandResult{
-			Messages: []string{fmt.Sprintf("You don't see '%s' here to attack.", target)},
+			Messages: []string{
+				fmt.Sprintf(
+					"You don't see '%s' here to attack.",
+					target,
+				),
+			},
 		}
 	}
 
@@ -905,15 +953,21 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		player.CombatTarget.IsMonster &&
 		player.CombatTarget.MonsterID == inst.ID
 
-	attackingUs := strings.EqualFold(inst.Target, player.FirstName)
+	attackingUs := strings.EqualFold(
+		inst.Target,
+		player.FirstName,
+	)
 
 	if !engaged && !attackingUs {
 		return &CommandResult{
-			Messages: []string{"You are not engaged with that opponent."},
+			Messages: []string{
+				"You are not engaged with that opponent.",
+			},
 		}
 	}
 
-	// If the monster engaged us first, it now becomes our combat target too.
+	// If the monster engaged us first, it now becomes
+	// our combat target too.
 	if !engaged && attackingUs {
 		player.CombatTarget = &CombatTarget{
 			IsMonster: true,
@@ -922,67 +976,151 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		player.Joined = true
 	}
 
-	// Check if a guard monster intervenes
-	guardInst, guardDef := e.findGuardFor(inst, player.RoomNumber)
+	// ------------------------------------------------------------
+	// GUARD INTERCEPTION
+	// ------------------------------------------------------------
+
+	guardInst, guardDef := e.findGuardFor(
+		inst,
+		player.RoomNumber,
+	)
+
 	if guardInst != nil && guardDef != nil {
-		guardName := FormatMonsterName(guardDef, e.monAdjs)
-		guardArticle := articleFor(guardName, guardDef.Unique)
+		guardName := FormatMonsterName(
+			guardDef,
+			e.monAdjs,
+		)
+
+		guardArticle := articleFor(
+			guardName,
+			guardDef.Unique,
+		)
+
 		if e.sendToPlayer != nil {
-			e.sendToPlayer(player.FirstName, []string{fmt.Sprintf("%s%s is now guarding %s%s.", capArticle(guardArticle), guardName, articleFor(FormatMonsterName(def, e.monAdjs), def.Unique), FormatMonsterName(def, e.monAdjs))})
+			e.sendToPlayer(
+				player.FirstName,
+				[]string{
+					fmt.Sprintf(
+						"%s%s is now guarding %s%s.",
+						capArticle(guardArticle),
+						guardName,
+						articleFor(
+							FormatMonsterName(def, e.monAdjs),
+							def.Unique,
+						),
+						FormatMonsterName(def, e.monAdjs),
+					),
+				},
+			)
 		}
-		// Redirect attack to the guard
+
 		inst = guardInst
 		def = guardDef
 	}
 
-	name := FormatMonsterName(def, e.monAdjs)
-	article := articleFor(name, def.Unique)
+	// ------------------------------------------------------------
+	// PRIMARY WEAPON
+	// ------------------------------------------------------------
 
-	var weaponDef *gameworld.ItemDef
+	var primaryDef *gameworld.ItemDef
+
 	if player.Wielded != nil {
-		weaponDef = e.items[player.Wielded.Archetype]
+		primaryDef = e.items[player.Wielded.Archetype]
 	}
 
-	// Check ranged weapon is loaded
-	isRangedWeapon := weaponDef != nil && (weaponDef.Type == "BOW_WEAPON" || weaponDef.Type == "HANDGUN" || weaponDef.Type == "RIFLE")
-	if isRangedWeapon && (player.Wielded == nil || player.Wielded.Val3 <= 0) {
-		return &CommandResult{Messages: []string{fmt.Sprintf("Your %s is not loaded! Use NOCK or LOAD first.", strings.ToLower(e.nouns[weaponDef.NameID]))}}
+	// Check ranged weapon is loaded.
+	isRangedWeapon := primaryDef != nil &&
+		(primaryDef.Type == "BOW_WEAPON" ||
+			primaryDef.Type == "HANDGUN" ||
+			primaryDef.Type == "RIFLE")
+
+	if isRangedWeapon &&
+		(player.Wielded == nil || player.Wielded.Val3 <= 0) {
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"Your %s is not loaded! Use NOCK or LOAD first.",
+					strings.ToLower(
+						e.nouns[primaryDef.NameID],
+					),
+				),
+			},
+		}
 	}
 
-	// Check MAGICWEAPON requirement
-	if !e.checkMagicWeapon(player, player.Wielded, weaponDef, def) {
+	// Check MAGICWEAPON requirement for primary attack.
+	if !e.checkMagicWeapon(
+		player,
+		player.Wielded,
+		primaryDef,
+		def,
+	) {
+		name := FormatMonsterName(def, e.monAdjs)
+		article := articleFor(name, def.Unique)
+
 		texI := def.TextOverrides["TEXI"]
 		if texI == "" {
-			texI = fmt.Sprintf("Your weapon is not powerful enough to affect %s%s.", article, name)
+			texI = fmt.Sprintf(
+				"Your weapon is not powerful enough to affect %s%s.",
+				article,
+				name,
+			)
 		}
-		return &CommandResult{Messages: []string{texI}}
+
+		return &CommandResult{
+			Messages: []string{texI},
+		}
 	}
 
-	// Engage
-	player.CombatTarget = &CombatTarget{IsMonster: true, MonsterID: inst.ID}
+	// ------------------------------------------------------------
+	// ENGAGE
+	// ------------------------------------------------------------
+
+	player.CombatTarget = &CombatTarget{
+		IsMonster: true,
+		MonsterID: inst.ID,
+	}
 	player.Joined = true
+
 	e.monsterMgr.mu.Lock()
+
 	for i := range e.monsterMgr.instances {
 		if e.monsterMgr.instances[i].ID == inst.ID {
 			if e.monsterMgr.instances[i].Target == "" {
-				e.monsterMgr.instances[i].Target = player.FirstName
+				e.monsterMgr.instances[i].Target =
+					player.FirstName
 			}
 			break
 		}
 	}
+
 	e.monsterMgr.mu.Unlock()
 
-	// Cry for law (strategy 1-25 or 101-125)
-	if (def.Strategy >= 1 && def.Strategy <= 25) || (def.Strategy >= 101 && def.Strategy <= 125) {
+	// Cry for law (strategy 1-25 or 101-125).
+	if (def.Strategy >= 1 && def.Strategy <= 25) ||
+		(def.Strategy >= 101 && def.Strategy <= 125) {
+
 		e.cryForLaw(player, inst, def)
 	}
 
-	// Fatigue drain for melee attacks (not ranged)
-	isRanged := weaponDef != nil && (weaponDef.Type == "BOW_WEAPON" || weaponDef.Type == "THROWN_WEAPON")
+	// ------------------------------------------------------------
+	// FATIGUE
+	//
+	// Preserve existing behavior: fatigue is charged once for the
+	// combat action, based on the primary weapon.
+	// ------------------------------------------------------------
+
+	isRanged := primaryDef != nil &&
+		(primaryDef.Type == "BOW_WEAPON" ||
+			primaryDef.Type == "THROWN_WEAPON")
+
 	if !isRanged {
 		fatCost := 1
-		if weaponDef != nil && weaponDef.Weight > 5 {
-			fatCost = weaponDef.Weight / 7 // reduced from /5 to cap heavy weapon fatigue
+
+		if primaryDef != nil && primaryDef.Weight > 5 {
+			fatCost = primaryDef.Weight / 7
+
 			if fatCost < 1 {
 				fatCost = 1
 			}
@@ -991,240 +1129,712 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 				fatCost = 3
 			}
 		}
+
 		player.Fatigue -= fatCost
+
 		if player.Fatigue < 0 {
 			player.Fatigue = 0
 		}
+
 		if player.Fatigue <= 0 {
-			return &CommandResult{Messages: []string{"You are too fatigued to attack!"}}
+			return &CommandResult{
+				Messages: []string{
+					"You are too fatigued to attack!",
+				},
+			}
 		}
 	}
 
-	// Apply weather modifier
+	// ------------------------------------------------------------
+	// RESOLVE ATTACKS
+	// ------------------------------------------------------------
+
+	result := &CommandResult{}
+
+	// Primary attack.
+	primaryResult, killed := e.resolvePlayerWeaponAttack(
+		player,
+		inst,
+		def,
+		player.Wielded,
+		false,
+	)
+
+	result.Messages = append(
+		result.Messages,
+		primaryResult.Messages...,
+	)
+
+	result.RoomBroadcast = append(
+		result.RoomBroadcast,
+		primaryResult.RoomBroadcast...,
+	)
+
+	result.GMBroadcast = append(
+		result.GMBroadcast,
+		primaryResult.GMBroadcast...,
+	)
+
+	// ------------------------------------------------------------
+	// SECONDARY WEAPON
+	//
+	// If the primary attack did not kill the monster and Offhand
+	// contains a weapon, make an independent secondary attack.
+	// ------------------------------------------------------------
+
+	if !killed && player.Offhand != nil {
+		offhandDef := e.items[player.Offhand.Archetype]
+
+		if offhandDef != nil &&
+			isWeapon(offhandDef.Type) {
+
+			// Check whether this weapon can affect the target.
+			if e.checkMagicWeapon(
+				player,
+				player.Offhand,
+				offhandDef,
+				def,
+			) {
+				offhandResult, _ :=
+					e.resolvePlayerWeaponAttack(
+						player,
+						inst,
+						def,
+						player.Offhand,
+						true,
+					)
+
+				result.Messages = append(
+					result.Messages,
+					offhandResult.Messages...,
+				)
+
+				result.RoomBroadcast = append(
+					result.RoomBroadcast,
+					offhandResult.RoomBroadcast...,
+				)
+
+				result.GMBroadcast = append(
+					result.GMBroadcast,
+					offhandResult.GMBroadcast...,
+				)
+			}
+		}
+	}
+
+	// ------------------------------------------------------------
+	// ROUNDTIME
+	//
+	// One combat action, even when two weapons attack.
+	// ------------------------------------------------------------
+
+	rtSeconds := 5
+
+	if player.EffectiveStat(StatQuickness) > 80 {
+		rtSeconds = 3
+	} else if player.EffectiveStat(StatQuickness) > 50 {
+		rtSeconds = 4
+	}
+
+	// Combat Maneuvering: -1 sec per rank.
+	combatManeuver := player.Skills[10]
+	rtSeconds -= combatManeuver
+
+	if player.Stance == StanceBerserk {
+		rtSeconds--
+	}
+
+	if rtSeconds < 2 {
+		rtSeconds = 2
+	}
+
+	player.RoundTimeExpiry = time.Now().Add(
+		time.Duration(rtSeconds) * time.Second,
+	)
+
+	result.Messages = append(
+		result.Messages,
+		fmt.Sprintf(
+			"[Round: %d sec]",
+			rtSeconds,
+		),
+	)
+
+	// Unload primary ranged weapon after firing.
+	if isRangedWeapon && player.Wielded != nil {
+		player.Wielded.Val3 = 0
+	}
+
+	// Attacking always reveals you.
+	if player.Hidden || player.Invisible {
+		player.Hidden = false
+		player.Invisible = false
+
+		result.Messages = append(
+			[]string{"You reveal yourself!"},
+			result.Messages...,
+		)
+	}
+
+	e.SavePlayer(ctx, player)
+
+	result.PlayerState = player
+
+	return result
+}
+
+func (e *GameEngine) resolvePlayerWeaponAttack(
+	player *Player,
+	inst *MonsterInstance,
+	def *gameworld.MonsterDef,
+	weapon *InventoryItem,
+	offhand bool,
+) (*CommandResult, bool) {
+
+	result := &CommandResult{}
+
+	name := FormatMonsterName(def, e.monAdjs)
+	article := articleFor(name, def.Unique)
+
+	var weaponDef *gameworld.ItemDef
+
+	if weapon != nil {
+		weaponDef = e.items[weapon.Archetype]
+	}
+
+	// ------------------------------------------------------------
+	// COMBAT MODIFIERS
+	// ------------------------------------------------------------
+
 	wMod := e.weatherMod(player.RoomNumber)
 
-	// Fatigue penalty to ToHit
 	fatPenalty := 0
+
 	if player.MaxFatigue > 0 {
-		fatRatio := player.Fatigue * 100 / player.MaxFatigue
+		fatRatio :=
+			player.Fatigue * 100 / player.MaxFatigue
+
 		if fatRatio < 25 {
-			fatPenalty = 25 // under 1/4 fatigue: -25
+			fatPenalty = 25
 		} else if fatRatio < 50 {
-			fatPenalty = 10 // under 1/2 fatigue: -10
+			fatPenalty = 10
 		}
 	}
 
-	//apply room lighting conditions
-	vMod := e.visibilityCombatModifier(player, player.RoomNumber)
+	vMod := e.visibilityCombatModifier(
+		player,
+		player.RoomNumber,
+	)
 
-	//apply retrained modifiers
-	vRestrainedMod := player.EffectiveStat(RestrainedEffect)
+	vRestrainedMod :=
+		player.EffectiveStat(RestrainedEffect)
 
-	// Resolve to-hit
-	attackRating := playerAttackRating(player, weaponDef) + wMod - fatPenalty + vMod + vRestrainedMod
+	// Primary uses normal weapon skill.
+	// Offhand caps weapon skill by Two Weapons skill.
+	attackRating :=
+		playerAttackRating(
+			player,
+			weaponDef,
+			offhand,
+		) +
+			wMod -
+			fatPenalty +
+			vMod +
+			vRestrainedMod
 
-	if player.Wielded != nil {
-		weaponBonus, _, _ := e.weaponMagicStats(player.Wielded, weaponDef)
+	// Weapon magic bonus applies to the weapon actually attacking.
+	if weapon != nil {
+		weaponBonus, _, _ :=
+			e.weaponMagicStats(
+				weapon,
+				weaponDef,
+			)
+
 		attackRating += weaponBonus
 	}
 
 	if inst.Stunned {
-		attackRating += 20 // bonus for attacking stunned target
+		attackRating += 20
 	}
 
-	monDefense := def.Defense + inst.DefenseBonus
-	toHit := calcToHit(attackRating, monDefense)
+	monDefense :=
+		def.Defense +
+			inst.DefenseBonus
+
+	toHit := calcToHit(
+		attackRating,
+		monDefense,
+	)
+
 	roll := rand.Intn(100) + 1
 
-	var selfVerb, thirdVerb, dmgNoun string
-	clawGrowth := player.EffectiveStat(ClawGrowth)
-	if weaponDef == nil && (player.WolfForm || clawGrowth > 0) {
-		selfVerb, thirdVerb, dmgNoun = "claw", "claws", "claw"
-	} else {
-		selfVerb, thirdVerb, dmgNoun = attackVerb(weaponDef)
-	}
-	weaponName := e.weaponDisplayName(player, weaponDef)
+	// ------------------------------------------------------------
+	// ATTACK VERB
+	// ------------------------------------------------------------
 
-	result := &CommandResult{}
+	var selfVerb string
+	var thirdVerb string
+	var dmgNoun string
+
+	clawGrowth :=
+		player.EffectiveStat(ClawGrowth)
+
+	if weaponDef == nil &&
+		(player.WolfForm || clawGrowth > 0) {
+
+		selfVerb = "claw"
+		thirdVerb = "claws"
+		dmgNoun = "claw"
+
+	} else {
+		selfVerb, thirdVerb, dmgNoun =
+			attackVerb(weaponDef)
+	}
+
+	weaponName :=
+		e.weaponDisplayName(
+			player,
+			weaponDef,
+		)
+
+	if weapon != nil && weapon.State == "DAMAGED" {
+		weaponName = "damaged " + weaponName
+	}
+
 	var msgs []string
 
-	msgs = append(msgs, fmt.Sprintf("You %s at %s%s with your %s.", selfVerb, article, name, weaponName))
+	msgs = append(
+		msgs,
+		fmt.Sprintf(
+			"You %s at %s%s with your %s.",
+			selfVerb,
+			article,
+			name,
+			weaponName,
+		),
+	)
 
-	// Weapon clash on roll < 3 (only vs weapon-wielding monsters)
-	if roll < 3 && weaponDef != nil && len(def.Weapons) > 0 {
-		weaponStr := weaponDef.Weight*3 + weaponDef.Parameter1*2
-		clashRoll := rand.Intn(100) + rand.Intn(100) + 2
-		msgs = append(msgs, fmt.Sprintf(" [ToHit: %d, Roll: %d] Weapon Clash! [Strength: %d, 2d100 Roll: %d]", toHit, roll, weaponStr, clashRoll))
+	// ------------------------------------------------------------
+	// WEAPON CLASH
+	// ------------------------------------------------------------
+
+	if roll < 3 &&
+		weaponDef != nil &&
+		len(def.Weapons) > 0 {
+
+		weaponStr :=
+			weaponDef.Weight*3 +
+				weaponDef.Parameter1*2
+
+		clashRoll :=
+			rand.Intn(100) +
+				rand.Intn(100) +
+				2
+
+		msgs = append(
+			msgs,
+			fmt.Sprintf(
+				" [ToHit: %d, Roll: %d] Weapon Clash! [Strength: %d, 2d100 Roll: %d]",
+				toHit,
+				roll,
+				weaponStr,
+				clashRoll,
+			),
+		)
+
 		if clashRoll > weaponStr {
-			if player.Wielded != nil && player.Wielded.State == "DAMAGED" {
-				msgs = append(msgs, fmt.Sprintf(" Your %s breaks!", strings.ToLower(e.nouns[weaponDef.NameID])))
-				player.Wielded = nil
-			} else if player.Wielded != nil {
-				player.Wielded.State = "DAMAGED"
-				msgs = append(msgs, fmt.Sprintf(" %s damaged!", strings.Title(strings.ToLower(e.nouns[weaponDef.NameID]))))
+			if weapon != nil &&
+				weapon.State == "DAMAGED" {
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" Your %s breaks!",
+						strings.ToLower(
+							e.nouns[weaponDef.NameID],
+						),
+					),
+				)
+
+				// Clear the correct hand.
+				if offhand {
+					player.Offhand = nil
+				} else {
+					player.Wielded = nil
+				}
+
+			} else if weapon != nil {
+				weapon.State = "DAMAGED"
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" %s damaged!",
+						strings.Title(
+							strings.ToLower(
+								e.nouns[weaponDef.NameID],
+							),
+						),
+					),
+				)
 			}
 		}
+
 		result.Messages = msgs
-		rtSec := 5
-		player.RoundTimeExpiry = time.Now().Add(time.Duration(rtSec) * time.Second)
-		result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSec))
-		if player.Hidden {
-			player.Hidden = false
-			result.Messages = append([]string{"You reveal yourself!"}, result.Messages...)
-		}
-		e.SavePlayer(ctx, player)
-		result.PlayerState = player
-		return result
+
+		// Weapon clash consumes this strike, but the overall combat
+		// action continues. Roundtime is handled by doAttackMonster.
+		return result, false
 	}
 
-	// Damaged weapon penalty (-10 ToHit)
-	if player.Wielded != nil && player.Wielded.State == "DAMAGED" {
-		toHit += 10 // harder to hit with damaged weapon
+	// ------------------------------------------------------------
+	// DAMAGED WEAPON
+	// ------------------------------------------------------------
+
+	if weapon != nil &&
+		weapon.State == "DAMAGED" {
+
+		// Higher ToHit number = harder to hit.
+		toHit += 10
 	}
+
+	// ------------------------------------------------------------
+	// HIT
+	// ------------------------------------------------------------
 
 	if roll >= toHit {
 		excellent := roll >= 96
 		hitLabel := "Hit!"
+
 		if excellent {
 			hitLabel = "Excellent Hit!"
 		}
-		// Open-ended roll: 96-100 adds a bonus roll
+
+		// Open-ended roll: 96-100 adds a bonus roll.
 		openEndedBonus := 0
+
 		if excellent {
 			bonus := rand.Intn(100) + 1
-			openEndedBonus = bonus / 2 // bonus damage %
+
+			openEndedBonus =
+				bonus / 2
+
 			if bonus >= 96 {
-				// Double open-ended!
-				hitLabel = "Devastating Critical!!"
-				openEndedBonus += rand.Intn(100)/2 + 50
+				hitLabel =
+					"Devastating Critical!!"
+
+				openEndedBonus +=
+					rand.Intn(100)/2 + 50
 			}
 		}
-		msgs = append(msgs, fmt.Sprintf(" [ToHit: %d, Roll: %d] %s", toHit, roll, hitLabel))
 
-		dmg := playerDamage(player, weaponDef)
+		msgs = append(
+			msgs,
+			fmt.Sprintf(
+				" [ToHit: %d, Roll: %d] %s",
+				toHit,
+				roll,
+				hitLabel,
+			),
+		)
+
+		dmg :=
+			playerDamage(
+				player,
+				weaponDef,
+			)
+
 		if openEndedBonus > 0 {
-			dmg = dmg * (100 + openEndedBonus) / 100
+			dmg =
+				dmg *
+					(100 + openEndedBonus) /
+					100
 		}
-		dmg = applyArmor(dmg, def.Armor)
-		immType := weaponImmunityType(weaponDef)
-		if level, ok := def.Immunities[immType]; ok {
-			dmg = applyImmunity(dmg, level)
+
+		dmg =
+			applyArmor(
+				dmg,
+				def.Armor,
+			)
+
+		immType :=
+			weaponImmunityType(
+				weaponDef,
+			)
+
+		if level, ok :=
+			def.Immunities[immType]; ok {
+
+			dmg =
+				applyImmunity(
+					dmg,
+					level,
+				)
 		}
+
 		if dmg <= 0 {
 			dmg = 1
 		}
 
-		part := randomBodyPart(def.BodyType)
-		severity := damageSeverity(dmg)
-		msgs = append(msgs, fmt.Sprintf(" %s %s to %s. [%d Damage]", severity, dmgNoun, part, dmg))
+		part :=
+			randomBodyPart(
+				def.BodyType,
+			)
 
-		// Weapon elemental crit / slayer bonus
-		if critDmg, critType := e.weaponCritDamage(player.Wielded, weaponDef, def); critDmg > 0 {
+		severity :=
+			damageSeverity(dmg)
+
+		msgs = append(
+			msgs,
+			fmt.Sprintf(
+				" %s %s to %s. [%d Damage]",
+				severity,
+				dmgNoun,
+				part,
+				dmg,
+			),
+		)
+
+		// --------------------------------------------------------
+		// WEAPON ELEMENTAL CRIT / SLAYER
+		// --------------------------------------------------------
+
+		if critDmg, critType :=
+			e.weaponCritDamage(
+				weapon,
+				weaponDef,
+				def,
+			); critDmg > 0 {
+
 			dmg += critDmg
-			critPart := randomBodyPart(def.BodyType)
-			critSeverity := damageSeverity(critDmg)
-			weaponNoun := strings.ToLower(e.nouns[weaponDef.NameID])
+
+			critPart :=
+				randomBodyPart(
+					def.BodyType,
+				)
+
+			critSeverity :=
+				damageSeverity(
+					critDmg,
+				)
+
+			weaponNoun :=
+				strings.ToLower(
+					e.nouns[weaponDef.NameID],
+				)
+
 			switch critType {
 			case "fire":
-				msgs = append(msgs, fmt.Sprintf(" The %s radiates intense heat!", weaponNoun))
-				msgs = append(msgs, fmt.Sprintf(" %s burn to %s. [%d Damage]", critSeverity, critPart, critDmg))
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" The %s radiates intense heat!",
+						weaponNoun,
+					),
+				)
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" %s burn to %s. [%d Damage]",
+						critSeverity,
+						critPart,
+						critDmg,
+					),
+				)
+
 			case "cold":
-				msgs = append(msgs, fmt.Sprintf(" The %s radiates intense cold!", weaponNoun))
-				msgs = append(msgs, fmt.Sprintf(" %s freeze to %s. [%d Damage]", critSeverity, critPart, critDmg))
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" The %s radiates intense cold!",
+						weaponNoun,
+					),
+				)
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" %s freeze to %s. [%d Damage]",
+						critSeverity,
+						critPart,
+						critDmg,
+					),
+				)
+
 			case "lightning":
-				msgs = append(msgs, fmt.Sprintf(" The %s crackles with electricity!", weaponNoun))
-				msgs = append(msgs, fmt.Sprintf(" %s shock to %s. [%d Damage]", critSeverity, critPart, critDmg))
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" The %s crackles with electricity!",
+						weaponNoun,
+					),
+				)
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" %s shock to %s. [%d Damage]",
+						critSeverity,
+						critPart,
+						critDmg,
+					),
+				)
+
 			case "slayer":
-				msgs = append(msgs, " Your weapon resonates against its foe!")
-				msgs = append(msgs, fmt.Sprintf(" %s strike to %s. [%d Damage]", critSeverity, critPart, critDmg))
+				msgs = append(
+					msgs,
+					" Your weapon resonates against its foe!",
+				)
+
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" %s strike to %s. [%d Damage]",
+						critSeverity,
+						critPart,
+						critDmg,
+					),
+				)
 			}
 		}
 
-		killed := e.damageMonster(player, inst.ID, dmg)
+		// --------------------------------------------------------
+		// APPLY DAMAGE
+		// --------------------------------------------------------
 
-		// Weapon poison
-		if poisonLvl := weaponPoisonLevel(player.Wielded); poisonLvl > 0 && !killed {
-			msgs = append(msgs, " Your weapon delivers its venom!")
+		killed :=
+			e.damageMonster(
+				player,
+				inst.ID,
+				dmg,
+			)
+
+		// Weapon poison.
+		if poisonLvl :=
+			weaponPoisonLevel(
+				weapon,
+			); poisonLvl > 0 &&
+			!killed {
+
+			msgs = append(
+				msgs,
+				" Your weapon delivers its venom!",
+			)
 		}
 
 		wasStunned := false
+
 		if excellent && !killed {
 			if rand.Intn(100) < 30 {
-				msgs = append(msgs, " It is stunned!")
+				msgs = append(
+					msgs,
+					" It is stunned!",
+				)
+
 				wasStunned = true
 				inst.Stunned = true
 			}
 		}
 
 		if killed {
-			deathText := def.TextOverrides["TEXD"]
+			deathText :=
+				def.TextOverrides["TEXD"]
+
 			if deathText != "" {
-				msgs = append(msgs, fmt.Sprintf(" It %s", deathText))
+				msgs = append(
+					msgs,
+					fmt.Sprintf(
+						" It %s",
+						deathText,
+					),
+				)
 			} else {
-				msgs = append(msgs, " It collapses, dead.")
+				msgs = append(
+					msgs,
+					" It collapses, dead.",
+				)
 			}
-			e.handleMonsterDeath(player, inst, def)
-			//	player.CombatTarget = nil
-			//	player.Joined = false
+
+			e.handleMonsterDeath(
+				player,
+				inst,
+				def,
+			)
 		}
 
-		// Build simplified 3rd-person broadcast
-		broadcastMsg := fmt.Sprintf("%s %s at %s%s. %s %s", player.FirstName, thirdVerb, article, name, hitLabel, simplifiedDamageTier(dmg))
+		// --------------------------------------------------------
+		// THIRD-PERSON BROADCAST
+		// --------------------------------------------------------
+
+		broadcastMsg :=
+			fmt.Sprintf(
+				"%s %s at %s%s. %s %s",
+				player.FirstName,
+				thirdVerb,
+				article,
+				name,
+				hitLabel,
+				simplifiedDamageTier(dmg),
+			)
+
 		if wasStunned {
 			broadcastMsg += ", stun"
 		}
+
 		broadcastMsg += "."
+
 		if killed {
-			deathText := def.TextOverrides["TEXD"]
+			deathText :=
+				def.TextOverrides["TEXD"]
+
 			if deathText != "" {
-				broadcastMsg += fmt.Sprintf(" It %s", deathText)
+				broadcastMsg +=
+					fmt.Sprintf(
+						" It %s",
+						deathText,
+					)
 			} else {
-				broadcastMsg += " It collapses, dead."
+				broadcastMsg +=
+					" It collapses, dead."
 			}
 		}
-		result.RoomBroadcast = []string{broadcastMsg}
-	} else {
-		msgs = append(msgs, fmt.Sprintf(" [ToHit: %d, Roll: %d] Miss.", toHit, roll))
-		result.RoomBroadcast = []string{fmt.Sprintf("%s %s at %s%s. Miss.", player.FirstName, thirdVerb, article, name)}
+
+		result.RoomBroadcast =
+			[]string{broadcastMsg}
+
+		result.Messages = msgs
+
+		return result, killed
 	}
+
+	// ------------------------------------------------------------
+	// MISS
+	// ------------------------------------------------------------
+
+	msgs = append(
+		msgs,
+		fmt.Sprintf(
+			" [ToHit: %d, Roll: %d] Miss.",
+			toHit,
+			roll,
+		),
+	)
 
 	result.Messages = msgs
 
-	// Roundtime: base 5, reduced by quickness and Combat Maneuvering
-	rtSeconds := 5
-	if player.EffectiveStat(StatQuickness) > 80 {
-		rtSeconds = 3
-	} else if player.EffectiveStat(StatQuickness) > 50 {
-		rtSeconds = 4
-	}
-	// Combat Maneuvering: -1 sec per rank (from skills.txt)
-	combatManeuver := player.Skills[10]
-	rtSeconds -= combatManeuver
-	if player.Stance == StanceBerserk {
-		rtSeconds--
-	}
-	if rtSeconds < 2 {
-		rtSeconds = 2
-	}
-	player.RoundTimeExpiry = time.Now().Add(time.Duration(rtSeconds) * time.Second)
-	result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSeconds))
+	result.RoomBroadcast =
+		[]string{
+			fmt.Sprintf(
+				"%s %s at %s%s. Miss.",
+				player.FirstName,
+				thirdVerb,
+				article,
+				name,
+			),
+		}
 
-	// Unload ranged weapon after firing
-	if isRangedWeapon && player.Wielded != nil {
-		player.Wielded.Val3 = 0 // unloaded
-	}
-
-	// Attacking always reveals you (both hidden and invisible)
-	if player.Hidden || player.Invisible {
-		player.Hidden = false
-		player.Invisible = false
-		result.Messages = append([]string{"You reveal yourself!"}, result.Messages...)
-	}
-
-	e.SavePlayer(ctx, player)
-	result.PlayerState = player
-
-	return result
+	return result, false
 }
 
 func (e *GameEngine) findCurrentCombatOpponent(player *Player) (*MonsterInstance, *gameworld.MonsterDef) {
