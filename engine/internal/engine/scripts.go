@@ -34,7 +34,9 @@ type ScriptContext struct {
 
 	PlayerEventEnabled bool
 	PlayerEventDelay   time.Duration
+	EventDelay         time.Duration
 	Suspended          bool
+	RoomEvent          bool
 }
 
 // RunEntryScripts executes all IFENTRY script blocks for a room.
@@ -467,11 +469,17 @@ func (sc *ScriptContext) execStatements(statements []gameworld.ScriptStatement) 
 			action := *stmt.Action
 			cmd := strings.ToUpper(action.Command)
 
+			// --------------------------------------------------------
+			// PLAYER EVENT
+			//
+			// PLREVENT <delay>
+			// CONTPLREVENT
+			//
+			// Everything after CONTPLREVENT resumes after the delay.
+			// --------------------------------------------------------
 			if sc.PlayerEventEnabled && cmd == "PLREVENT" {
 				sc.execAction(action)
 
-				// PLREVENT is followed by CONTPLREVENT.
-				// Everything after CONTPLREVENT resumes later.
 				if i+1 < len(statements) &&
 					statements[i+1].Action != nil &&
 					strings.EqualFold(
@@ -495,6 +503,41 @@ func (sc *ScriptContext) execStatements(statements []gameworld.ScriptStatement) 
 				continue
 			}
 
+			// --------------------------------------------------------
+			// GENERAL SCRIPT EVENT
+			//
+			// SETEVENT <event> <delay> [ALWAYS]
+			// CONTEVENT <event>
+			//
+			// Everything after CONTEVENT resumes after the delay.
+			// --------------------------------------------------------
+			if cmd == "SETEVENT" {
+				sc.execAction(action)
+
+				if i+1 < len(statements) &&
+					statements[i+1].Action != nil &&
+					strings.EqualFold(
+						statements[i+1].Action.Command,
+						"CONTEVENT",
+					) {
+
+					sc.scheduleEvent(
+						sc.EventDelay,
+						statements[i+2:],
+					)
+
+					sc.Suspended = true
+					return
+				}
+
+				continue
+			}
+
+			// CONTEVENT itself is only a continuation marker.
+			if cmd == "CONTEVENT" {
+				continue
+			}
+
 			sc.execAction(action)
 
 			if sc.Suspended {
@@ -512,6 +555,91 @@ func (sc *ScriptContext) execStatements(statements []gameworld.ScriptStatement) 
 			}
 		}
 	}
+}
+
+func (sc *ScriptContext) scheduleEvent(delay time.Duration, statements []gameworld.ScriptStatement) {
+	if len(statements) == 0 {
+		return
+	}
+
+	// SETEVENT is a room/world event, not a player event.
+	// Preserve the script context needed to continue execution,
+	// but messages produced by the continuation are delivered
+	// according to the affected room when the event fires.
+	next := *sc
+
+	next.Messages = nil
+	next.RoomMsgs = nil
+	next.GMMsgs = nil
+	next.Suspended = false
+	next.EventDelay = 0
+
+	continuation := append(
+		[]gameworld.ScriptStatement(nil),
+		statements...,
+	)
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		<-timer.C
+
+		if next.Engine == nil {
+			return
+		}
+
+		// Run the delayed continuation.
+		next.execStatements(continuation)
+
+		// SETEVENT is room/world based.
+		//
+		// Anything generated as a direct player message should only
+		// reach the original player if that player is STILL in the
+		// room currently being affected.
+		if len(next.Messages) > 0 &&
+			next.Player != nil &&
+			next.Room != nil &&
+			next.Player.RoomNumber == next.Room.Number &&
+			next.Engine.sendToPlayer != nil {
+
+			next.Engine.sendToPlayer(
+				next.Player.FirstName,
+				next.Messages,
+			)
+		}
+
+		// RoomMsgs go to everyone else in the currently affected room.
+		if len(next.RoomMsgs) > 0 &&
+			next.Room != nil &&
+			next.Engine.roomBroadcast != nil {
+
+			excludeName := ""
+
+			// Only exclude the original player if they're actually
+			// present in this affected room and therefore received
+			// their copy through Messages above.
+			if next.Player != nil &&
+				next.Player.RoomNumber == next.Room.Number {
+
+				excludeName = next.Player.FirstName
+			}
+
+			next.Engine.roomBroadcast(
+				next.Room.Number,
+				excludeName,
+				next.RoomMsgs,
+			)
+		}
+
+		// Persist player changes made by the continuation, if any.
+		if next.Player != nil {
+			next.Engine.SavePlayer(
+				context.Background(),
+				next.Player,
+			)
+		}
+	}()
 }
 
 // execAction executes a single script action.
@@ -547,7 +675,22 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 		}
 
 	case "CONTPLREVENT":
-		// Marker used by PLREVENT continuation handling.
+	// Marker used by PLREVENT continuation handling.
+
+	case "SETEVENT":
+		if len(action.Args) >= 2 {
+			delay := sc.resolveNumericArg(action.Args[1])
+			if delay < 0 {
+				delay = 0
+			}
+
+			// For now, treat LOFP event timing as 3-second cycles.
+			sc.EventDelay = time.Duration(delay) * 3 * time.Second
+		}
+
+	case "CONTEVENT":
+	// Continuation marker handled by execStatements.
+
 	case "AFFECT":
 		sc.doAffect(action.Args)
 	case "RANDOM":
@@ -673,10 +816,17 @@ func (sc *ScriptContext) schedulePlayerEvent(
 			}
 
 			if len(next.RoomMsgs) > 0 &&
-				next.Engine.roomBroadcast != nil {
+				next.Engine.roomBroadcast != nil &&
+				next.Room != nil {
+
+				excludeName := ""
+				if next.Player != nil {
+					excludeName = next.Player.FirstName
+				}
 
 				next.Engine.roomBroadcast(
-					next.Player.RoomNumber,
+					next.Room.Number,
+					excludeName,
 					next.RoomMsgs,
 				)
 			}
@@ -731,22 +881,38 @@ func (sc *ScriptContext) persistPlayerEventItem() {
 	}
 }
 
-// doEcho handles ECHO PLAYER, ECHO ALL, ECHO OTHERS.
+// doEcho handles ECHO PLAYER, ECHO ALL, ECHO GROUP, ECHO OTHERS.
 func (sc *ScriptContext) doEcho(args []string) {
 	if len(args) < 2 {
 		return
 	}
+
 	target := strings.ToUpper(args[0])
 	text := strings.Join(args[1:], " ")
 	text = sc.expandScriptText(text)
 
 	switch target {
 	case "PLAYER":
+		// Explicitly addressed to the player who triggered the script.
 		sc.Messages = append(sc.Messages, text)
+
 	case "ALL", "GROUP":
-		sc.Messages = append(sc.Messages, text)
+		// Everyone in the currently affected room.
+		//
+		// Give the triggering player their direct copy only if they are
+		// actually in that room. This matters when AFFECT has switched
+		// the script context to another room.
+		if sc.Player != nil &&
+			sc.Room != nil &&
+			sc.Player.RoomNumber == sc.Room.Number {
+
+			sc.Messages = append(sc.Messages, text)
+		}
+
 		sc.RoomMsgs = append(sc.RoomMsgs, text)
+
 	case "OTHERS":
+		// Everyone else in the currently affected room.
 		sc.RoomMsgs = append(sc.RoomMsgs, text)
 	}
 }
@@ -1479,21 +1645,37 @@ func (sc *ScriptContext) getVar(name string) int {
 		}
 		return 0
 	case "PLRSINROOM":
-		if sc.Engine.sessions != nil {
-			count := 0
-			for _, p := range sc.Engine.sessions.OnlinePlayers() {
-				if p.RoomNumber == sc.Player.RoomNumber {
-					count++
-				}
-			}
-			return count
+		if sc.Engine.sessions == nil || sc.Room == nil {
+			return 0
 		}
-		return 1
+
+		count := 0
+
+		for _, p := range sc.Engine.sessions.OnlinePlayers() {
+			roomNumber := p.RoomNumber
+
+			// MOVE is applied after the script finishes. While the script
+			// is still running, treat the player executing it as already
+			// being in the MOVE destination.
+			if sc.Player != nil &&
+				p == sc.Player &&
+				sc.MoveTo > 0 {
+
+				roomNumber = sc.MoveTo
+			}
+
+			if roomNumber == sc.Room.Number {
+				count++
+			}
+		}
+
+		return count
 	case "MONINROOM":
-		if sc.Engine.monsterMgr != nil {
-			return len(sc.Engine.monsterMgr.MonstersInRoom(sc.Player.RoomNumber))
+		if sc.Engine.monsterMgr != nil && sc.Room != nil {
+			return len(sc.Engine.monsterMgr.MonstersInRoom(sc.Room.Number))
 		}
 		return 0
+
 	// Time
 	case "TIM":
 		return GameHour()

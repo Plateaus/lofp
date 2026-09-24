@@ -200,8 +200,8 @@ func NewServer(ge *engine.GameEngine, parsed *gameworld.ParsedData, authSvc *aut
 	})
 
 	// Set up room broadcast for background tasks (monsters, CEVENTs)
-	ge.SetRoomBroadcast(func(roomNumber int, messages []string) {
-		s.broadcastToRoom(roomNumber, "", messages)
+	ge.SetRoomBroadcast(func(roomNumber int, excludeName string, messages []string) {
+		s.broadcastToRoom(roomNumber, excludeName, messages)
 	})
 
 	// Local-only broadcast for monster activity (no hub, this machine only)

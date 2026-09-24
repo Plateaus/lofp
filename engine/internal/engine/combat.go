@@ -2513,6 +2513,7 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 			if e.roomBroadcast != nil {
 				e.roomBroadcast(
 					player.RoomNumber,
+					player.FirstName,
 					[]string{
 						fmt.Sprintf(
 							"%s has advanced to level %d!",

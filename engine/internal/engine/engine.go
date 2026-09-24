@@ -129,7 +129,7 @@ type RoomChange struct {
 type RoomChangeCallback func(change RoomChange)
 
 // RoomBroadcastFunc sends messages to all players in a room (used by background tasks).
-type RoomBroadcastFunc func(roomNumber int, messages []string)
+type RoomBroadcastFunc func(roomNumber int, excludeName string, messages []string)
 
 // LocalRoomBroadcastFunc sends messages to players on THIS machine only (not via hub).
 // Used for monster ambient text and combat which is per-machine.
@@ -675,7 +675,7 @@ func (e *GameEngine) StartCEventLoop() {
 					}
 					// Deliver ECHO messages from CEVENT scripts to players in the room
 					if e.roomBroadcast != nil && len(sc.RoomMsgs) > 0 {
-						e.roomBroadcast(ce.Room, sc.RoomMsgs)
+						e.roomBroadcast(ce.Room, "", sc.RoomMsgs)
 					}
 					e.Events.Publish("cevent", fmt.Sprintf("CEVENT %d fired in room %d (%s)", ce.ID, ce.Room, room.Name))
 				}
@@ -9297,7 +9297,7 @@ func (e *GameEngine) doYell(player *Player, args []string, rawInput string) *Com
 		adjacentMsg := fmt.Sprintf("You hear someone yell, \"%s\"", text)
 		for _, destNum := range room.Exits {
 			if destNum > 0 && destNum != player.RoomNumber {
-				e.roomBroadcast(destNum, []string{adjacentMsg})
+				e.roomBroadcast(destNum, "", []string{adjacentMsg})
 			}
 		}
 	}
