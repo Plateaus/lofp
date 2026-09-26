@@ -1107,13 +1107,19 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	// ------------------------------------------------------------
 	// FATIGUE
 	//
-	// Preserve existing behavior: fatigue is charged once for the
-	// combat action, based on the primary weapon.
+	// Fatigue is charged once for the combat action, based on the
+	// primary weapon.
+	//
+	// Encumbrance increases combat fatigue cost. Combat Maneuvering
+	// (skill 10) allows the player to carry an additional 5 pounds
+	// per rank before those increased fatigue costs apply.
 	// ------------------------------------------------------------
 
 	isRanged := primaryDef != nil &&
 		(primaryDef.Type == "BOW_WEAPON" ||
 			primaryDef.Type == "THROWN_WEAPON")
+
+	fatigueMsg := ""
 
 	if !isRanged {
 		fatCost := 1
@@ -1128,6 +1134,33 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 			if fatCost > 3 {
 				fatCost = 3
 			}
+		}
+
+		load := playerLoadWeight(player, e.items)
+		strength := player.EffectiveStat(StatStrength)
+
+		combatLoad := load - (player.Skills[10] * 5)
+
+		encumbranceFatigue := 0
+
+		switch {
+		case combatLoad > strength*5/2:
+			encumbranceFatigue = 3
+
+		case combatLoad > strength*2:
+			encumbranceFatigue = 2
+
+		case combatLoad > strength+strength/2:
+			encumbranceFatigue = 1
+		}
+
+		if encumbranceFatigue > 0 {
+			fatCost += encumbranceFatigue
+
+			fatigueMsg = fmt.Sprintf(
+				"Your encumbrance increases the fatigue cost of your attack by %d.",
+				encumbranceFatigue,
+			)
 		}
 
 		player.Fatigue -= fatCost
@@ -1150,6 +1183,13 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	// ------------------------------------------------------------
 
 	result := &CommandResult{}
+
+	if fatigueMsg != "" {
+		result.Messages = append(
+			result.Messages,
+			fatigueMsg,
+		)
+	}
 
 	// Primary attack.
 	primaryResult, killed := e.resolvePlayerWeaponAttack(
@@ -1237,8 +1277,9 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	}
 
 	// Combat Maneuvering: -1 sec per rank.
-	combatManeuver := player.Skills[10]
-	rtSeconds -= combatManeuver
+	//removed because thats fn insane!
+	//combatManeuver := player.Skills[10]
+	//rtSeconds -= combatManeuver
 
 	if player.Stance == StanceBerserk {
 		rtSeconds--
@@ -1396,10 +1437,6 @@ func (e *GameEngine) resolvePlayerWeaponAttack(
 			player,
 			weaponDef,
 		)
-
-	if weapon != nil && weapon.State == "DAMAGED" {
-		weaponName = "damaged " + weaponName
-	}
 
 	var msgs []string
 
@@ -2142,10 +2179,14 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 				// but a berserk Murg remains conscious.
 				if !wasAtOrBelowZero && player.BodyPoints <= 0 {
 					player.BodyPoints = 0
+
+					playerMsgs = append(
+						playerMsgs,
+						"Your wounds should have dropped you, but the frenzy keeps you on your feet!",
+					)
 				}
 
 				player.Unconscious = false
-
 			} else {
 				// Everyone else is knocked unconscious at 0.
 				// Further hits while unconscious may drive BP negative.
@@ -2355,6 +2396,11 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 			// but a berserk Murg stays conscious.
 			if !wasAtOrBelowZero && player.BodyPoints <= 0 {
 				player.BodyPoints = 0
+
+				playerMsgs = append(
+					playerMsgs,
+					"Your wounds should have dropped you, but the frenzy keeps you on your feet!",
+				)
 			}
 
 			player.Unconscious = false

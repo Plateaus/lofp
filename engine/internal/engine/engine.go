@@ -1915,7 +1915,13 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "TEND":
 		return e.doTend(ctx, player, args)
 	case "BREAK":
-		return &CommandResult{Messages: []string{"[Object destruction coming soon.]"}} // TODO: destroy item with another item
+		if len(args) > 0 && strings.EqualFold(args[0], "FREE") {
+			return e.doBreakFree(ctx, player)
+		}
+
+		return &CommandResult{
+			Messages: []string{"[Object destruction coming soon.]"},
+		}
 	case "ASSIST":
 		room := e.rooms[player.RoomNumber]
 		roomName := "unknown"
@@ -8178,6 +8184,20 @@ func canDualWieldWeapon(itemDef *gameworld.ItemDef) bool {
 }
 
 func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string) *CommandResult {
+	// Check roundtime.
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You can't do that yet... %.0f seconds remaining.",
+					remaining+0.5,
+				),
+			},
+		}
+	}
+
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Wield what?"}}
 	}
@@ -8372,6 +8392,12 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 				verbSC.GMMsgs...,
 			)
 
+			// WIELD roundtime:
+			// 5 seconds base, reduced 1 second per rank
+			// of Combat Maneuvering (minimum 1 second).
+			player.RoundTimeExpiry =
+				time.Now().Add(time.Duration(wieldRoundTime(player)) * time.Second)
+
 			return result
 		}
 
@@ -8427,14 +8453,6 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 
 			// Only eligible one-handed weapon types may be used
 			// with Two Weapons.
-			//
-			// Allowed:
-			//   SLASH_WEAPON
-			//   PUNCTURE_WEAPON
-			//   DRAKIN_SLASH
-			//
-			// This excludes crushing, blunt, pole, missile,
-			// thrown, natural, and other weapon types.
 			if !canDualWieldWeapon(itemDef) {
 				return &CommandResult{
 					Messages: []string{
@@ -8482,14 +8500,6 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			// secondary weapon remains equipped. If the player then
 			// equips a new primary weapon, it must still satisfy the
 			// primary/secondary weight relationship.
-			//
-			// Example:
-			//   primary: empty
-			//   offhand: stiletto
-			//
-			// The player may fight unarmed + stiletto, but if they
-			// later wield a primary weapon it must be heavier than
-			// the stiletto.
 			if player.Offhand != nil {
 				offDef := e.items[player.Offhand.Archetype]
 
@@ -8649,6 +8659,12 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 			verbSC.GMMsgs...,
 		)
 
+		// WIELD roundtime:
+		// 5 seconds base, reduced 1 second per rank
+		// of Combat Maneuvering (minimum 1 second).
+		rtSeconds := wieldRoundTime(player)
+		player.RoundTimeExpiry = time.Now().Add(time.Duration(rtSeconds) * time.Second)
+		result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSeconds))
 		return result
 	}
 
@@ -8660,6 +8676,19 @@ func (e *GameEngine) doWield(ctx context.Context, player *Player, args []string)
 }
 
 func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []string) *CommandResult {
+
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You can't do that yet... %.0f seconds remaining.",
+					remaining+0.5,
+				),
+			},
+		}
+	}
 
 	if player.WolfForm {
 		return &CommandResult{
@@ -8756,6 +8785,7 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []strin
 				Messages: []string{"You aren't wielding that."},
 			}
 		}
+
 	} else {
 		// No target specified:
 		// main hand first, then offhand.
@@ -8888,7 +8918,24 @@ func (e *GameEngine) doUnwield(ctx context.Context, player *Player, args []strin
 		verbSC.GMMsgs...,
 	)
 
+	// UNWIELD roundtime:
+	// 5 seconds base, reduced 1 second per rank
+	// of Combat Maneuvering (minimum 1 second).
+	rtSeconds := wieldRoundTime(player)
+	player.RoundTimeExpiry = time.Now().Add(time.Duration(rtSeconds) * time.Second)
+	result.Messages = append(result.Messages, fmt.Sprintf("[Round: %d sec]", rtSeconds))
+
 	return result
+}
+
+func wieldRoundTime(player *Player) int {
+	rtSeconds := 5 - player.Skills[10] // Combat Maneuvering
+
+	if rtSeconds < 1 {
+		rtSeconds = 1
+	}
+
+	return rtSeconds
 }
 
 func isShield(def *gameworld.ItemDef) bool {
@@ -9714,6 +9761,103 @@ func (e *GameEngine) doLeave(player *Player) *CommandResult {
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You stop following %s.", leaderName)},
 		RoomBroadcast: []string{fmt.Sprintf("%s stops following %s.", player.FirstName, leaderName)},
+	}
+}
+
+func (e *GameEngine) doBreakFree(ctx context.Context, player *Player) *CommandResult {
+
+	// Check roundtime.
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You can't do that yet... %.0f seconds remaining.",
+					remaining+0.5,
+				),
+			},
+		}
+	}
+
+	// Must actually be restrained.
+	effect, restrained := player.HasStatEffect(RestrainedEffect)
+	if !restrained {
+		return &CommandResult{
+			Messages: []string{
+				"You are not restrained.",
+			},
+		}
+	}
+
+	// For now, Web is the restraint we know can be escaped
+	// with Combat Maneuvering.
+	if effect.EffectID != 127 {
+		return &CommandResult{
+			Messages: []string{
+				"You cannot break free from this restraint.",
+			},
+		}
+	}
+
+	// BREAK FREE always incurs 5 seconds of roundtime.
+	player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
+
+	// Combat Maneuvering:
+	// 2% chance per rank to break free.
+	chance := player.Skills[10] * 2
+	roll := rand.Intn(100) + 1
+
+	// Failed attempt.
+	if roll > chance {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"[Break Free: Roll %d, Chance %d%%]",
+					roll,
+					chance,
+				),
+				"You struggle against your restraints but fail to break free.",
+				"[Round: 5 sec]",
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s struggles against the restraints but fails to break free.",
+					player.FirstName,
+				),
+			},
+		}
+	}
+
+	// Success — remove the restrained effect.
+	active := player.ActiveStatEffects[:0]
+
+	for _, statEffect := range player.ActiveStatEffects {
+		if statEffect.Stat != RestrainedEffect {
+			active = append(active, statEffect)
+		}
+	}
+
+	player.ActiveStatEffects = active
+
+	e.SavePlayer(ctx, player)
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf(
+				"[Break Free: Roll %d, Chance %d%%]",
+				roll,
+				chance,
+			),
+			"You break free from your restraints!",
+			"[Round: 5 sec]",
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf(
+				"%s breaks free from the restraints!",
+				player.FirstName,
+			),
+		},
 	}
 }
 
