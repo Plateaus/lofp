@@ -1998,8 +1998,20 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 func (e *GameEngine) UpdatePlayerTimers(player *Player) []string {
 	var messages []string
 
-	messages = append(messages, e.ProcessPeriodicStatEffects(player)...)
-	messages = append(messages, e.RemoveExpiredStatEffects(player)...)
+	messages = append(
+		messages,
+		e.ProcessPeriodicStatEffects(player)...,
+	)
+
+	messages = append(
+		messages,
+		e.RemoveExpiredStatEffects(player)...,
+	)
+
+	messages = append(
+		messages,
+		e.processUnconsciousState(player)...,
+	)
 
 	// Later:
 	// messages = append(messages, e.RemoveExpiredResistances(player)...)
@@ -2021,7 +2033,9 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 	for _, effect := range player.ActiveStatEffects {
 
 		if effect.Source != EffectSourcePoison &&
-			effect.Source != EffectSourceDisease {
+			effect.Source != EffectSourceDisease &&
+			effect.Source != EffectUnconscious {
+
 			active = append(active, effect)
 			continue
 		}
@@ -2032,11 +2046,17 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 		}
 
 		switch effect.Source {
+
+		// --------------------------------------------------------
+		// Poison
+		// --------------------------------------------------------
+
 		case EffectSourcePoison:
 			damage := -effect.Modifier
 
 			if damage > 0 {
 				player.BodyPoints -= damage
+
 				if player.BodyPoints < 0 {
 					player.BodyPoints = 0
 				}
@@ -2050,11 +2070,32 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 				)
 			}
 
+			effect.Modifier++ // -5 -> -4
+
+			if effect.Modifier >= 0 {
+				player.Poisoned = false
+
+				messages = append(
+					messages,
+					"The poison finally leaves your system.",
+				)
+
+				continue
+			}
+
+			effect.ExpiresAt = now.Add(time.Minute)
+			active = append(active, effect)
+
+		// --------------------------------------------------------
+		// Disease
+		// --------------------------------------------------------
+
 		case EffectSourceDisease:
 			drain := -effect.Modifier
 
 			if drain > 0 {
 				player.Fatigue -= drain
+
 				if player.Fatigue < 0 {
 					player.Fatigue = 0
 				}
@@ -2067,32 +2108,119 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 					),
 				)
 			}
-		}
 
-		effect.Modifier++ // -5 -> -4
+			effect.Modifier++ // -5 -> -4
 
-		if effect.Modifier >= 0 {
-			switch effect.Source {
-			case EffectSourcePoison:
-				player.Poisoned = false
-				messages = append(
-					messages,
-					"The poison finally leaves your system.",
-				)
-
-			case EffectSourceDisease:
+			if effect.Modifier >= 0 {
 				player.Diseased = false
+
 				messages = append(
 					messages,
 					"You finally recover from the disease.",
 				)
+
+				continue
 			}
 
-			continue
-		}
+			effect.ExpiresAt = now.Add(time.Minute)
+			active = append(active, effect)
 
-		effect.ExpiresAt = now.Add(time.Minute)
-		active = append(active, effect)
+		// --------------------------------------------------------
+		// Unconscious
+		// --------------------------------------------------------
+
+		case EffectUnconscious:
+
+			// If the player is dead or has already regained
+			// consciousness, discard the timer.
+			if player.Dead || !player.Unconscious {
+				continue
+			}
+
+			switch rand.Intn(3) {
+
+			// ----------------------------------------------------
+			// Improve: +1 BP
+			// ----------------------------------------------------
+			case 0:
+				player.BodyPoints++
+
+				if player.BodyPoints > 0 {
+					player.Unconscious = false
+
+					messages = append(
+						messages,
+						"You regain consciousness.",
+					)
+
+					if e.localRoomBroadcast != nil {
+						e.localRoomBroadcast(
+							player.RoomNumber,
+							[]string{
+								fmt.Sprintf(
+									"%s regains consciousness.",
+									player.FirstName,
+								),
+							},
+						)
+					}
+
+					// Do not re-add the effect.
+					continue
+				}
+
+				messages = append(
+					messages,
+					"Your condition improves slightly.",
+				)
+
+			// ----------------------------------------------------
+			// No change
+			// ----------------------------------------------------
+			case 1:
+				messages = append(
+					messages,
+					"You remain unconscious.",
+				)
+
+			// ----------------------------------------------------
+			// Worsen: -1 BP
+			// ----------------------------------------------------
+			case 2:
+				player.BodyPoints--
+
+				if player.BodyPoints <= -10 {
+					player.BodyPoints = -10
+
+					deathMsgs := e.handlePlayerDeath(
+						player,
+						"your injuries",
+					)
+
+					messages = append(
+						messages,
+						"Your condition worsens.",
+					)
+
+					messages = append(
+						messages,
+						deathMsgs...,
+					)
+
+					// Player is dead. Do not re-add the effect.
+					continue
+				}
+
+				messages = append(
+					messages,
+					"Your condition worsens.",
+				)
+			}
+
+			// Still unconscious. Schedule the next check.
+			effect.ExpiresAt = now.Add(12 * time.Second)
+			active = append(active, effect)
+		}
 	}
 
 	player.ActiveStatEffects = active
@@ -2114,7 +2242,8 @@ func (e *GameEngine) RemoveExpiredStatEffects(player *Player) []string {
 
 		// Periodic effects are handled elsewhere.
 		if effect.Source == EffectSourcePoison ||
-			effect.Source == EffectSourceDisease {
+			effect.Source == EffectSourceDisease ||
+			effect.Source == EffectUnconscious {
 			active = append(active, effect)
 			continue
 		}
@@ -7045,6 +7174,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 		State:     ii.State,
 		IsPut:     true,
 		PutIn:     container.Ref,
+		Traits:    append([]string(nil), ii.Traits...),
 	}
 
 	room.Items = append(room.Items, putItem)
@@ -7085,6 +7215,7 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 			State:     child.State,
 			IsPut:     true,
 			PutIn:     parentRef,
+			Traits:    append([]string(nil), ii.Traits...),
 		}
 
 		room.Items = append(room.Items, childRoomItem)
@@ -7345,11 +7476,7 @@ func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Play
 	}
 }
 
-func (e *GameEngine) doDrop(
-	ctx context.Context,
-	player *Player,
-	args []string,
-) *CommandResult {
+func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) *CommandResult {
 
 	if len(args) == 0 {
 		return &CommandResult{
@@ -7534,6 +7661,7 @@ func (e *GameEngine) doDrop(
 			Val4:      ii.Val4,
 			Val5:      ii.Val5,
 			State:     ii.State,
+			Traits:    append([]string(nil), ii.Traits...),
 		}
 
 		sc := e.RunPreverbScripts(
@@ -7584,6 +7712,7 @@ func (e *GameEngine) doDrop(
 			Val4:      ii.Val4,
 			Val5:      ii.Val5,
 			State:     ii.State,
+			Traits:    append([]string(nil), ii.Traits...),
 		}
 
 		room.Items = append(
@@ -7616,6 +7745,7 @@ func (e *GameEngine) doDrop(
 				State:     child.State,
 				IsPut:     true,
 				PutIn:     droppedItem.Ref,
+				Traits:    append([]string(nil), ii.Traits...),
 			}
 
 			room.Items = append(
@@ -7698,7 +7828,7 @@ func (e *GameEngine) doInventory(player *Player) *CommandResult {
 			)
 
 			if player.Wielded.State == "DAMAGED" {
-				name = "a damaged " + strings.TrimPrefix(name, "a ")
+				name = addDamagedPrefix(name)
 			}
 
 			msgs = append(
@@ -7720,7 +7850,7 @@ func (e *GameEngine) doInventory(player *Player) *CommandResult {
 			)
 
 			if player.Offhand.State == "DAMAGED" {
-				name = "a damaged " + strings.TrimPrefix(name, "a ")
+				name = addDamagedPrefix(name)
 			}
 
 			msgs = append(
@@ -7760,7 +7890,7 @@ func (e *GameEngine) doInventory(player *Player) *CommandResult {
 			)
 
 			if ii.State == "DAMAGED" && isWeapon(itemDef.Type) {
-				name = "a damaged " + strings.TrimPrefix(name, "a ")
+				name = addDamagedPrefix(name)
 			}
 
 			msgs = append(
@@ -7771,6 +7901,12 @@ func (e *GameEngine) doInventory(player *Player) *CommandResult {
 	}
 
 	return &CommandResult{Messages: msgs}
+}
+
+func addDamagedPrefix(name string) string {
+	name = strings.TrimPrefix(name, "a ")
+	name = strings.TrimPrefix(name, "an ")
+	return "a damaged " + name
 }
 
 func (e *GameEngine) doStatus(player *Player) *CommandResult {
@@ -9693,6 +9829,7 @@ func (e *GameEngine) doGive(ctx context.Context, player *Player, args []string) 
 			Val3:      ii.Val3,
 			Val4:      ii.Val4,
 			Val5:      ii.Val5,
+			Traits:    append([]string(nil), ii.Traits...),
 		}
 
 		sc := e.RunPreverbScripts(
@@ -13182,7 +13319,12 @@ func isWeapon(itemType string) bool {
 	return false
 }
 
-// a way to check if an item is magical.  It basically counts POWER from the  item scripts
+// itemMagicPower checks whether an item has actual magical traits.
+//
+// POWER_X traits are treasure/drop metadata. They describe the item's
+// power tier, but do not themselves make the item magical.
+//
+// Actual item traits with Power > 0 contribute to the item's magical power.
 func (e *GameEngine) itemMagicPower(def *gameworld.ItemDef, ri *gameworld.RoomItem) int {
 
 	power := 0
@@ -13198,7 +13340,14 @@ func (e *GameEngine) itemMagicPower(def *gameworld.ItemDef, ri *gameworld.RoomIt
 	}
 
 	for _, traitName := range traitNames {
-		trait := e.traits[strings.ToUpper(traitName)]
+		name := strings.ToUpper(traitName)
+
+		// POWER_X is treasure-level metadata, not a magical effect.
+		if strings.HasPrefix(name, "POWER_") {
+			continue
+		}
+
+		trait := e.traits[name]
 		if trait == nil {
 			continue
 		}

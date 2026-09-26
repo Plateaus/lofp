@@ -1902,11 +1902,15 @@ func (e *GameEngine) doBackstab(ctx context.Context, player *Player, target stri
 // ---- Monster attacks Player ----
 
 func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.MonsterDef, player *Player) (playerMsgs []string, roomMsgs []string) {
+
 	if player.Dead || !inst.Alive {
 		return nil, nil
 	}
 
-	//monster is restrained (webbed, trapped, etc.) — check for escape
+	// ------------------------------------------------------------
+	// Monster is restrained (webbed, trapped, etc.) — check escape.
+	// ------------------------------------------------------------
+
 	if inst.Restrained {
 		name := FormatMonsterName(def, e.monAdjs)
 		article := articleFor(name, def.Unique)
@@ -1942,7 +1946,10 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 		}
 	}
 
+	// ------------------------------------------------------------
 	// Commanded creature guard redirect.
+	// ------------------------------------------------------------
+
 	if e.monsterMgr != nil {
 		e.monsterMgr.mu.Lock()
 
@@ -1976,8 +1983,8 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 			}
 
 			// The attacker turns on the guarding creature.
-			//	inst.Target = ""
-			//	inst.TargetMonsterID = guard.ID
+			// inst.Target = ""
+			// inst.TargetMonsterID = guard.ID
 
 			e.monsterAttackMonster(inst, def, guard, guardDef)
 
@@ -1989,17 +1996,30 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 		e.monsterMgr.mu.Unlock()
 	}
 
-	// Guard redirect: if someone is guarding this player, redirect the attack
+	// ------------------------------------------------------------
+	// Player guard redirect.
+	// ------------------------------------------------------------
+
 	if e.sessions != nil {
 		for _, guard := range e.sessions.OnlinePlayers() {
-			if guard.GuardTarget == player.FirstName && guard.RoomNumber == player.RoomNumber && !guard.Dead {
-				guardMsg := fmt.Sprintf("%s steps forward in defense of %s!", guard.FirstName, player.FirstName)
+			if guard.GuardTarget == player.FirstName &&
+				guard.RoomNumber == player.RoomNumber &&
+				!guard.Dead {
+
+				guardMsg := fmt.Sprintf(
+					"%s steps forward in defense of %s!",
+					guard.FirstName,
+					player.FirstName,
+				)
+
 				roomMsgs = append(roomMsgs, guardMsg)
+
 				if e.sendToPlayer != nil {
 					e.sendToPlayer(player.FirstName, []string{guardMsg})
 					e.sendToPlayer(guard.FirstName, []string{guardMsg})
 				}
-				// Redirect to the guard
+
+				// Redirect to the guard.
 				return e.monsterAttackPlayer(inst, def, guard)
 			}
 		}
@@ -2009,23 +2029,61 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 	article := articleFor(name, def.Unique)
 	capArt := capArticle(article)
 
-	// Special attack
+	// A Murg in berserk stance remains conscious through 0 to -9 BP.
+	frenziedMurg := player.Race == RaceMurg &&
+		player.Stance == StanceBerserk
+
+	// ------------------------------------------------------------
+	// Special attack.
+	// ------------------------------------------------------------
+
 	if specDmg, specType := monsterSpecialDamage(def); specDmg > 0 {
-		// Combat Maneuvering: 2% per rank chance to dodge special attack (max 95%)
+
+		// Combat Maneuvering:
+		// 2% per rank chance to dodge special attack (max 95%).
 		combatManeuver := player.Skills[10]
 		dodgeChance := combatManeuver * 2
+
 		if dodgeChance > 95 {
 			dodgeChance = 95
 		}
+
 		if dodgeChance > 0 && rand.Intn(100) < dodgeChance {
-			playerMsgs = append(playerMsgs, fmt.Sprintf("%s%s uses a special attack, but you dodge it!", capArt, name))
+
+			playerMsgs = append(
+				playerMsgs,
+				fmt.Sprintf(
+					"%s%s uses a special attack, but you dodge it!",
+					capArt,
+					name,
+				),
+			)
+
 		} else {
+
 			specText := def.TextOverrides["TEXX"]
+
 			if specText != "" {
-				specText = strings.Replace(specText, "%s", capArt+name, 1)
-				specText = strings.Replace(specText, "%s", player.FirstName, 1)
+				specText = strings.Replace(
+					specText,
+					"%s",
+					capArt+name,
+					1,
+				)
+
+				specText = strings.Replace(
+					specText,
+					"%s",
+					player.FirstName,
+					1,
+				)
 			} else {
-				specText = fmt.Sprintf("%s%s uses a special attack on %s!", capArt, name, player.FirstName)
+				specText = fmt.Sprintf(
+					"%s%s uses a special attack on %s!",
+					capArt,
+					name,
+					player.FirstName,
+				)
 			}
 
 			armorPct := playerArmorPercent(player, e.items)
@@ -2033,12 +2091,17 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 
 			damageType := strings.ToUpper(specType)
 
-			// Endurance: 1% elemental damage reduction per rank (max 50%)
+			// Endurance:
+			// 1% elemental damage reduction per rank (max 50%).
 			enduranceSkill := player.Skills[11]
+
 			if enduranceSkill > 0 &&
-				(damageType == "HEAT" || damageType == "COLD" || damageType == "ELECTRIC") {
+				(damageType == "HEAT" ||
+					damageType == "COLD" ||
+					damageType == "ELECTRIC") {
 
 				reduction := enduranceSkill
+
 				if reduction > 50 {
 					reduction = 50
 				}
@@ -2046,8 +2109,9 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 				specDmg = specDmg * (100 - reduction) / 100
 			}
 
-			// Elemental shields
+			// Elemental shields.
 			switch damageType {
+
 			case "HEAT":
 				if _, ok := player.HasStatEffect(HeatResistance); ok {
 					resistance := player.EffectiveStat(HeatResistance)
@@ -2063,91 +2127,292 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 
 			part := randomBodyPart("HUMAN")
 			severity := damageSeverity(specDmg)
+
+			// ----------------------------------------------------
+			// Apply special damage.
+			// ----------------------------------------------------
+
+			wasUnconscious := player.Unconscious
+			wasAtOrBelowZero := player.BodyPoints <= 0
+
 			player.BodyPoints -= specDmg
-			if player.BodyPoints < 0 {
-				player.BodyPoints = 0
+
+			if frenziedMurg {
+				// First hit that crosses zero stops at 0,
+				// but a berserk Murg remains conscious.
+				if !wasAtOrBelowZero && player.BodyPoints <= 0 {
+					player.BodyPoints = 0
+				}
+
+				player.Unconscious = false
+
+			} else {
+				// Everyone else is knocked unconscious at 0.
+				// Further hits while unconscious may drive BP negative.
+				if !wasUnconscious && player.BodyPoints <= 0 {
+					player.BodyPoints = 0
+					player.Unconscious = true
+
+					player.ApplyStatEffect(
+						0,
+						EffectUnconscious,
+						UnconsciousEffect,
+						0,
+						12*time.Second,
+					)
+				}
 			}
 
 			playerMsgs = append(playerMsgs, specText)
-			playerMsgs = append(playerMsgs, fmt.Sprintf(" %s burn to %s. [%d Damage]", severity, part, specDmg))
+
+			playerMsgs = append(
+				playerMsgs,
+				fmt.Sprintf(
+					" %s burn to %s. [%d Damage]",
+					severity,
+					part,
+					specDmg,
+				),
+			)
+
 			roomMsgs = append(roomMsgs, specText)
 
-			if player.BodyPoints <= 0 {
-				deathMsgs := e.handlePlayerDeath(player, name)
-				playerMsgs = append(playerMsgs, deathMsgs...)
-				return playerMsgs, roomMsgs
+			// ----------------------------------------------------
+			// Death at -10.
+			// ----------------------------------------------------
+
+			if player.BodyPoints <= -10 {
+
+				if e.isArenaRoom(player.RoomNumber) {
+					player.BodyPoints = 1
+					player.Unconscious = false
+
+					playerMsgs = append(
+						playerMsgs,
+						" The arena's enchantment prevents your death!",
+					)
+
+				} else {
+					player.BodyPoints = -10
+
+					playerMsgs = append(
+						playerMsgs,
+						fmt.Sprintf(
+							" %s%s slays %s.",
+							capArt,
+							name,
+							player.FirstName,
+						),
+					)
+
+					roomMsgs = append(
+						roomMsgs,
+						fmt.Sprintf(
+							"%s%s slays %s!",
+							capArt,
+							name,
+							player.FirstName,
+						),
+					)
+
+					deathMsgs := e.handlePlayerDeath(
+						player,
+						name,
+					)
+
+					playerMsgs = append(
+						playerMsgs,
+						deathMsgs...,
+					)
+
+					return playerMsgs, roomMsgs
+				}
+
+			} else if !frenziedMurg &&
+				!wasUnconscious &&
+				player.Unconscious {
+
+				// Player has just been knocked unconscious.
+				playerMsgs = append(
+					playerMsgs,
+					" You lose consciousness.",
+				)
+
+				roomMsgs = append(
+					roomMsgs,
+					fmt.Sprintf(
+						"%s collapses, unconscious.",
+						player.FirstName,
+					),
+				)
 			}
-		} // end else (didn't dodge)
+		}
 	}
 
-	// Normal attack
+	// ------------------------------------------------------------
+	// Normal attack.
+	// ------------------------------------------------------------
+
 	monWeaponName := e.monsterWeaponName(def)
 	monVerb, monDmgNoun := monsterAttackVerb(def, e.items)
 
-	playerMsgs = append(playerMsgs, fmt.Sprintf("%s%s %s %s with its %s.", capArt, name, monVerb, player.FirstName, monWeaponName))
+	playerMsgs = append(
+		playerMsgs,
+		fmt.Sprintf(
+			"%s%s %s %s with its %s.",
+			capArt,
+			name,
+			monVerb,
+			player.FirstName,
+			monWeaponName,
+		),
+	)
 
-	// Weather modifier for monsters too
+	// Weather modifier for monsters too.
 	wMod := e.weatherMod(inst.RoomNumber)
 	defRating := e.playerDefenseRating(player)
 
-	visionMod := e.visibilityCombatModifier(player, player.RoomNumber)
+	visionMod := e.visibilityCombatModifier(
+		player,
+		player.RoomNumber,
+	)
 
-	//apply retrained modifiers
+	// Apply restrained modifiers.
 	vRestrainedMod := player.EffectiveStat(RestrainedEffect)
 
 	defRating += visionMod/2 + vRestrainedMod
 
-	// Multi-attacker penalty: -5 per 2 additional attackers beyond the first
+	// Multi-attacker penalty:
+	// -5 per 2 additional attackers beyond the first.
 	if e.monsterMgr != nil {
 		attackerCount := 0
+
 		for i := range e.monsterMgr.instances {
 			mi := &e.monsterMgr.instances[i]
-			if mi.Alive && mi.Target == player.FirstName && mi.RoomNumber == player.RoomNumber {
+
+			if mi.Alive &&
+				mi.Target == player.FirstName &&
+				mi.RoomNumber == player.RoomNumber {
+
 				attackerCount++
 			}
 		}
+
 		if attackerCount > 1 {
 			defRating -= (attackerCount - 1) * 5 / 2
 		}
 	}
-	toHit := calcToHit(def.Attack1+wMod, defRating)
+
+	toHit := calcToHit(
+		def.Attack1+wMod,
+		defRating,
+	)
+
 	roll := rand.Intn(100) + 1
 
 	if roll >= toHit {
+
 		excellent := roll >= 96
 		hitLabel := "Hit!"
+
 		if excellent {
 			hitLabel = "Excellent Hit!"
 		}
-		playerMsgs = append(playerMsgs, fmt.Sprintf(" [ToHit: %d, Roll: %d] %s", toHit, roll, hitLabel))
+
+		playerMsgs = append(
+			playerMsgs,
+			fmt.Sprintf(
+				" [ToHit: %d, Roll: %d] %s",
+				toHit,
+				roll,
+				hitLabel,
+			),
+		)
 
 		dmg := monsterDamage(def)
+
 		armorPct := playerArmorPercent(player, e.items)
 		dmg = applyArmor(dmg, armorPct)
+
 		if dmg <= 0 {
 			dmg = 1
 		}
 
 		part := randomBodyPart("HUMAN")
 		severity := damageSeverity(dmg)
+
+		// --------------------------------------------------------
+		// Apply normal damage.
+		// --------------------------------------------------------
+
+		wasUnconscious := player.Unconscious
+		wasAtOrBelowZero := player.BodyPoints <= 0
+
 		player.BodyPoints -= dmg
-		if player.BodyPoints < 0 {
-			player.BodyPoints = 0
+
+		if frenziedMurg {
+			// First hit that crosses zero stops at 0,
+			// but a berserk Murg stays conscious.
+			if !wasAtOrBelowZero && player.BodyPoints <= 0 {
+				player.BodyPoints = 0
+			}
+
+			player.Unconscious = false
+
+		} else {
+			// First incapacitating hit stops at 0.
+			// Further hits while unconscious may drive BP negative.
+			if !wasUnconscious && player.BodyPoints <= 0 {
+				player.BodyPoints = 0
+				player.Unconscious = true
+
+				player.ApplyStatEffect(
+					0,
+					EffectUnconscious,
+					UnconsciousEffect,
+					0,
+					12*time.Second,
+				)
+			}
 		}
 
-		playerMsgs = append(playerMsgs, fmt.Sprintf(" %s %s to %s. [%d Damage]", severity, monDmgNoun, part, dmg))
+		playerMsgs = append(
+			playerMsgs,
+			fmt.Sprintf(
+				" %s %s to %s. [%d Damage]",
+				severity,
+				monDmgNoun,
+				part,
+				dmg,
+			),
+		)
 
-		// Monster poison/disease/fatigue on hit
-		if def.PoisonChance > 0 && rand.Intn(100) < def.PoisonChance {
+		// --------------------------------------------------------
+		// Monster poison / disease / fatigue on hit.
+		// --------------------------------------------------------
+
+		if def.PoisonChance > 0 &&
+			rand.Intn(100) < def.PoisonChance {
+
 			player.Poisoned = true
-			player.ApplyStatEffect(def.Number,
+
+			player.ApplyStatEffect(
+				def.Number,
 				EffectSourcePoison,
 				StatBodyPoint,
 				-def.PoisonLevel,
-				time.Duration(def.PoisonLevel)*time.Minute)
-			playerMsgs = append(playerMsgs, " You feel poison coursing through your veins!")
+				time.Duration(def.PoisonLevel)*time.Minute,
+			)
+
+			playerMsgs = append(
+				playerMsgs,
+				" You feel poison coursing through your veins!",
+			)
 		}
-		if def.DiseaseChance > 0 && rand.Intn(100) < def.DiseaseChance {
+
+		if def.DiseaseChance > 0 &&
+			rand.Intn(100) < def.DiseaseChance {
+
 			player.Diseased = true
 
 			player.ApplyStatEffect(
@@ -2158,85 +2423,286 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 				time.Duration(def.DiseaseLevel)*time.Minute,
 			)
 
-			playerMsgs = append(playerMsgs, "You feel a sickness taking hold!")
+			playerMsgs = append(
+				playerMsgs,
+				"You feel a sickness taking hold!",
+			)
 		}
 
-		if def.FatigueChance > 0 && rand.Intn(100) < def.FatigueChance {
+		if def.FatigueChance > 0 &&
+			rand.Intn(100) < def.FatigueChance {
+
 			drain := def.FatigueLevel
+
 			if drain <= 0 {
 				drain = 5
 			}
+
 			player.Fatigue -= drain
+
 			if player.Fatigue < 0 {
 				player.Fatigue = 0
 			}
-			playerMsgs = append(playerMsgs, " You feel your life force being drained!")
+
+			playerMsgs = append(
+				playerMsgs,
+				" You feel your life force being drained!",
+			)
 		}
 
-		// Build simplified 3rd-person broadcast for monster attack
-		monBroadcast := fmt.Sprintf("%s%s %s %s. %s %s.", capArt, name, monVerb, player.FirstName, hitLabel, simplifiedDamageTier(dmg))
-		if player.BodyPoints <= 0 {
-			// Arena prevents full death
+		// --------------------------------------------------------
+		// Build simplified 3rd-person broadcast.
+		// --------------------------------------------------------
+
+		monBroadcast := fmt.Sprintf(
+			"%s%s %s %s. %s %s.",
+			capArt,
+			name,
+			monVerb,
+			player.FirstName,
+			hitLabel,
+			simplifiedDamageTier(dmg),
+		)
+
+		// --------------------------------------------------------
+		// Death / unconscious handling.
+		// --------------------------------------------------------
+
+		if player.BodyPoints <= -10 {
+
+			// Arena prevents actual death.
 			if e.isArenaRoom(player.RoomNumber) {
+
 				player.BodyPoints = 1
-				playerMsgs = append(playerMsgs, " The arena's enchantment prevents your death!")
+				player.Unconscious = false
+
+				playerMsgs = append(
+					playerMsgs,
+					" The arena's enchantment prevents your death!",
+				)
+
 			} else {
-				playerMsgs = append(playerMsgs, fmt.Sprintf(" %s%s slays %s.", capArt, name, player.FirstName))
-				deathMsgs := e.handlePlayerDeath(player, name)
-				playerMsgs = append(playerMsgs, deathMsgs...)
-				monBroadcast += fmt.Sprintf(" %s%s slays %s!", capArt, name, player.FirstName)
+
+				player.BodyPoints = -10
+
+				playerMsgs = append(
+					playerMsgs,
+					fmt.Sprintf(
+						" %s%s slays %s.",
+						capArt,
+						name,
+						player.FirstName,
+					),
+				)
+
+				deathMsgs := e.handlePlayerDeath(
+					player,
+					name,
+				)
+
+				playerMsgs = append(
+					playerMsgs,
+					deathMsgs...,
+				)
+
+				monBroadcast += fmt.Sprintf(
+					" %s%s slays %s!",
+					capArt,
+					name,
+					player.FirstName,
+				)
 			}
+
+		} else if !frenziedMurg &&
+			!wasUnconscious &&
+			player.Unconscious {
+
+			// Player has just been knocked unconscious.
+			playerMsgs = append(
+				playerMsgs,
+				" You lose consciousness.",
+			)
+
+			monBroadcast += fmt.Sprintf(
+				" %s collapses, unconscious.",
+				player.FirstName,
+			)
 		}
-		roomMsgs = append(roomMsgs, monBroadcast)
+
+		roomMsgs = append(
+			roomMsgs,
+			monBroadcast,
+		)
+
 	} else {
-		playerMsgs = append(playerMsgs, fmt.Sprintf(" [ToHit: %d, Roll: %d] Miss.", toHit, roll))
-		roomMsgs = append(roomMsgs, fmt.Sprintf("%s%s %s %s. Miss.", capArt, name, monVerb, player.FirstName))
+
+		playerMsgs = append(
+			playerMsgs,
+			fmt.Sprintf(
+				" [ToHit: %d, Roll: %d] Miss.",
+				toHit,
+				roll,
+			),
+		)
+
+		roomMsgs = append(
+			roomMsgs,
+			fmt.Sprintf(
+				"%s%s %s %s. Miss.",
+				capArt,
+				name,
+				monVerb,
+				player.FirstName,
+			),
+		)
 	}
 
 	return playerMsgs, roomMsgs
+}
+
+func (e *GameEngine) processUnconsciousState(player *Player) []string {
+	if player == nil || player.Dead || !player.Unconscious {
+		return nil
+	}
+
+	var messages []string
+
+	roll := rand.Intn(3)
+
+	switch roll {
+	case 0:
+		// Improve by 1 BP.
+		player.BodyPoints++
+
+		if player.BodyPoints > 0 {
+			player.Unconscious = false
+
+			messages = append(
+				messages,
+				"You regain consciousness.",
+			)
+
+			if e.localRoomBroadcast != nil {
+				e.localRoomBroadcast(
+					player.RoomNumber,
+					[]string{
+						fmt.Sprintf(
+							"%s regains consciousness.",
+							player.FirstName,
+						),
+					},
+				)
+			}
+		} else {
+			messages = append(
+				messages,
+				"Your condition improves slightly.",
+			)
+		}
+
+	case 1:
+		// No change.
+		messages = append(
+			messages,
+			"You remain unconscious.",
+		)
+
+	case 2:
+		// Worsen by 1 BP.
+		player.BodyPoints--
+
+		if player.BodyPoints <= -10 {
+			player.BodyPoints = -10
+
+			messages = append(
+				messages,
+				"Your condition worsens.",
+			)
+
+			deathMsgs := e.handlePlayerDeath(
+				player,
+				"your injuries",
+			)
+
+			messages = append(messages, deathMsgs...)
+			return messages
+		}
+
+		messages = append(
+			messages,
+			"Your condition worsens.",
+		)
+	}
+
+	return messages
 }
 
 // ---- Death ----
 
 func (e *GameEngine) handlePlayerDeath(player *Player, killerName string) []string {
 	player.Dead = true
+	player.Unconscious = false
 	player.CombatTarget = nil
 	player.Joined = false
 	player.Position = 2 // laying down
 
-	// XP penalty: lose up to 90% of XP towards current build point
+	// Death occurs at -10 BP.
+	player.BodyPoints = -10
+
+	// XP penalty: lose up to 90% of XP towards current build point.
 	rate := getXPPerBP(player.Level)
 	if rate > 0 {
 		xpInCurrentBP := player.Experience % rate
 		penalty := xpInCurrentBP * 90 / 100
+
 		player.Experience -= penalty
+
 		if player.Experience < 0 {
 			player.Experience = 0
 		}
+
 		recalcBuildPoints(player)
 	}
 
-	e.Events.Publish("combat", fmt.Sprintf("%s was killed by %s in room %d", player.FirstName, killerName, player.RoomNumber))
+	e.Events.Publish(
+		"combat",
+		fmt.Sprintf(
+			"%s was killed by %s in room %d",
+			player.FirstName,
+			killerName,
+			player.RoomNumber,
+		),
+	)
 
-	// Death telepathy: players with psionic abilities sense the death
+	// Death telepathy: players with psionic abilities sense the death.
 	if e.sessions != nil {
-		deathMsg := fmt.Sprintf("Your thoughts are jarred as you sense the death of %s.", player.FirstName)
+		deathMsg := fmt.Sprintf(
+			"Your thoughts are jarred as you sense the death of %s.",
+			player.FirstName,
+		)
+
 		for _, p := range e.sessions.OnlinePlayers() {
 			if p.FirstName == player.FirstName || p.Dead {
 				continue
 			}
-			// Anyone with Psionics skill or psionic school skills
-			if p.Skills[26] >= 1 || p.Skills[27] >= 1 || p.Skills[28] >= 1 || p.Skills[29] >= 1 {
+
+			// Anyone with Psionics skill or psionic school skills.
+			if p.Skills[26] >= 1 ||
+				p.Skills[27] >= 1 ||
+				p.Skills[28] >= 1 ||
+				p.Skills[29] >= 1 {
+
 				if e.sendToPlayer != nil {
-					e.sendToPlayer(p.FirstName, []string{deathMsg})
+					e.sendToPlayer(
+						p.FirstName,
+						[]string{deathMsg},
+					)
 				}
 			}
 		}
 	}
 
 	return []string{
-		fmt.Sprintf(" %s collapses, unconscious.", player.FirstName),
-		fmt.Sprintf(" %s slays %s.", killerName, player.FirstName),
 		"",
 		"You are dead and can't do much of anything beside wait for someone to attempt to raise you or for Eternity, Inc. to retrieve you. Hope you paid your premium! [You may type DEPART at any time to allow Eternity, Inc. to retrieve you.]",
 	}
@@ -2348,7 +2814,8 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 							Source:    EffectStunned,
 							Stat:      StatAgility,
 							Modifier:  -p.EffectiveStat(StatAgility),
-							ExpiresAt: time.Now().Add(20 * time.Second)},
+							ExpiresAt: time.Now().Add(20 * time.Second),
+						},
 						StatEffect{
 							Source:    EffectStunned,
 							Stat:      StatQuickness,
@@ -2383,6 +2850,10 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 			}
 		}
 	}
+
+	// ------------------------------------------------------------
+	// Base XP.
+	// ------------------------------------------------------------
 
 	// Base XP formula: Body (not ExtraBody) + Attack/5 + Defense/5 + Armor/2.
 	baseXP := def.Body + def.Attack1/5 + def.Defense/5 + def.Armor/2
@@ -2549,10 +3020,14 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 	}
 
 	// ------------------------------------------------------------
-	// Loot is still based on where the monster died.
+	// Loot is based on where the monster died.
 	// ------------------------------------------------------------
 
 	roomNumber := killer.RoomNumber
+
+	// ------------------------------------------------------------
+	// Drop monster's weapon.
+	// ------------------------------------------------------------
 
 	// Drop monster's weapon into the room as loot
 	// (skip natural weapons like claws/teeth/fists).
@@ -2589,8 +3064,6 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 				)
 
 				if e.localRoomBroadcast != nil {
-					//	article := articleFor(wepName,	false,	)
-
 					e.localRoomBroadcast(
 						roomNumber,
 						[]string{
@@ -2605,12 +3078,65 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 		}
 	}
 
+	// ------------------------------------------------------------
+	// Generated treasure.
+	// ------------------------------------------------------------
+
+	if killer.GMTrace && e.sendToPlayer != nil {
+		dropChance := 10 + def.Treasure/2
+		if dropChance > 60 {
+			dropChance = 60
+		}
+
+		maxPower := maxTreasureItemPower(def.Treasure)
+
+		maxWeaponDamage := def.Treasure / 2
+		if maxWeaponDamage < 3 {
+			maxWeaponDamage = 3
+		}
+		if maxWeaponDamage > 30 {
+			maxWeaponDamage = 30
+		}
+
+		maxArmor := def.Treasure
+		if maxArmor > 50 {
+			maxArmor = 50
+		}
+
+		e.sendToPlayer(
+			killer.FirstName,
+			[]string{
+				fmt.Sprintf(
+					"[TRACE] LOOT monster=%s (%d) treasure=%d discorporate=%v",
+					def.Name,
+					def.Number,
+					def.Treasure,
+					def.Discorporate,
+				),
+				fmt.Sprintf(
+					"[TRACE] LOOT itemChance=%d%% maxPower=%d weaponMaxDamage=%d armorMaxAC=%d",
+					dropChance,
+					maxPower,
+					maxWeaponDamage,
+					maxArmor,
+				),
+			},
+		)
+	}
+
 	// Generate treasure drops based on monster's TREASURE level.
 	if def.Treasure > 0 && !def.Discorporate {
-		treasureMsgs := e.generateTreasure(roomNumber, def.Treasure)
+		treasureMsgs := e.generateTreasure(
+			roomNumber,
+			def.Treasure,
+			killer,
+		)
 
 		if len(treasureMsgs) > 0 && e.localRoomBroadcast != nil {
-			e.localRoomBroadcast(roomNumber, treasureMsgs)
+			e.localRoomBroadcast(
+				roomNumber,
+				treasureMsgs,
+			)
 		}
 	}
 }

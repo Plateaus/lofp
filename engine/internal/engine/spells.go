@@ -133,6 +133,7 @@ func init() {
 	// Druidic (500-538)
 	druid := []SpellDef{
 		{ID: 500, Name: "Plant Snare", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "utility"},
+		{ID: 504, Name: "Call Animal", School: "Druidic", Level: 1, ManaCost: 5, CastTime: 5, Effect: "summon"},
 		{ID: 505, Name: "Freedom", School: "Druidic", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility"},
 		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 50, Duration: 45 * time.Minute, Family: "heat shield", StatusType: ColdResistance, StatusMsg: "A translucent blue sphere surrounds you."},
 		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff", DefBonus: 50, Duration: 45 * time.Minute, Family: "cold shield", StatusType: HeatResistance, StatusMsg: "A translucent red sphere surrounds you."},
@@ -1069,7 +1070,7 @@ func (e *GameEngine) castSummonSpell(player *Player, spell *SpellDef, args []str
 	}
 
 	switch spell.ID {
-	case 122: // Summon Familiar
+	case 122, 504: // Summon Familiar and druid call animal
 		familiarPool := []int{58, 9, 10, 11, 8, 7}
 		monsterNum := familiarPool[rand.Intn(len(familiarPool))]
 		return e.summonCreature(player, monsterNum)
@@ -1117,7 +1118,7 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 
 		switch spell.ID {
 
-		case 127: // Web
+		case 127, 500: // Web / Plant Snare
 			if !e.monsterMgr.MarkRestrained(inst.ID) {
 				return &CommandResult{
 					Messages: []string{"Nothing happens."},
@@ -1127,14 +1128,22 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 			name := FormatMonsterName(def, e.monAdjs)
 			article := articleFor(name, def.Unique)
 
+			msg := fmt.Sprintf(
+				"%s%s is covered with strands of sticky webbing!",
+				capArticle(article),
+				name,
+			)
+
+			if spell.ID == 500 {
+				msg = fmt.Sprintf(
+					"%s%s is entangled by twisting vines and roots!",
+					capArticle(article),
+					name,
+				)
+			}
+
 			return &CommandResult{
-				Messages: []string{
-					fmt.Sprintf(
-						"%s%s is covered with strands of sticky webbing!",
-						capArticle(article),
-						name,
-					),
-				},
+				Messages: []string{msg},
 			}
 		}
 	}
@@ -1162,7 +1171,7 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 
 		switch spell.ID {
 
-		case 127: // Web
+		case 127, 500: // Web and snare
 			/*	if target.IsRestrained() {
 					return &CommandResult{
 						Messages: []string{"Nothing happens."},

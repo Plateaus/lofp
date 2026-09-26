@@ -63,6 +63,7 @@ const (
 	ColdResistance
 	RestrainedEffect
 	ClawGrowth
+	UnconsciousEffect
 )
 
 const (
@@ -86,6 +87,7 @@ const (
 	EffectSourceEncumbrance
 	EffectStunned
 	EffectRestrained
+	EffectUnconscious
 )
 
 // Gender constants

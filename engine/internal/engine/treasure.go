@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"math/rand"
+	"strconv"
+	"strings"
 
 	"github.com/jonradoff/lofp/internal/gameworld"
 )
@@ -10,7 +12,8 @@ import (
 // generateTreasure creates loot items in a room.
 // treasureLevel = monster's TREASURE value (0 = nothing, 1-127 = increasing rewards).
 // Returns descriptions of the items/coins generated.
-func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
+func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int, player *Player) []string {
+
 	if treasureLevel <= 0 {
 		return nil
 	}
@@ -22,12 +25,31 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 
 	var found []string
 
-	// ---- Coin drops (always if treasure > 0) ----
+	trace := func(msg string) {
+		if player == nil || !player.GMTrace || e.sendToPlayer == nil {
+			return
+		}
+
+		e.sendToPlayer(
+			player.FirstName,
+			[]string{"[TRACE] LOOT " + msg},
+		)
+	}
+
+	// ------------------------------------------------------------
+	// Coin drop.
+	// ------------------------------------------------------------
+
 	copperBase := treasureLevel * 5
 	coins := copperBase + rand.Intn(copperBase+1)
 
+	trace(fmt.Sprintf(
+		"coins base=%d rolled=%d",
+		copperBase,
+		coins,
+	))
+
 	if coins > 0 {
-		// Drop as a money item in the room.
 		ref := len(room.Items)
 
 		room.Items = append(room.Items, gameworld.RoomItem{
@@ -45,7 +67,10 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 			if gold == 1 {
 				found = append(found, "1 gold coin drops to the ground")
 			} else {
-				found = append(found, fmt.Sprintf("%d gold coins scatter on the ground", gold))
+				found = append(
+					found,
+					fmt.Sprintf("%d gold coins scatter on the ground", gold),
+				)
 			}
 		}
 
@@ -53,7 +78,10 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 			if silver == 1 {
 				found = append(found, "1 silver coin drops to the ground")
 			} else {
-				found = append(found, fmt.Sprintf("%d silver coins scatter on the ground", silver))
+				found = append(
+					found,
+					fmt.Sprintf("%d silver coins scatter on the ground", silver),
+				)
 			}
 		}
 
@@ -61,12 +89,18 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 			if copper == 1 {
 				found = append(found, "1 copper coin drops to the ground")
 			} else {
-				found = append(found, fmt.Sprintf("%d copper coins scatter on the ground", copper))
+				found = append(
+					found,
+					fmt.Sprintf("%d copper coins scatter on the ground", copper),
+				)
 			}
 		}
 	}
 
-	// ---- Item drops (chance scales with treasure level) ----
+	// ------------------------------------------------------------
+	// Item drop chance.
+	// ------------------------------------------------------------
+
 	// Base drop chance: 10% + treasureLevel/2, capped at 60%.
 	dropChance := 10 + treasureLevel/2
 
@@ -74,150 +108,316 @@ func (e *GameEngine) generateTreasure(roomNum int, treasureLevel int) []string {
 		dropChance = 60
 	}
 
-	//dropChance = 100 //test lets drop things all the ime
+	itemRoll := rand.Intn(100)
 
-	if rand.Intn(100) < dropChance {
-		// Determine drop type — all tiers available from treasure level 1.
-		roll := rand.Intn(100)
+	if itemRoll >= dropChance {
+		trace(fmt.Sprintf(
+			"item roll=%d chance=%d%% -> MISS",
+			itemRoll,
+			dropChance,
+		))
 
-		switch {
-		case roll < 20:
-			// Weapon drop
-			if item := e.randomWeaponDrop(treasureLevel); item != nil {
-				item.Ref = len(room.Items)
-				room.Items = append(room.Items, *item)
-
-				if def := e.items[item.Archetype]; def != nil {
-					name := e.formatItemName(
-						def,
-						item.Adj1,
-						item.Adj2,
-						item.Adj3,
-					)
-
-					if len(item.Traits) > 0 {
-						found = append(found, "A faint magical aura shimmers briefly around the weapon.")
-					}
-
-					found = append(found, fmt.Sprintf("%s drops to the ground", name))
-				}
-			}
-
-		case roll < 35:
-			// Scroll drop
-			if item := e.randomScrollDrop(treasureLevel); item != nil {
-				item.Ref = len(room.Items)
-				room.Items = append(room.Items, *item)
-
-				if spell := FindSpellByID(item.Val3); spell != nil {
-					found = append(
-						found,
-						fmt.Sprintf("you see a scroll of %s", spell.Name),
-					)
-				} else {
-					found = append(found, "you see a scroll")
-				}
-			}
-
-		case roll < 45:
-			// Potion drop
-			if item := e.randomPotionDrop(treasureLevel); item != nil {
-				item.Ref = len(room.Items)
-				room.Items = append(room.Items, *item)
-
-				found = append(
-					found,
-					fmt.Sprintf(
-						"you see a %s drop to the ground",
-						potionDescription(item.Val3),
-					),
-				)
-			}
-
-		case roll < 60:
-			// Locked container
-			if item := e.randomChestDrop(treasureLevel); item != nil {
-				ref := len(room.Items)
-
-				item.Ref = ref
-				item.State = "LOCKED"
-
-				room.Items = append(room.Items, *item)
-
-				e.generateChestContents(
-					room,
-					ref,
-					treasureLevel,
-				)
-
-				if def := e.items[item.Archetype]; def != nil {
-					name := e.formatItemName(
-						def,
-						item.Adj1,
-						item.Adj2,
-						item.Adj3,
-					)
-
-					found = append(
-						found,
-						fmt.Sprintf("%s thumps to the ground", name),
-					)
-				}
-			}
-
-		case roll < 80:
-			// Armor drop
-			if item := e.randomArmorDrop(treasureLevel); item != nil {
-				item.Ref = len(room.Items)
-				room.Items = append(room.Items, *item)
-
-				if def := e.items[item.Archetype]; def != nil {
-					name := e.formatItemName(
-						def,
-						item.Adj1,
-						item.Adj2,
-						item.Adj3,
-					)
-
-					found = append(
-						found,
-						fmt.Sprintf("you see %s drop to the ground", name),
-					)
-				}
-			}
-
-		default:
-			// Gem drop
-			if item := e.randomGemDrop(treasureLevel); item != nil {
-				item.Ref = len(room.Items)
-				room.Items = append(room.Items, *item)
-
-				if def := e.items[item.Archetype]; def != nil {
-					name := e.formatItemName(
-						def,
-						item.Adj1,
-						item.Adj2,
-						item.Adj3,
-					)
-
-					found = append(
-						found,
-						fmt.Sprintf(
-							"you hear a ping as a %s drops to the ground",
-							name,
-						),
-					)
-				}
-			}
-		}
-
+		return found
 	}
 
-	// ---- Rare magic item chance (treasure >= 20, 5% chance) ----
-	if treasureLevel >= 20 && rand.Intn(100) < 5 {
+	trace(fmt.Sprintf(
+		"item roll=%d chance=%d%% -> HIT",
+		itemRoll,
+		dropChance,
+	))
 
-		// Magic bonus on the dropped weapon/armor.
-		// This is handled by the enchantment on items already dropped.
+	// ------------------------------------------------------------
+	// Item category.
+	// ------------------------------------------------------------
+
+	roll := rand.Intn(100)
+
+	switch {
+	case roll < 20:
+		// --------------------------------------------------------
+		// Weapon: 20%
+		// --------------------------------------------------------
+
+		trace(fmt.Sprintf(
+			"category roll=%d -> WEAPON",
+			roll,
+		))
+
+		item := e.randomWeaponDrop(treasureLevel)
+
+		if item == nil {
+			trace("WEAPON -> NO ELIGIBLE ITEM")
+			break
+		}
+
+		item.Ref = len(room.Items)
+		room.Items = append(room.Items, *item)
+
+		if def := e.items[item.Archetype]; def != nil {
+			name := e.formatItemName(
+				def,
+				item.Adj1,
+				item.Adj2,
+				item.Adj3,
+			)
+
+			trace(fmt.Sprintf(
+				"WEAPON selected archetype=%d name=%s power=%d traits=%v",
+				item.Archetype,
+				name,
+				e.itemTreasurePower(def),
+				item.Traits,
+			))
+
+			if len(item.Traits) > 0 {
+				found = append(
+					found,
+					"A faint magical aura shimmers briefly around the weapon.",
+				)
+			}
+
+			found = append(
+				found,
+				fmt.Sprintf("%s drops to the ground", name),
+			)
+		}
+
+	case roll < 35:
+		// --------------------------------------------------------
+		// Scroll: 15%
+		// --------------------------------------------------------
+
+		trace(fmt.Sprintf(
+			"category roll=%d -> SCROLL",
+			roll,
+		))
+
+		item := e.randomScrollDrop(treasureLevel)
+
+		if item == nil {
+			trace("SCROLL -> NO ELIGIBLE ITEM")
+			break
+		}
+
+		item.Ref = len(room.Items)
+		room.Items = append(room.Items, *item)
+
+		if spell := FindSpellByID(item.Val3); spell != nil {
+			trace(fmt.Sprintf(
+				"SCROLL selected spell=%s (%d) level=%d",
+				spell.Name,
+				spell.ID,
+				spell.Level,
+			))
+
+			found = append(
+				found,
+				fmt.Sprintf("you see a scroll of %s", spell.Name),
+			)
+		} else {
+			trace(fmt.Sprintf(
+				"SCROLL archetype=%d spell=%d not found",
+				item.Archetype,
+				item.Val3,
+			))
+
+			found = append(found, "you see a scroll")
+		}
+
+	case roll < 45:
+		// --------------------------------------------------------
+		// Potion: 10%
+		// --------------------------------------------------------
+
+		trace(fmt.Sprintf(
+			"category roll=%d -> POTION",
+			roll,
+		))
+
+		item := e.randomPotionDrop(treasureLevel)
+
+		if item == nil {
+			trace("POTION -> NO ELIGIBLE ITEM")
+			break
+		}
+
+		item.Ref = len(room.Items)
+		room.Items = append(room.Items, *item)
+
+		trace(fmt.Sprintf(
+			"POTION selected archetype=%d formula=%d description=%s",
+			item.Archetype,
+			item.Val3,
+			potionDescription(item.Val3),
+		))
+
+		found = append(
+			found,
+			fmt.Sprintf(
+				"you see a %s drop to the ground",
+				potionDescription(item.Val3),
+			),
+		)
+
+	case roll < 60:
+		// --------------------------------------------------------
+		// Locked container: 15%
+		// --------------------------------------------------------
+
+		trace(fmt.Sprintf(
+			"category roll=%d -> CHEST",
+			roll,
+		))
+
+		item := e.randomChestDrop(treasureLevel)
+
+		if item == nil {
+			trace("CHEST -> NO ELIGIBLE ITEM")
+			break
+		}
+
+		ref := len(room.Items)
+
+		item.Ref = ref
+		item.State = "LOCKED"
+
+		room.Items = append(room.Items, *item)
+
+		trace(fmt.Sprintf(
+			"CHEST selected archetype=%d lockDifficulty=%d trap=%d",
+			item.Archetype,
+			item.Val1,
+			item.Val4,
+		))
+
+		e.generateChestContents(
+			room,
+			ref,
+			treasureLevel,
+		)
+
+		if def := e.items[item.Archetype]; def != nil {
+			name := e.formatItemName(
+				def,
+				item.Adj1,
+				item.Adj2,
+				item.Adj3,
+			)
+
+			found = append(
+				found,
+				fmt.Sprintf("%s thumps to the ground", name),
+			)
+		}
+
+	case roll < 80:
+		// --------------------------------------------------------
+		// Armor: 20%
+		// --------------------------------------------------------
+
+		trace(fmt.Sprintf(
+			"category roll=%d -> ARMOR",
+			roll,
+		))
+
+		item := e.randomArmorDrop(treasureLevel)
+
+		if item == nil {
+			trace(fmt.Sprintf(
+				"ARMOR -> NO ELIGIBLE ITEM (maxAC=%d maxPower=%d)",
+				min(treasureLevel, 50),
+				maxTreasureItemPower(treasureLevel),
+			))
+			break
+		}
+
+		item.Ref = len(room.Items)
+		room.Items = append(room.Items, *item)
+
+		if def := e.items[item.Archetype]; def != nil {
+			name := e.formatItemName(
+				def,
+				item.Adj1,
+				item.Adj2,
+				item.Adj3,
+			)
+
+			trace(fmt.Sprintf(
+				"ARMOR selected archetype=%d name=%s AC=%d power=%d traits=%v",
+				item.Archetype,
+				name,
+				def.Parameter1,
+				e.itemTreasurePower(def),
+				item.Traits,
+			))
+
+			found = append(
+				found,
+				fmt.Sprintf("you see %s drop to the ground", name),
+			)
+		}
+
+	default:
+		// --------------------------------------------------------
+		// Gem: 20%
+		// --------------------------------------------------------
+
+		trace(fmt.Sprintf(
+			"category roll=%d -> GEM",
+			roll,
+		))
+
+		item := e.randomGemDrop(treasureLevel)
+
+		if item == nil {
+			trace("GEM -> NO ELIGIBLE ITEM")
+			break
+		}
+
+		item.Ref = len(room.Items)
+		room.Items = append(room.Items, *item)
+
+		if def := e.items[item.Archetype]; def != nil {
+			name := e.formatItemName(
+				def,
+				item.Adj1,
+				item.Adj2,
+				item.Adj3,
+			)
+
+			trace(fmt.Sprintf(
+				"GEM selected archetype=%d name=%s value=%d",
+				item.Archetype,
+				name,
+				item.Val1,
+			))
+
+			found = append(
+				found,
+				fmt.Sprintf(
+					"you hear a ping as a %s drops to the ground",
+					name,
+				),
+			)
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Rare magic item chance.
+	// ------------------------------------------------------------
+
+	if treasureLevel >= 20 {
+		magicRoll := rand.Intn(100)
+
+		trace(fmt.Sprintf(
+			"rare magic roll=%d chance=5%%",
+			magicRoll,
+		))
+
+		if magicRoll < 5 {
+			// Magic bonus on the dropped weapon/armor.
+			// This is handled by the enchantment on items already dropped.
+		}
 	}
 
 	return found
@@ -317,7 +517,7 @@ func (e *GameEngine) randomPotionDrop(treasureLevel int) *gameworld.RoomItem {
 
 // randomWeaponDrop selects a random weapon appropriate for the treasure level.
 func (e *GameEngine) randomWeaponDrop(treasureLevel int) *gameworld.RoomItem {
-	// Collect weapons within a damage range appropriate for treasure level
+	// Collect weapons within a damage range appropriate for treasure level.
 	maxDmg := treasureLevel / 2
 	if maxDmg < 3 {
 		maxDmg = 3
@@ -326,11 +526,15 @@ func (e *GameEngine) randomWeaponDrop(treasureLevel int) *gameworld.RoomItem {
 		maxDmg = 30
 	}
 
+	maxPower := maxTreasureItemPower(treasureLevel)
+
 	var candidates []int
+
 	for num, def := range e.items {
 		if !isWeapon(def.Type) {
 			continue
 		}
+
 		if !def.Droppable {
 			continue
 		}
@@ -338,24 +542,35 @@ func (e *GameEngine) randomWeaponDrop(treasureLevel int) *gameworld.RoomItem {
 		if def.Parameter1 <= 0 || def.Parameter1 > maxDmg {
 			continue
 		}
+
 		if def.Weight >= 1000 {
 			continue // immovable
 		}
+
+		// POWER_X is the item's treasure-tier classification.
+		// Don't allow special weapons to drop below their intended tier.
+		if e.itemTreasurePower(def) > maxPower {
+			continue
+		}
+
 		candidates = append(candidates, num)
 	}
+
 	if len(candidates) == 0 {
 		return nil
 	}
 
 	chosen := candidates[rand.Intn(len(candidates))]
+
 	item := &gameworld.RoomItem{
 		Archetype: chosen,
 	}
 
-	// Chance for magical trait based on treasure level.
+	// Chance for an additional generated magical trait based
+	// on treasure level.
 	e.maybeEnchantWeapon(item, treasureLevel)
 
-	// Chance for premium material adjective
+	// Chance for premium material adjective.
 	if treasureLevel >= 30 && rand.Intn(100) < 15 {
 		premiumAdjs := []int{5, 434, 577} // alzyron, adamantine, uquart
 		item.Adj1 = premiumAdjs[rand.Intn(len(premiumAdjs))]
@@ -519,7 +734,10 @@ func (e *GameEngine) randomArmorDrop(treasureLevel int) *gameworld.RoomItem {
 		maxAC = 50
 	}
 
+	maxPower := maxTreasureItemPower(treasureLevel)
+
 	var candidates []int
+
 	for num, def := range e.items {
 		if def.Type != "ARMOR" {
 			continue
@@ -529,13 +747,22 @@ func (e *GameEngine) randomArmorDrop(treasureLevel int) *gameworld.RoomItem {
 			continue
 		}
 
-		//removed def.Parameter1 <= 0 || from this so we can drop armor with 0 AC (like a robe) for low level treasure
+		// Allow armor with 0 AC (such as robes) to drop
+		// as low-level treasure.
 		if def.Parameter1 > maxAC {
 			continue
 		}
+
 		if def.Weight >= 1000 {
 			continue
 		}
+
+		// POWER_X is the item's treasure-tier classification.
+		// Don't allow special items to drop below their intended tier.
+		if e.itemTreasurePower(def) > maxPower {
+			continue
+		}
+
 		candidates = append(candidates, num)
 	}
 
@@ -544,17 +771,14 @@ func (e *GameEngine) randomArmorDrop(treasureLevel int) *gameworld.RoomItem {
 	}
 
 	chosen := candidates[rand.Intn(len(candidates))]
+
 	item := &gameworld.RoomItem{
 		Archetype: chosen,
 	}
 
-	// Chance for magical trait based on treasure level.
+	// Chance for an additional generated magical trait based
+	// on treasure level.
 	e.maybeEnchantArmor(item, treasureLevel)
-
-	// Chance for magic bonus
-	//if treasureLevel >= 20 && rand.Intn(100) < treasureLevel/4 {
-	//	item.Val2 = rand.Intn(treasureLevel/15+1) + 1
-	//}
 
 	return item
 }
@@ -753,11 +977,8 @@ func (e *GameEngine) randomGemDrop(treasureLevel int) *gameworld.RoomItem {
 
 	return item
 }
-func (e *GameEngine) generateChestContents(
-	room *gameworld.Room,
-	chestRef int,
-	treasureLevel int,
-) {
+
+func (e *GameEngine) generateChestContents(room *gameworld.Room, chestRef int, treasureLevel int) {
 	addItem := func(item *gameworld.RoomItem) {
 		if item == nil {
 			return
@@ -958,6 +1179,44 @@ func joinParts(parts []string) string {
 		return parts[0]
 	}
 	return fmt.Sprintf("%s and %s", parts[0], parts[len(parts)-1])
+}
+
+func (e *GameEngine) itemTreasurePower(def *gameworld.ItemDef) int {
+	if def == nil {
+		return 0
+	}
+
+	for _, traitName := range def.Traits {
+		name := strings.ToUpper(traitName)
+
+		if !strings.HasPrefix(name, "POWER_") {
+			continue
+		}
+
+		n, err := strconv.Atoi(strings.TrimPrefix(name, "POWER_"))
+		if err != nil {
+			continue
+		}
+
+		return n
+	}
+
+	return 0
+}
+
+func maxTreasureItemPower(treasureLevel int) int {
+	switch {
+	case treasureLevel >= 50:
+		return 5
+	case treasureLevel >= 40:
+		return 4
+	case treasureLevel >= 30:
+		return 3
+	case treasureLevel >= 20:
+		return 2
+	default:
+		return 1
+	}
 }
 
 const (

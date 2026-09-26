@@ -881,6 +881,34 @@ func (e *GameEngine) releaseMonsterSpell(
 			)
 
 			return playerMsgs, roomMsgs
+
+		case 500: // Plant Snare
+			if _, ok := player.HasStatEffect(RestrainedEffect); ok {
+				roomMsgs = append(roomMsgs, "Nothing happens.")
+				return playerMsgs, roomMsgs
+			}
+
+			player.ApplyStatEffect(
+				spell.ID,
+				EffectSourceSpell,
+				RestrainedEffect,
+				spell.DefBonus,
+				spell.Duration,
+			)
+
+			releaseMsg := def.TextOverrides["TEXL"]
+			if releaseMsg == "" {
+				releaseMsg = fmt.Sprintf("%s casts Plant Snare.", monsterName)
+			}
+
+			roomMsgs = append(roomMsgs, releaseMsg)
+
+			playerMsgs = append(
+				playerMsgs,
+				"Thick vines and roots coil around you, holding you fast!",
+			)
+
+			return playerMsgs, roomMsgs
 		}
 	}
 	// ------------------------------------------------------------
