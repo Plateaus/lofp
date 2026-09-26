@@ -2008,11 +2008,6 @@ func (e *GameEngine) UpdatePlayerTimers(player *Player) []string {
 		e.RemoveExpiredStatEffects(player)...,
 	)
 
-	messages = append(
-		messages,
-		e.processUnconsciousState(player)...,
-	)
-
 	// Later:
 	// messages = append(messages, e.RemoveExpiredResistances(player)...)
 	// messages = append(messages, e.RemoveExpiredConditions(player)...)
@@ -4339,6 +4334,8 @@ func (e *GameEngine) examinePlayer(observer *Player, target *Player) *CommandRes
 			msgs = append(msgs, "You are seriously wounded.")
 		case healthPct > 0:
 			msgs = append(msgs, "You are critically wounded!")
+		case healthPct > -10:
+			msgs = append(msgs, "You are unconscious and dying.")
 		default:
 			msgs = append(msgs, "You are dead.")
 		}
@@ -8016,6 +8013,8 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 			name = "Encumbered"
 		case EffectRestrained:
 			name = "Restrained"
+		case EffectUnconscious:
+			name = "Unconscious and dying"
 		}
 
 		// Permanent effects
@@ -8150,6 +8149,8 @@ func (e *GameEngine) doHealth(player *Player) *CommandResult {
 		healthDesc = "You are seriously wounded."
 	case healthPct > 0:
 		healthDesc = "You are critically wounded!"
+	case healthPct > -10:
+		healthDesc = "You are unconscious and dying."
 	default:
 		healthDesc = "You are dead."
 	}
