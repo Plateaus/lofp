@@ -777,6 +777,17 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		}
 	}
 
+	// Dead players can only DEPART, LOOK, WHO, QUIT, EXP, STATUS, HEALTH
+	if player.Unconscious {
+		verb := strings.ToUpper(strings.Fields(input)[0])
+		switch verb {
+		case "LOOK", "WHO", "QUIT", "EXP", "EXPERIENCE", "STATUS", "HEALTH", "HELP":
+			// allowed — fall through to normal processing
+		default:
+			return &CommandResult{Messages: []string{"You are unconscous and can't do much of anything. Maybe you'll shake it off."}}
+		}
+	}
+
 	// Stunned players can observe their condition, but cannot act.
 	if player.Stunned {
 		verb := strings.ToUpper(strings.Fields(input)[0])
@@ -1447,6 +1458,11 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 				msgs = append(msgs, fmt.Sprintf("You discover %s hiding here!", name))
 			}
 		}
+
+		if result := e.doRoomScriptVerb(ctx, player, "SEARCH"); result != nil {
+			return result
+		}
+
 		return &CommandResult{Messages: msgs}
 	case "PULL", "PUSH", "RUB", "TOUCH", "DIG", "USE", "THUMP", "CONCENTRATE":
 		result := e.doItemInteraction(ctx, player, verb, args)
@@ -1500,6 +1516,9 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "TRAIN":
 		return e.doTrainWithBP(ctx, player, args)
 	case "MINE":
+		if result := e.runCommandPreverb(player, "MINE"); result != nil {
+			return result
+		}
 		return e.doMineReal(ctx, player)
 	case "FORAGE":
 		return e.doForageReal(ctx, player)
@@ -1632,6 +1651,10 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doCant(player, args)
 	// === COMBAT ===
 	case "ATTACK", "KILL", "SLAY", "SMITE", "HIT":
+		if result := e.runCommandPreverb(player, "KILL"); result != nil {
+			return result
+		}
+
 		if len(args) == 0 {
 			return &CommandResult{Messages: []string{"Attack what?"}}
 		}
@@ -1767,6 +1790,9 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "GUARD":
 		return e.doGuard(player, args)
 	case "BACKSTAB":
+		if result := e.runCommandPreverb(player, "BACKSTAB"); result != nil {
+			return result
+		}
 		if !player.Hidden {
 			return &CommandResult{Messages: []string{"You must be hidden to backstab!"}}
 		}
@@ -1775,6 +1801,10 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		}
 		return e.doBackstab(ctx, player, strings.Join(args, " "))
 	case "BITE":
+		if result := e.runCommandPreverb(player, "KILL"); result != nil {
+			return result
+		}
+
 		if player.Race != RaceDrakin && player.Race != RaceWolfling && player.Race != RaceMurg {
 			return &CommandResult{Messages: []string{"Your race cannot bite effectively in combat."}}
 		}
@@ -1795,12 +1825,21 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "MODERATE", "NORMAL":
 		return e.doStance(player, StanceNormal)
 	case "PREPARE", "INVOKE":
+		if result := e.runCommandPreverb(player, "PREP"); result != nil {
+			return result
+		}
 		return e.doPrepareSpell(player, args)
 	case "CAST":
+		if result := e.runCommandPreverb(player, "CAST"); result != nil {
+			return result
+		}
 		return e.doCastSpell(ctx, player, args)
 	case "PSI":
 		return e.doPreparePsi(player, args)
 	case "PROJECT":
+		if result := e.runCommandPreverb(player, "PROJECT"); result != nil {
+			return result
+		}
 		return e.doProjectPsi(ctx, player, args)
 	case "CHANT":
 		return e.doChant(ctx, player, args)
@@ -1816,6 +1855,9 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "DISARM":
 		return e.doDisarm(ctx, player, args)
 	case "STEAL", "FILCH", "ROB":
+		if result := e.runCommandPreverb(player, "STEAL"); result != nil {
+			return result
+		}
 		return &CommandResult{Messages: []string{"[Stealing coming soon.]"}} // TODO: pick pockets, requires Legerdemain
 	case "STALK":
 		return &CommandResult{Messages: []string{"[Stalking coming soon.]"}} // TODO: secretly follow someone
@@ -1829,6 +1871,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doLearn(ctx, player, args)
 	case "ANOINT":
 		return e.doAnoint(ctx, player, args)
+
 	case "TRAP":
 		return &CommandResult{Messages: []string{"[Trap setting coming soon.]"}} // TODO: place trap on container
 	case "SURVEY":
@@ -4727,7 +4770,7 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 			pre.GMMsgs...,
 		)
 
-		if e.applyGoScriptResult(
+		if e.applyScriptResult(
 			ctx,
 			player,
 			originalRoom,
@@ -4764,7 +4807,7 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 			verb.GMMsgs...,
 		)
 
-		if e.applyGoScriptResult(
+		if e.applyScriptResult(
 			ctx,
 			player,
 			originalRoom,
@@ -4789,13 +4832,7 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 	}
 }
 
-func (e *GameEngine) applyGoScriptResult(
-	ctx context.Context,
-	player *Player,
-	originalRoom int,
-	sc *ScriptContext,
-	result *CommandResult,
-) bool {
+func (e *GameEngine) applyScriptResult(ctx context.Context, player *Player, originalRoom int, sc *ScriptContext, result *CommandResult) bool {
 
 	// MOVEGROUP requested by the script.
 	// moveGroupToRoom handles movement and sends LOOK to moved players.
@@ -4892,12 +4929,6 @@ func (e *GameEngine) applyGoScriptResult(
 
 	// CLEARVERB with no movement means the script blocked GO.
 	if sc.Blocked {
-		if len(result.Messages) == 0 {
-			result.Messages = []string{
-				"You can't go that way.",
-			}
-		}
-
 		return true
 	}
 
@@ -10807,18 +10838,24 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 
 		name := e.getItemNounName(itemDef)
 
-		// A brewed potion can be referred to by its physical container
-		// OR by its potion description:
-		//
-		//   DRINK FLASK
-		//   DRINK POTION
-		//   DRINK GREEN POTION
-		//
+		// ------------------------------------------------------------
+		// MATCH TOP-LEVEL ITEM
+		// ------------------------------------------------------------
+
 		matched := matchesTarget(
 			name,
 			target,
 			e.getAdjName(ii.Adj1),
 		)
+
+		// ------------------------------------------------------------
+		// BREWED POTION NAME
+		//
+		// Brewed potions are stored directly on the container:
+		//
+		//   Val2 = remaining sips
+		//   Val3 = spell/effect ID
+		// ------------------------------------------------------------
 
 		if itemDef.Type == "LIQCONTAINER" && ii.Val3 > 0 && ii.Val2 > 0 {
 			potionName := potionDescription(ii.Val3)
@@ -10829,6 +10866,110 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 			}
 		}
 
+		// ------------------------------------------------------------
+		// LEGACY LIQUID INSIDE A CONTAINER
+		//
+		// Example:
+		//
+		//   glass
+		//     -> white goblin brandy, VAL2=5
+		//
+		// The player is allowed to refer directly to the contained
+		// liquid: DRINK BRANDY, DRINK WHITE GOBLIN BRANDY, etc.
+		// ------------------------------------------------------------
+
+		if itemDef.Type == "LIQCONTAINER" {
+			for childIdx := range ii.Contents {
+				child := &ii.Contents[childIdx]
+
+				childDef := e.items[child.Archetype]
+				if childDef == nil || childDef.Type != "LIQUID" {
+					continue
+				}
+
+				childName := e.getItemNounName(childDef)
+
+				if !matchesTarget(
+					childName,
+					target,
+					e.getAdjName(child.Adj1),
+				) {
+					continue
+				}
+
+				if skip > 0 {
+					skip--
+					continue
+				}
+
+				currentSips := child.Val2
+
+				if currentSips == 0 && childDef.Parameter1 > 0 {
+					currentSips = childDef.Parameter1
+				}
+
+				// Consume the sip BEFORE running IFVERB.
+				// Legacy drink scripts test ITEMVAL2 = 0
+				// to detect the final drink.
+				if currentSips > 0 {
+					currentSips--
+				}
+
+				child.Val2 = currentSips
+
+				room := e.rooms[player.RoomNumber]
+
+				tempRI := gameworld.RoomItem{
+					Ref:       -1,
+					Archetype: child.Archetype,
+					Adj1:      child.Adj1,
+					Adj2:      child.Adj2,
+					Adj3:      child.Adj3,
+					Val1:      child.Val1,
+					Val2:      child.Val2,
+					Val3:      child.Val3,
+					Val4:      child.Val4,
+					Val5:      child.Val5,
+					Traits:    append([]string(nil), child.Traits...),
+				}
+
+				sc := e.RunVerbScripts(
+					player,
+					room,
+					"DRINK",
+					&tempRI,
+					childDef,
+				)
+
+				// Preserve any ITEMVAL changes made by the script.
+				child.Val1 = tempRI.Val1
+				child.Val2 = tempRI.Val2
+				child.Val3 = tempRI.Val3
+				child.Val4 = tempRI.Val4
+				child.Val5 = tempRI.Val5
+
+				result := &CommandResult{
+					Messages:      append([]string{}, sc.Messages...),
+					RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+					PlayerState:   player,
+				}
+
+				// Once the liquid is exhausted, remove the liquid
+				// but leave the empty container.
+				if child.Val2 <= 0 {
+					ii.Contents = append(
+						ii.Contents[:childIdx],
+						ii.Contents[childIdx+1:]...,
+					)
+				}
+
+				e.SavePlayer(ctx, player)
+
+				return result
+			}
+		}
+
+		// Nothing about this inventory item matched the command.
 		if !matched {
 			continue
 		}
@@ -10856,6 +10997,7 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 		// Val2 = remaining sips
 		// Val3 = spell/effect ID
 		// ------------------------------------------------------------
+
 		if itemDef.Type == "LIQCONTAINER" &&
 			ii.Val2 > 0 &&
 			ii.Val3 > 0 {
@@ -10895,6 +11037,7 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 			// --------------------------------------------------------
 			// APPLY POTION EFFECT
 			// --------------------------------------------------------
+
 			spell := FindSpellByID(spellNum)
 
 			if spell == nil {
@@ -10960,7 +11103,7 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 		}
 
 		// ------------------------------------------------------------
-		// NORMAL / LEGACY DRINK
+		// NORMAL / LEGACY TOP-LEVEL DRINK
 		// ------------------------------------------------------------
 
 		currentSips := ii.Val2
@@ -10969,7 +11112,6 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 			currentSips = itemDef.Parameter1
 		}
 
-		// Run the item's scripts.
 		room := e.rooms[player.RoomNumber]
 
 		tempRI := gameworld.RoomItem{
@@ -10983,6 +11125,7 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 			Val3:      ii.Val3,
 			Val4:      ii.Val4,
 			Val5:      ii.Val5,
+			Traits:    append([]string(nil), ii.Traits...),
 		}
 
 		sc := e.RunItemScripts(
@@ -11376,7 +11519,9 @@ func (e *GameEngine) doFlip(ctx context.Context, player *Player, args []string) 
 		result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
 		return result
 	}
-	return &CommandResult{Messages: []string{"You don't see anything to flip here."}}
+
+	return e.doItemInteraction(ctx, player, "FLIP", args)
+	//return &CommandResult{Messages: []string{"You don't see anything to flip here."}}
 }
 
 func (e *GameEngine) doLatch(player *Player, args []string, latch bool) *CommandResult {
@@ -11638,6 +11783,35 @@ func (e *GameEngine) doRoomScriptVerb(ctx context.Context, player *Player, verb 
 	}
 
 	e.SavePlayer(ctx, player)
+
+	return result
+}
+
+func (e *GameEngine) runCommandPreverb(player *Player, verb string) *CommandResult {
+
+	room := e.rooms[player.RoomNumber]
+
+	sc := e.RunPreverbScripts(
+		player,
+		room,
+		verb,
+		nil,
+		nil,
+	)
+
+	if !sc.Blocked {
+		return nil
+	}
+
+	result := &CommandResult{
+		Messages:      append([]string{}, sc.Messages...),
+		RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+		GMBroadcast:   append([]string{}, sc.GMMsgs...),
+	}
+
+	if len(result.Messages) == 0 {
+		result.Messages = []string{"You can't do that."}
+	}
 
 	return result
 }
@@ -12391,6 +12565,39 @@ func (e *GameEngine) doRead(player *Player, args []string) *CommandResult {
 				Messages:      sc.Messages,
 				RoomBroadcast: sc.RoomMsgs,
 				GMBroadcast:   sc.GMMsgs,
+				PlayerState:   player,
+			}
+		}
+
+		// --------------------------------------------------------
+		// Now run IFVERB READ <ref>.
+		// --------------------------------------------------------
+		verbSC := e.RunVerbScripts(
+			player,
+			room,
+			"READ",
+			ri,
+			itemDef,
+		)
+
+		// Preserve any output produced by IFPREVERB.
+		verbSC.Messages = append(sc.Messages, verbSC.Messages...)
+		verbSC.RoomMsgs = append(sc.RoomMsgs, verbSC.RoomMsgs...)
+		verbSC.GMMsgs = append(sc.GMMsgs, verbSC.GMMsgs...)
+
+		// CLEARVERB in IFVERB means the script handled READ.
+		if verbSC.Blocked {
+			if player.GMTrace {
+				verbSC.Messages = append(
+					verbSC.Messages,
+					"[TRACE] READ blocked by IFVERB CLEARVERB — skipping normal ITEM READ",
+				)
+			}
+
+			return &CommandResult{
+				Messages:      verbSC.Messages,
+				RoomBroadcast: verbSC.RoomMsgs,
+				GMBroadcast:   verbSC.GMMsgs,
 				PlayerState:   player,
 			}
 		}

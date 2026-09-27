@@ -866,6 +866,10 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		}
 	}
 
+	if player.Unconscious {
+		return &CommandResult{Messages: []string{"You can't attack. You are unconscious."}}
+	}
+
 	if player.Stunned {
 		return &CommandResult{
 			Messages: []string{"You are stunned and cannot attack!"},
@@ -1324,13 +1328,7 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	return result
 }
 
-func (e *GameEngine) resolvePlayerWeaponAttack(
-	player *Player,
-	inst *MonsterInstance,
-	def *gameworld.MonsterDef,
-	weapon *InventoryItem,
-	offhand bool,
-) (*CommandResult, bool) {
+func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInstance, def *gameworld.MonsterDef, weapon *InventoryItem, offhand bool) (*CommandResult, bool) {
 
 	result := &CommandResult{}
 
@@ -1740,11 +1738,27 @@ func (e *GameEngine) resolvePlayerWeaponAttack(
 		// APPLY DAMAGE
 		// --------------------------------------------------------
 
+		//if excellent && !killed {
+		/*	if !killed {
+				//	if rand.Intn(100) < 30 {
+				msgs = append(
+					msgs,
+					" It is stunned!",
+				)
+
+				wasStunned = true
+				inst.Stunned = true
+				//	}
+			}
+		*/
+		stunned := true
+
 		killed :=
 			e.damageMonster(
 				player,
 				inst.ID,
 				dmg,
+				stunned,
 			)
 
 		// Weapon poison.
@@ -1760,18 +1774,13 @@ func (e *GameEngine) resolvePlayerWeaponAttack(
 			)
 		}
 
-		wasStunned := false
+		wasStunned := stunned && !killed
 
-		if excellent && !killed {
-			if rand.Intn(100) < 30 {
-				msgs = append(
-					msgs,
-					" It is stunned!",
-				)
-
-				wasStunned = true
-				inst.Stunned = true
-			}
+		if wasStunned {
+			msgs = append(
+				msgs,
+				" It is stunned!",
+			)
 		}
 
 		if killed {
@@ -2713,7 +2722,7 @@ func (e *GameEngine) doDepart(player *Player) *CommandResult {
 	return result
 }
 
-func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int) bool {
+func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int, stunned bool) bool {
 
 	e.monsterMgr.mu.Lock()
 	defer e.monsterMgr.mu.Unlock()
@@ -2746,6 +2755,10 @@ func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int) bool 
 			inst.CurrentHP = 0
 			inst.DeathTime = time.Now()
 			return true
+		}
+
+		if stunned {
+			inst.Stunned = true
 		}
 
 		return false
@@ -3149,6 +3162,10 @@ func (e *GameEngine) doFlee(ctx context.Context, player *Player) *CommandResult 
 		return &CommandResult{Messages: []string{"You can't flee. You are dead."}}
 	}
 
+	if player.Unconscious {
+		return &CommandResult{Messages: []string{"You can't flee. You are unconscious."}}
+	}
+
 	if player.EffectiveStat(RestrainedEffect) != 0 {
 		return &CommandResult{
 			Messages: []string{"You are restrained and cannot flee!"},
@@ -3481,11 +3498,25 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 		return
 	}
 
-	// Stunned monsters skip one combat tick and recover.  (moved to combat tick)
-	//if inst.Stunned {
-	//		inst.Stunned = false
-	//		return
-	//	}
+	// Stunned monsters lose their next attack.
+	// Do not clear Stunned in the general combat tick; it must persist
+	// until the monster actually gets an attack opportunity.
+	if inst.Stunned {
+		inst.Stunned = false
+
+		name := FormatMonsterName(def, e.monAdjs)
+
+		if e.localRoomBroadcast != nil {
+			e.localRoomBroadcast(
+				inst.RoomNumber,
+				[]string{
+					fmt.Sprintf("A %s is stunned and does nothing.", name),
+				},
+			)
+		}
+
+		return
+	}
 
 	// ------------------------------------------------------------
 	// MONSTER -> MONSTER

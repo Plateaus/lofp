@@ -101,13 +101,13 @@ func init() {
 		{ID: 313, Name: "Body Destruction I", School: "Necromancy", Level: 1, ManaCost: 3, CastTime: 3, Effect: "damage", DmgMin: 3, DmgMax: 10, DmgType: ""},
 		{ID: 314, Name: "Body Destruction II", School: "Necromancy", Level: 5, ManaCost: 7, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 20, DmgType: ""},
 		{ID: 315, Name: "Body Destruction III", School: "Necromancy", Level: 10, ManaCost: 14, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 35, DmgType: ""},
-		{ID: 316, Name: "Body Restoration I", School: "Necromancy", Level: 1, ManaCost: 3, CastTime: 3, Effect: "heal", HealMin: 5, HealMax: 15},
-		{ID: 317, Name: "Body Restoration II", School: "Necromancy", Level: 5, ManaCost: 7, CastTime: 3, Effect: "heal", HealMin: 10, HealMax: 30},
-		{ID: 318, Name: "Body Restoration III", School: "Necromancy", Level: 10, ManaCost: 14, CastTime: 3, Effect: "heal", HealMin: 20, HealMax: 50},
+		{ID: 316, Name: "Body Restoration I", School: "Necromancy", Level: 1, ManaCost: 3, CastTime: 3, Effect: "heal", HealMin: 5, HealMax: 15, StatusType: StatBodyPoint},
+		{ID: 317, Name: "Body Restoration II", School: "Necromancy", Level: 5, ManaCost: 7, CastTime: 3, Effect: "heal", HealMin: 10, HealMax: 30, StatusType: StatBodyPoint},
+		{ID: 318, Name: "Body Restoration III", School: "Necromancy", Level: 10, ManaCost: 14, CastTime: 3, Effect: "heal", HealMin: 20, HealMax: 50, StatusType: StatBodyPoint},
 		{ID: 323, Name: "Spectral Fist", School: "Necromancy", Level: 3, ManaCost: 5, CastTime: 3, Effect: "damage", DmgMin: 4, DmgMax: 14, DmgType: "crushing"},
 		{ID: 326, Name: "Spectral Shield", School: "Necromancy", Level: 9, ManaCost: 12, CastTime: 3, Effect: "defense", DefBonus: 20, Duration: 45 * time.Minute, StatusType: DefensiveBuff},
-		{ID: 334, Name: "Invigoration I", School: "Necromancy", Level: 2, ManaCost: 4, CastTime: 3, Effect: "heal", HealMin: 3, HealMax: 10},
-		{ID: 335, Name: "Invigoration II", School: "Necromancy", Level: 9, ManaCost: 10, CastTime: 3, Effect: "heal", HealMin: 8, HealMax: 25},
+		{ID: 334, Name: "Invigoration I", School: "Necromancy", Level: 2, ManaCost: 4, CastTime: 3, Effect: "heal", HealMin: 3, HealMax: 10, StatusType: StatFatigue},
+		{ID: 335, Name: "Invigoration II", School: "Necromancy", Level: 9, ManaCost: 10, CastTime: 3, Effect: "heal", HealMin: 8, HealMax: 25, StatusType: StatFatigue},
 		{ID: 337, Name: "Reconstruction", School: "Necromancy", Level: 4, ManaCost: 6, CastTime: 3, Effect: "heal", HealMin: 5, HealMax: 20},
 		{ID: 338, Name: "Unstun", School: "Necromancy", Level: 9, ManaCost: 8, CastTime: 2, Effect: "utility"},
 		{ID: 339, Name: "Destroy Undead I", School: "Necromancy", Level: 3, ManaCost: 5, CastTime: 3, Effect: "damage", DmgMin: 8, DmgMax: 20, DmgType: ""},
@@ -329,6 +329,9 @@ func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResul
 		return &CommandResult{Messages: []string{"You can't cast spells while dead."}}
 	}
 
+	if player.Unconscious {
+		return &CommandResult{Messages: []string{"You can't cast spells while unconscous."}}
+	}
 	// Split:
 	// PREPARE <spell> WITH <component>
 	withIndex := -1
@@ -545,6 +548,10 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		return &CommandResult{Messages: []string{"You can't cast spells while dead."}}
 	}
 
+	if player.Unconscious {
+		return &CommandResult{Messages: []string{"You can't cast spells while unconscous."}}
+	}
+
 	// If no spell prepared, try to prepare+cast in one step
 	if player.PreparedSpell == 0 {
 		if len(args) == 0 {
@@ -597,7 +604,7 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 
 	// Check roundtime
 	if player.RoundTimeExpiry.After(time.Now()) {
-		remaining := player.RoundTimeExpiry.Sub(time.Now()).Seconds()
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
 		return &CommandResult{
 			Messages: []string{
 				fmt.Sprintf(
@@ -1467,7 +1474,7 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		flavorDmg = fmt.Sprintf("%s strike to %s. [%d Damage]", damageSeverity(dmg), randomBodyPart(def.BodyType), dmg)
 	}
 
-	killed := e.damageMonster(player, inst.ID, dmg)
+	killed := e.damageMonster(player, inst.ID, dmg, false)
 
 	var msgs, roomMsgs []string
 	msgs = append(msgs, fmt.Sprintf("You gesture at %s%s.", article, name))
@@ -1494,7 +1501,7 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 }
 
 func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
-	// Heal self by default, or target if specified
+	// Heal self by default, or target if specified.
 	target := player
 	targetName := "yourself"
 
@@ -1519,24 +1526,44 @@ func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []strin
 			if target == player {
 				return &CommandResult{
 					Messages: []string{
-						fmt.Sprintf("You gesture and cast %s on yourself. The poison leaves your system.", spell.Name),
+						fmt.Sprintf(
+							"You gesture and cast %s on yourself. The poison leaves your system.",
+							spell.Name,
+						),
 					},
 					RoomBroadcast: []string{
-						fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+						fmt.Sprintf(
+							"%s gestures and casts %s.",
+							player.FirstName,
+							spell.Name,
+						),
 					},
 				}
 			}
 
 			return &CommandResult{
 				Messages: []string{
-					fmt.Sprintf("You gesture and cast %s on %s. The poison leaves their system.", spell.Name, targetName),
+					fmt.Sprintf(
+						"You gesture and cast %s on %s. The poison leaves their system.",
+						spell.Name,
+						targetName,
+					),
 				},
 				RoomBroadcast: []string{
-					fmt.Sprintf("%s gestures and casts %s on %s.", player.FirstName, spell.Name, targetName),
+					fmt.Sprintf(
+						"%s gestures and casts %s on %s.",
+						player.FirstName,
+						spell.Name,
+						targetName,
+					),
 				},
 				TargetName: target.FirstName,
 				TargetMsg: []string{
-					fmt.Sprintf("%s casts %s on you. The poison leaves your system.", player.FirstName, spell.Name),
+					fmt.Sprintf(
+						"%s casts %s on you. The poison leaves your system.",
+						player.FirstName,
+						spell.Name,
+					),
 				},
 			}
 		}
@@ -1549,29 +1576,119 @@ func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []strin
 			if target == player {
 				return &CommandResult{
 					Messages: []string{
-						fmt.Sprintf("You gesture and cast %s on yourself. The disease leaves your system.", spell.Name),
+						fmt.Sprintf(
+							"You gesture and cast %s on yourself. The disease leaves your system.",
+							spell.Name,
+						),
 					},
 					RoomBroadcast: []string{
-						fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
+						fmt.Sprintf(
+							"%s gestures and casts %s.",
+							player.FirstName,
+							spell.Name,
+						),
 					},
 				}
 			}
 
 			return &CommandResult{
 				Messages: []string{
-					fmt.Sprintf("You gesture and cast %s on %s. The disease leaves their system.", spell.Name, targetName),
+					fmt.Sprintf(
+						"You gesture and cast %s on %s. The disease leaves their system.",
+						spell.Name,
+						targetName,
+					),
 				},
 				RoomBroadcast: []string{
-					fmt.Sprintf("%s gestures and casts %s on %s.", player.FirstName, spell.Name, targetName),
+					fmt.Sprintf(
+						"%s gestures and casts %s on %s.",
+						player.FirstName,
+						spell.Name,
+						targetName,
+					),
 				},
 				TargetName: target.FirstName,
 				TargetMsg: []string{
-					fmt.Sprintf("%s casts %s on you. The disease leaves your system.", player.FirstName, spell.Name),
+					fmt.Sprintf(
+						"%s casts %s on you. The disease leaves your system.",
+						player.FirstName,
+						spell.Name,
+					),
 				},
 			}
 		}
 
-	default:
+	case StatFatigue:
+		heal := rand.Intn(spell.HealMax-spell.HealMin+1) + spell.HealMin
+
+		target.Fatigue += heal
+		if target.Fatigue > target.MaxFatigue {
+			target.Fatigue = target.MaxFatigue
+		}
+
+		if showCastMessage {
+			if target == player {
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You gesture and cast %s on yourself. You feel invigorated. [Fatigue: %d/%d]",
+							spell.Name,
+							target.Fatigue,
+							target.MaxFatigue,
+						),
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf(
+							"%s gestures and casts %s. %s looks invigorated.",
+							player.FirstName,
+							spell.Name,
+							player.FirstName,
+						),
+					},
+				}
+			}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You gesture and cast %s on %s. %s looks invigorated.",
+						spell.Name,
+						targetName,
+						targetName,
+					),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s gestures at %s. %s looks invigorated.",
+						player.FirstName,
+						targetName,
+						targetName,
+					),
+				},
+				TargetName: target.FirstName,
+				TargetMsg: []string{
+					fmt.Sprintf(
+						"%s gestures at you. You feel invigorated. [Fatigue: %d/%d]",
+						player.FirstName,
+						target.Fatigue,
+						target.MaxFatigue,
+					),
+				},
+			}
+		}
+
+		// Non-cast application.
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You feel invigorated. [Fatigue: %d/%d]",
+					target.Fatigue,
+					target.MaxFatigue,
+				),
+			},
+		}
+
+	case StatBodyPoint:
 		heal := rand.Intn(spell.HealMax-spell.HealMin+1) + spell.HealMin
 
 		target.BodyPoints += heal
@@ -1632,7 +1749,79 @@ func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []strin
 			}
 		}
 
-		// Potion / other non-cast application.
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You feel a little better. [BP: %d/%d]",
+					target.BodyPoints,
+					target.MaxBodyPoints,
+				),
+			},
+		}
+
+	default:
+		// Preserve the old behavior for any heal spell that hasn't
+		// explicitly been assigned a healing resource yet.
+		heal := rand.Intn(spell.HealMax-spell.HealMin+1) + spell.HealMin
+
+		target.BodyPoints += heal
+		if target.BodyPoints > target.MaxBodyPoints {
+			target.BodyPoints = target.MaxBodyPoints
+		}
+
+		if showCastMessage {
+			if target == player {
+				return &CommandResult{
+					Messages: []string{
+						fmt.Sprintf(
+							"You gesture and cast %s on yourself, healing %d body points. [BP: %d/%d]",
+							spell.Name,
+							heal,
+							target.BodyPoints,
+							target.MaxBodyPoints,
+						),
+					},
+					RoomBroadcast: []string{
+						fmt.Sprintf(
+							"%s gestures and casts %s.",
+							player.FirstName,
+							spell.Name,
+						),
+					},
+				}
+			}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You gesture and cast %s on %s, healing %d body points.",
+						spell.Name,
+						targetName,
+						heal,
+					),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s gestures and casts %s on %s.",
+						player.FirstName,
+						spell.Name,
+						targetName,
+					),
+				},
+				TargetName: target.FirstName,
+				TargetMsg: []string{
+					fmt.Sprintf(
+						"%s casts %s on you, healing %d body points. [BP: %d/%d]",
+						player.FirstName,
+						spell.Name,
+						heal,
+						target.BodyPoints,
+						target.MaxBodyPoints,
+					),
+				},
+			}
+		}
+
 		return &CommandResult{
 			Messages: []string{
 				fmt.Sprintf(

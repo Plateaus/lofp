@@ -105,7 +105,9 @@ func (e *GameEngine) doPreparePsi(player *Player, args []string) *CommandResult 
 	if player.Dead {
 		return &CommandResult{Messages: []string{"You can't use psionics while dead."}}
 	}
-
+	if player.Unconscious {
+		return &CommandResult{Messages: []string{"You can't use psionics while unconscous."}}
+	}
 	// Check base psionic skill
 	if player.Skills[26] == 0 && !player.IsGM {
 		return &CommandResult{Messages: []string{"You have no training in Psionics."}}
@@ -280,6 +282,9 @@ func (e *GameEngine) doProjectPsi(ctx context.Context, player *Player, args []st
 	if player.Dead {
 		return &CommandResult{Messages: []string{"You can't use psionics while dead."}}
 	}
+	if player.Unconscious {
+		return &CommandResult{Messages: []string{"You can't use psionics while unconscous."}}
+	}
 	if player.PreparedPsi == 0 {
 		return &CommandResult{Messages: []string{"You have no discipline prepared. Use PSI <discipline> first."}}
 	}
@@ -453,7 +458,7 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 		}
 	}
 
-	killed := e.damageMonster(player, inst.ID, dmg)
+	killed := e.damageMonster(player, inst.ID, dmg, false)
 	if killed {
 		deathText := def.TextOverrides["TEXD"]
 		deathMsg := fmt.Sprintf("A %s collapses, dead!", name)

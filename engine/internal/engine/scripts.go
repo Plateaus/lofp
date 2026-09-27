@@ -74,6 +74,18 @@ func (e *GameEngine) RunSayScripts(player *Player, room *gameworld.Room, text st
 	return sc
 }
 
+func isTouchVerb(verb string) bool {
+	switch strings.ToUpper(verb) {
+	case "GET", "TAKE", "KISS", "LICK",
+		"OPEN", "CLOSE",
+		"TOUCH", "PULL", "PUSH",
+		"RUB", "TAP":
+		return true
+	default:
+		return false
+	}
+}
+
 // RunPreverbScripts executes IFPREVERB blocks for a specific verb and item ref.
 // Returns the script context. Check sc.Blocked to see if the action should be cancelled.
 func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, verb string, ri *gameworld.RoomItem, def *gameworld.ItemDef, ri2 ...*gameworld.RoomItem) *ScriptContext {
@@ -93,6 +105,19 @@ func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, ver
 	refStr := "-1"
 	if ri != nil {
 		refStr = fmt.Sprintf("%d", ri.Ref)
+	}
+	// ------------------------------------------------------------
+	// IFTOUCH
+	// ------------------------------------------------------------
+
+	if ri != nil && isTouchVerb(verb) && room != nil {
+		for _, block := range room.Scripts {
+			if block.Type == "IFTOUCH" && len(block.Args) >= 1 {
+				if block.Args[0] == refStr || block.Args[0] == "-1" {
+					sc.execBlock(block)
+				}
+			}
+		}
 	}
 
 	// ------------------------------------------------------------
@@ -408,48 +433,6 @@ func (sc *ScriptContext) execBlock(block gameworld.ScriptBlock) {
 		}
 	}
 }
-
-/*
-// execElse runs the ELSE branch of a conditional block (if it has one).
-func (sc *ScriptContext) execElse(block gameworld.ScriptBlock) {
-	for _, stmt := range block.ElseStatements {
-		if stmt.Action != nil {
-			sc.execAction(*stmt.Action)
-			continue
-		}
-
-		if stmt.Block != nil {
-			sc.execBlock(*stmt.Block)
-		}
-	}
-}
-
-// execChildren runs the actions and nested blocks within a script block.
-func (sc *ScriptContext) execChildren(block gameworld.ScriptBlock) {
-	for _, stmt := range block.Statements {
-		if stmt.Action != nil {
-
-			if sc.Player != nil && sc.Player.GMTrace {
-				sc.Messages = append(
-					sc.Messages,
-					fmt.Sprintf(
-						"[TRACE] %s %s",
-						stmt.Action.Command,
-						strings.Join(stmt.Action.Args, " "),
-					),
-				)
-			}
-
-			sc.execAction(*stmt.Action)
-			continue
-		}
-
-		if stmt.Block != nil {
-			sc.execBlock(*stmt.Block)
-		}
-	}
-}
-*/
 
 // execElse runs the ELSE branch of a conditional block.
 func (sc *ScriptContext) execElse(block gameworld.ScriptBlock) {
@@ -960,29 +943,26 @@ func (sc *ScriptContext) doEqual(args []string) {
 	}
 }
 
-// doAdd handles ADD INTNUMn value — increments a variable.
+// doAdd handles ADD variable value — increments a variable.
 func (sc *ScriptContext) doAdd(args []string) {
 	if len(args) < 2 {
 		return
 	}
+
 	varName := strings.ToUpper(args[0])
-	val, err := strconv.Atoi(args[1])
-	if err != nil {
-		return
-	}
-	sc.setVar(varName, sc.getVar(varName)+val)
+	sc.setVar(varName, sc.getVar(varName)+sc.resolveNumericArg(args[1]))
 }
 
-// doSub handles SUB INTNUMn value — decrements a variable.
+// doSub handles SUB variable value — decrements a variable.
 func (sc *ScriptContext) doSub(args []string) {
 	if len(args) < 2 {
 		return
 	}
+
 	varName := strings.ToUpper(args[0])
-	val, err := strconv.Atoi(args[1])
-	if err != nil {
-		return
-	}
+
+	val := sc.resolveNumericArg(args[1])
+
 	sc.setVar(varName, sc.getVar(varName)-val)
 }
 
@@ -1007,7 +987,7 @@ func (sc *ScriptContext) doNewItem(args []string) {
 	}
 
 	// Parse optional values once.
-	adj1, adj2, adj3 := 0, 0, 0
+	adj1, adj2, adj3 := -1, -1, -1
 	val1, val2, val3, val4, val5 := 0, 0, 0, 0, 0
 
 	for _, arg := range args[2:] {
@@ -1102,11 +1082,22 @@ func (sc *ScriptContext) doMove(args []string) {
 	if len(args) == 0 {
 		return
 	}
+
 	dest := sc.resolveNumericArg(args[0])
-	if dest > 0 {
-		sc.MoveTo = dest
-		//	e.movePlayerToRoom(ctx, player, sc.MoveTo, result)
+	if dest <= 0 {
+		return
 	}
+
+	if sc.Engine.rooms[dest] == nil {
+		return
+	}
+
+	sc.Player.ResetRoomVars()
+	sc.Player.RoomNumber = dest
+
+	// Keep this so callers can detect that a scripted MOVE occurred
+	// and handle LOOK / persistence / entry-script presentation.
+	sc.MoveTo = dest
 }
 
 // doMoveGroup handles MOVEGROUP <room> — moves all players in the room to destination.
@@ -1138,7 +1129,46 @@ func (sc *ScriptContext) doShowRoom(args []string) {
 
 // doSetItemVal handles SETITEMVAL ref valIndex value.
 func (sc *ScriptContext) doSetItemVal(args []string) {
-	// Not yet fully implemented; needs room item mutation
+	if len(args) < 3 || sc.Room == nil {
+		return
+	}
+
+	ref, err := strconv.Atoi(args[0])
+	if err != nil {
+		return
+	}
+
+	valIndex, err := strconv.Atoi(args[1])
+	if err != nil || valIndex < 1 || valIndex > 5 {
+		return
+	}
+
+	// The value may be a literal number or a script variable.
+	value, err := strconv.Atoi(args[2])
+	if err != nil {
+		value = sc.getVar(args[2])
+	}
+
+	for i := range sc.Room.Items {
+		if sc.Room.Items[i].Ref != ref {
+			continue
+		}
+
+		switch valIndex {
+		case 1:
+			sc.Room.Items[i].Val1 = value
+		case 2:
+			sc.Room.Items[i].Val2 = value
+		case 3:
+			sc.Room.Items[i].Val3 = value
+		case 4:
+			sc.Room.Items[i].Val4 = value
+		case 5:
+			sc.Room.Items[i].Val5 = value
+		}
+
+		return
+	}
 }
 
 // doRemoveItem handles REMOVEITEM ref — removes item from player or room.
@@ -2330,38 +2360,61 @@ func (sc *ScriptContext) doGenMon(args []string) {
 
 // doNewPut handles NEWPUT ref archetype [key=value...] — places item inside a container in the room.
 func (sc *ScriptContext) doNewPut(args []string) {
+
 	if len(args) < 2 {
 		return
 	}
+
 	ref, _ := strconv.Atoi(args[0])
 	archetype, _ := strconv.Atoi(args[1])
-	item := gameworld.RoomItem{Ref: ref, Archetype: archetype, IsPut: true}
+
+	item := gameworld.RoomItem{
+		Ref:       ref,
+		Archetype: archetype,
+		Adj1:      -1,
+		Adj2:      -1,
+		Adj3:      -1,
+		IsPut:     true,
+	}
+
 	for _, arg := range args[2:] {
+
 		parts := strings.SplitN(arg, "=", 2)
 		if len(parts) != 2 {
 			continue
 		}
+
 		key := strings.ToUpper(parts[0])
 		val, _ := strconv.Atoi(parts[1])
+
 		switch key {
+
 		case "ADJ1":
 			item.Adj1 = val
+
 		case "ADJ2":
 			item.Adj2 = val
+
 		case "ADJ3":
 			item.Adj3 = val
+
 		case "VAL1":
 			item.Val1 = val
+
 		case "VAL2":
 			item.Val2 = val
+
 		case "VAL3":
 			item.Val3 = val
+
 		case "VAL4":
 			item.Val4 = val
+
 		case "VAL5":
 			item.Val5 = val
 		}
 	}
+
 	// Find the PutIn target ref
 	if ref >= 0 {
 		for i := range sc.Room.Items {
@@ -2371,6 +2424,7 @@ func (sc *ScriptContext) doNewPut(args []string) {
 			}
 		}
 	}
+
 	sc.Room.Items = append(sc.Room.Items, item)
 }
 

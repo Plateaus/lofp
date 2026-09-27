@@ -569,10 +569,10 @@ func (e *GameEngine) monsterTick(tick int) {
 		// ------------------------------------------------------------
 
 		// Stunned monsters lose their next action and recover.
-		if inst.Stunned {
-			inst.Stunned = false
-			continue
-		}
+		//if inst.Stunned {
+		//		inst.Stunned = false
+		//		continue
+		//	}
 
 		if inst.Target != "" || inst.TargetMonsterID >= 0 {
 			e.monsterCombatTick(inst, def)
