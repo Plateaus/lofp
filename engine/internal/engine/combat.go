@@ -1738,20 +1738,8 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 		// APPLY DAMAGE
 		// --------------------------------------------------------
 
-		//if excellent && !killed {
-		/*	if !killed {
-				//	if rand.Intn(100) < 30 {
-				msgs = append(
-					msgs,
-					" It is stunned!",
-				)
-
-				wasStunned = true
-				inst.Stunned = true
-				//	}
-			}
-		*/
-		stunned := true
+		//stunned was falling out due to monster locking, so added it to damage monster where its locked/unlocked.
+		stunned := excellent && rand.Intn(100) < 30
 
 		killed :=
 			e.damageMonster(
