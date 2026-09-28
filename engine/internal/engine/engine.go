@@ -4955,6 +4955,28 @@ func (e *GameEngine) checkPlayerCanMove(player *Player) *CommandResult {
 		}
 	}
 
+	if player.Position != 0 && player.Position != 4 {
+		posNames := map[int]string{
+			1: "sitting",
+			2: "laying down",
+			3: "kneeling",
+		}
+
+		posName := posNames[player.Position]
+		if posName == "" {
+			posName = "not standing"
+		}
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You can't do that while %s! Try STANDing first.",
+					posName,
+				),
+			},
+		}
+	}
+
 	return nil
 }
 

@@ -2685,6 +2685,8 @@ func (e *GameEngine) doDepart(player *Player) *CommandResult {
 	player.Stunned = false
 	player.Poisoned = false
 	player.Diseased = false
+	// Death clears all temporary status/stat effects.
+	player.ActiveStatEffects = nil
 
 	player.BodyPoints = player.MaxBodyPoints / 4
 	if player.BodyPoints < 1 {
