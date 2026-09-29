@@ -5264,26 +5264,8 @@ func (e *GameEngine) doClimb(ctx context.Context, player *Player, args []string)
 		return &CommandResult{Messages: []string{"Climb what?"}}
 	}
 
-	if player.Position != 0 && player.Position != 4 {
-		posNames := map[int]string{
-			1: "sitting",
-			2: "laying down",
-			3: "kneeling",
-		}
-
-		posName := posNames[player.Position]
-		if posName == "" {
-			posName = "not standing"
-		}
-
-		return &CommandResult{
-			Messages: []string{
-				fmt.Sprintf(
-					"You can't climb while %s! Try STANDing first.",
-					posName,
-				),
-			},
-		}
+	if result := e.checkPlayerCanMove(player); result != nil {
+		return result
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
@@ -6010,17 +5992,18 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 			contents = append(
 				contents,
 				InventoryItem{
-					Archetype: child.Archetype,
-					Adj1:      child.Adj1,
-					Adj2:      child.Adj2,
-					Adj3:      child.Adj3,
-					Val1:      child.Val1,
-					Val2:      child.Val2,
-					Val3:      child.Val3,
-					Val4:      child.Val4,
-					Val5:      child.Val5,
-					State:     child.State,
-					Traits:    append([]string(nil), child.Traits...),
+					Archetype:  child.Archetype,
+					Adj1:       child.Adj1,
+					Adj2:       child.Adj2,
+					Adj3:       child.Adj3,
+					Val1:       child.Val1,
+					Val2:       child.Val2,
+					Val3:       child.Val3,
+					Val4:       child.Val4,
+					Val5:       child.Val5,
+					State:      child.State,
+					Traits:     append([]string(nil), child.Traits...),
+					Identified: child.Identified,
 				},
 			)
 		}
@@ -6032,18 +6015,19 @@ func (e *GameEngine) doGet(ctx context.Context, player *Player, args []string) *
 		player.Inventory = append(
 			player.Inventory,
 			InventoryItem{
-				Archetype: pickedUp.Archetype,
-				Adj1:      pickedUp.Adj1,
-				Adj2:      pickedUp.Adj2,
-				Adj3:      pickedUp.Adj3,
-				Val1:      pickedUp.Val1,
-				Val2:      pickedUp.Val2,
-				Val3:      pickedUp.Val3,
-				Val4:      pickedUp.Val4,
-				Val5:      pickedUp.Val5,
-				State:     pickedUp.State,
-				Contents:  contents,
-				Traits:    append([]string(nil), pickedUp.Traits...),
+				Archetype:  pickedUp.Archetype,
+				Adj1:       pickedUp.Adj1,
+				Adj2:       pickedUp.Adj2,
+				Adj3:       pickedUp.Adj3,
+				Val1:       pickedUp.Val1,
+				Val2:       pickedUp.Val2,
+				Val3:       pickedUp.Val3,
+				Val4:       pickedUp.Val4,
+				Val5:       pickedUp.Val5,
+				State:      pickedUp.State,
+				Contents:   contents,
+				Traits:     append([]string(nil), pickedUp.Traits...),
+				Identified: pickedUp.Identified,
 			},
 		)
 
@@ -6705,7 +6689,8 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 					State:     child.State,
 
 					// Preserve the CHILD'S traits.
-					Traits: append([]string(nil), child.Traits...),
+					Traits:     append([]string(nil), child.Traits...),
+					Identified: child.Identified,
 				},
 			)
 		}
@@ -6730,7 +6715,8 @@ func (e *GameEngine) doGetFromContainer(ctx context.Context, player *Player, raw
 				Contents:  contents,
 
 				// Preserve the picked-up item's own traits.
-				Traits: append([]string(nil), pickedUp.Traits...),
+				Traits:     append([]string(nil), pickedUp.Traits...),
+				Identified: pickedUp.Identified,
 			},
 		)
 
@@ -7217,20 +7203,21 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	}
 
 	putItem := gameworld.RoomItem{
-		Ref:       nextRef,
-		Archetype: ii.Archetype,
-		Adj1:      ii.Adj1,
-		Adj2:      ii.Adj2,
-		Adj3:      ii.Adj3,
-		Val1:      ii.Val1,
-		Val2:      ii.Val2,
-		Val3:      ii.Val3,
-		Val4:      ii.Val4,
-		Val5:      ii.Val5,
-		State:     ii.State,
-		IsPut:     true,
-		PutIn:     container.Ref,
-		Traits:    append([]string(nil), ii.Traits...),
+		Ref:        nextRef,
+		Archetype:  ii.Archetype,
+		Adj1:       ii.Adj1,
+		Adj2:       ii.Adj2,
+		Adj3:       ii.Adj3,
+		Val1:       ii.Val1,
+		Val2:       ii.Val2,
+		Val3:       ii.Val3,
+		Val4:       ii.Val4,
+		Val5:       ii.Val5,
+		State:      ii.State,
+		IsPut:      true,
+		PutIn:      container.Ref,
+		Traits:     append([]string(nil), ii.Traits...),
+		Identified: ii.Identified,
 	}
 
 	room.Items = append(room.Items, putItem)
@@ -7258,20 +7245,21 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 		}
 
 		childRoomItem := gameworld.RoomItem{
-			Ref:       childRef,
-			Archetype: child.Archetype,
-			Adj1:      child.Adj1,
-			Adj2:      child.Adj2,
-			Adj3:      child.Adj3,
-			Val1:      child.Val1,
-			Val2:      child.Val2,
-			Val3:      child.Val3,
-			Val4:      child.Val4,
-			Val5:      child.Val5,
-			State:     child.State,
-			IsPut:     true,
-			PutIn:     parentRef,
-			Traits:    append([]string(nil), ii.Traits...),
+			Ref:        childRef,
+			Archetype:  child.Archetype,
+			Adj1:       child.Adj1,
+			Adj2:       child.Adj2,
+			Adj3:       child.Adj3,
+			Val1:       child.Val1,
+			Val2:       child.Val2,
+			Val3:       child.Val3,
+			Val4:       child.Val4,
+			Val5:       child.Val5,
+			State:      child.State,
+			IsPut:      true,
+			PutIn:      parentRef,
+			Traits:     append([]string(nil), child.Traits...),
+			Identified: child.Identified,
 		}
 
 		room.Items = append(room.Items, childRoomItem)
@@ -7706,18 +7694,19 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			temporary script representation of the inventory item.
 		*/
 		scriptItem := gameworld.RoomItem{
-			Ref:       -1,
-			Archetype: ii.Archetype,
-			Adj1:      ii.Adj1,
-			Adj2:      ii.Adj2,
-			Adj3:      ii.Adj3,
-			Val1:      ii.Val1,
-			Val2:      ii.Val2,
-			Val3:      ii.Val3,
-			Val4:      ii.Val4,
-			Val5:      ii.Val5,
-			State:     ii.State,
-			Traits:    append([]string(nil), ii.Traits...),
+			Ref:        -1,
+			Archetype:  ii.Archetype,
+			Adj1:       ii.Adj1,
+			Adj2:       ii.Adj2,
+			Adj3:       ii.Adj3,
+			Val1:       ii.Val1,
+			Val2:       ii.Val2,
+			Val3:       ii.Val3,
+			Val4:       ii.Val4,
+			Val5:       ii.Val5,
+			State:      ii.State,
+			Traits:     append([]string(nil), ii.Traits...),
+			Identified: ii.Identified,
 		}
 
 		sc := e.RunPreverbScripts(
@@ -7757,18 +7746,19 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 		// --------------------------------------------------------
 
 		droppedItem := gameworld.RoomItem{
-			Ref:       len(room.Items),
-			Archetype: ii.Archetype,
-			Adj1:      ii.Adj1,
-			Adj2:      ii.Adj2,
-			Adj3:      ii.Adj3,
-			Val1:      ii.Val1,
-			Val2:      ii.Val2,
-			Val3:      ii.Val3,
-			Val4:      ii.Val4,
-			Val5:      ii.Val5,
-			State:     ii.State,
-			Traits:    append([]string(nil), ii.Traits...),
+			Ref:        len(room.Items),
+			Archetype:  ii.Archetype,
+			Adj1:       ii.Adj1,
+			Adj2:       ii.Adj2,
+			Adj3:       ii.Adj3,
+			Val1:       ii.Val1,
+			Val2:       ii.Val2,
+			Val3:       ii.Val3,
+			Val4:       ii.Val4,
+			Val5:       ii.Val5,
+			State:      ii.State,
+			Traits:     append([]string(nil), ii.Traits...),
+			Identified: ii.Identified,
 		}
 
 		room.Items = append(
@@ -7788,20 +7778,21 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 
 		for _, child := range ii.Contents {
 			putItem := gameworld.RoomItem{
-				Ref:       droppedItem.Ref,
-				Archetype: child.Archetype,
-				Adj1:      child.Adj1,
-				Adj2:      child.Adj2,
-				Adj3:      child.Adj3,
-				Val1:      child.Val1,
-				Val2:      child.Val2,
-				Val3:      child.Val3,
-				Val4:      child.Val4,
-				Val5:      child.Val5,
-				State:     child.State,
-				IsPut:     true,
-				PutIn:     droppedItem.Ref,
-				Traits:    append([]string(nil), ii.Traits...),
+				Ref:        droppedItem.Ref,
+				Archetype:  child.Archetype,
+				Adj1:       child.Adj1,
+				Adj2:       child.Adj2,
+				Adj3:       child.Adj3,
+				Val1:       child.Val1,
+				Val2:       child.Val2,
+				Val3:       child.Val3,
+				Val4:       child.Val4,
+				Val5:       child.Val5,
+				State:      child.State,
+				IsPut:      true,
+				PutIn:      droppedItem.Ref,
+				Traits:     append([]string(nil), child.Traits...),
+				Identified: child.Identified,
 			}
 
 			room.Items = append(
@@ -9014,7 +9005,9 @@ func isTwoHandedWeapon(def *gameworld.ItemDef) bool {
 
 func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) *CommandResult {
 	if len(args) == 0 {
-		return &CommandResult{Messages: []string{"Wear what?"}}
+		return &CommandResult{
+			Messages: []string{"Wear what?"},
+		}
 	}
 
 	if player.WolfForm {
@@ -9022,13 +9015,16 @@ func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) 
 			Messages: []string{"You can't wear anything while in wolf form."},
 		}
 	}
+
 	target := strings.ToLower(strings.Join(args, " "))
 	target, ordSkip := parseOrdinal(target)
 	skip := ordSkip
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
-		return &CommandResult{Messages: []string{"You can't do that here."}}
+		return &CommandResult{
+			Messages: []string{"You can't do that here."},
+		}
 	}
 
 	for i, ii := range player.Inventory {
@@ -9042,7 +9038,12 @@ func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) 
 		}
 
 		name := e.getItemNounName(itemDef)
-		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+
+		if !matchesTarget(
+			name,
+			target,
+			e.getAdjName(ii.Adj1),
+		) {
 			continue
 		}
 
@@ -9051,19 +9052,24 @@ func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) 
 			continue
 		}
 
-		// Run the inventory item's IFPREVERB WEAR script before
-		// performing the normal wear action.
+		// ------------------------------------------------------------
+		// IFPREVERB WEAR
+		// ------------------------------------------------------------
+
 		scriptItem := gameworld.RoomItem{
-			Ref:       -1,
-			Archetype: ii.Archetype,
-			Adj1:      ii.Adj1,
-			Adj2:      ii.Adj2,
-			Adj3:      ii.Adj3,
-			Val1:      ii.Val1,
-			Val2:      ii.Val2,
-			Val3:      ii.Val3,
-			Val4:      ii.Val4,
-			Val5:      ii.Val5,
+			Ref:        -1,
+			Archetype:  ii.Archetype,
+			Adj1:       ii.Adj1,
+			Adj2:       ii.Adj2,
+			Adj3:       ii.Adj3,
+			Val1:       ii.Val1,
+			Val2:       ii.Val2,
+			Val3:       ii.Val3,
+			Val4:       ii.Val4,
+			Val5:       ii.Val5,
+			State:      ii.State,
+			Traits:     append([]string(nil), ii.Traits...),
+			Identified: ii.Identified,
 		}
 
 		sc := e.RunPreverbScripts(
@@ -9083,37 +9089,50 @@ func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) 
 		// CLEARVERB cancels the normal wear action.
 		if sc.Blocked {
 			if len(result.Messages) == 0 {
-				result.Messages = []string{"You can't wear that."}
+				result.Messages = []string{
+					"You can't wear that.",
+				}
 			}
 
 			e.SavePlayer(ctx, player)
 			return result
 		}
 
+		// ------------------------------------------------------------
+		// Make sure the wear slot is available.
+		// ------------------------------------------------------------
+
 		for _, wi := range player.Worn {
-			if wi.WornSlot == itemDef.WornSlot {
-				wornDef := e.items[wi.Archetype]
+			if wi.WornSlot != itemDef.WornSlot {
+				continue
+			}
 
-				wornName := "something"
-				if wornDef != nil {
-					wornName = e.formatItemName(
-						wornDef,
-						wi.Adj1,
-						wi.Adj2,
-						wi.Adj3,
-					)
-				}
+			wornDef := e.items[wi.Archetype]
 
-				return &CommandResult{
-					Messages: []string{
-						fmt.Sprintf(
-							"You are already wearing %s there.",
-							wornName,
-						),
-					},
-				}
+			wornName := "something"
+			if wornDef != nil {
+				wornName = e.formatItemName(
+					wornDef,
+					wi.Adj1,
+					wi.Adj2,
+					wi.Adj3,
+				)
+			}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You are already wearing %s there.",
+						wornName,
+					),
+				},
 			}
 		}
+
+		// ------------------------------------------------------------
+		// Perform the wear.
+		// ------------------------------------------------------------
+
 		worn := player.Inventory[i]
 		worn.WornSlot = itemDef.WornSlot
 
@@ -9122,25 +9141,76 @@ func (e *GameEngine) doWear(ctx context.Context, player *Player, args []string) 
 			player.Inventory[i+1:]...,
 		)
 
-		player.Worn = append(player.Worn, worn)
+		player.Worn = append(
+			player.Worn,
+			worn,
+		)
 
 		e.SavePlayer(ctx, player)
 
 		fullName := e.formatItemName(
 			itemDef,
-			ii.Adj1,
-			ii.Adj2,
-			ii.Adj3,
+			worn.Adj1,
+			worn.Adj2,
+			worn.Adj3,
 		)
 
-		result.Messages = append(
-			result.Messages,
-			fmt.Sprintf("You put on %s.", fullName),
+		// ------------------------------------------------------------
+		// IFVERB WEAR
+		//
+		// This runs AFTER the item has been moved into player.Worn.
+		// That allows legacy scripts such as:
+		//
+		//     IFVERB WEAR -1
+		//         IFITEM -1 WORN
+		//
+		// to see the item's new worn state.
+		// ------------------------------------------------------------
+
+		verbSC := e.RunVerbScripts(
+			player,
+			room,
+			"WEAR",
+			&scriptItem,
+			itemDef,
 		)
 
-		result.RoomBroadcast = append(
-			result.RoomBroadcast,
-			fmt.Sprintf("%s puts on %s.", player.FirstName, fullName),
+		// Script player text overrides the normal WEAR message.
+		if len(verbSC.Messages) > 0 {
+			result.Messages = append(
+				result.Messages,
+				verbSC.Messages...,
+			)
+		} else {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf(
+					"You put on %s.",
+					fullName,
+				),
+			)
+		}
+
+		// Script room text overrides the normal WEAR room message.
+		if len(verbSC.RoomMsgs) > 0 {
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				verbSC.RoomMsgs...,
+			)
+		} else {
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s puts on %s.",
+					player.FirstName,
+					fullName,
+				),
+			)
+		}
+
+		result.GMBroadcast = append(
+			result.GMBroadcast,
+			verbSC.GMMsgs...,
 		)
 
 		return result
@@ -9168,7 +9238,9 @@ func (e *GameEngine) doRemove(ctx context.Context, player *Player, args []string
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
-		return &CommandResult{Messages: []string{"You can't do that here."}}
+		return &CommandResult{
+			Messages: []string{"You can't do that here."},
+		}
 	}
 
 	for i, ii := range player.Worn {
@@ -9178,7 +9250,12 @@ func (e *GameEngine) doRemove(ctx context.Context, player *Player, args []string
 		}
 
 		name := e.getItemNounName(itemDef)
-		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+
+		if !matchesTarget(
+			name,
+			target,
+			e.getAdjName(ii.Adj1),
+		) {
 			continue
 		}
 
@@ -9187,19 +9264,24 @@ func (e *GameEngine) doRemove(ctx context.Context, player *Player, args []string
 			continue
 		}
 
-		// Run the worn item's IFPREVERB REMOVE script before
-		// performing the normal remove action.
+		// ------------------------------------------------------------
+		// IFPREVERB REMOVE
+		// ------------------------------------------------------------
+
 		scriptItem := gameworld.RoomItem{
-			Ref:       -1,
-			Archetype: ii.Archetype,
-			Adj1:      ii.Adj1,
-			Adj2:      ii.Adj2,
-			Adj3:      ii.Adj3,
-			Val1:      ii.Val1,
-			Val2:      ii.Val2,
-			Val3:      ii.Val3,
-			Val4:      ii.Val4,
-			Val5:      ii.Val5,
+			Ref:        -1,
+			Archetype:  ii.Archetype,
+			Adj1:       ii.Adj1,
+			Adj2:       ii.Adj2,
+			Adj3:       ii.Adj3,
+			Val1:       ii.Val1,
+			Val2:       ii.Val2,
+			Val3:       ii.Val3,
+			Val4:       ii.Val4,
+			Val5:       ii.Val5,
+			State:      ii.State,
+			Traits:     append([]string(nil), ii.Traits...),
+			Identified: ii.Identified,
 		}
 
 		sc := e.RunPreverbScripts(
@@ -9219,12 +9301,18 @@ func (e *GameEngine) doRemove(ctx context.Context, player *Player, args []string
 		// CLEARVERB cancels the normal remove action.
 		if sc.Blocked {
 			if len(result.Messages) == 0 {
-				result.Messages = []string{"You can't remove that."}
+				result.Messages = []string{
+					"You can't remove that.",
+				}
 			}
 
 			e.SavePlayer(ctx, player)
 			return result
 		}
+
+		// ------------------------------------------------------------
+		// Perform the remove.
+		// ------------------------------------------------------------
 
 		removed := player.Worn[i]
 		removed.WornSlot = ""
@@ -9234,26 +9322,74 @@ func (e *GameEngine) doRemove(ctx context.Context, player *Player, args []string
 			player.Worn[i+1:]...,
 		)
 
-		player.Inventory = append(player.Inventory, removed)
+		player.Inventory = append(
+			player.Inventory,
+			removed,
+		)
 
 		e.SavePlayer(ctx, player)
 
 		fullName := e.formatItemName(
 			itemDef,
-			ii.Adj1,
-			ii.Adj2,
-			ii.Adj3,
+			removed.Adj1,
+			removed.Adj2,
+			removed.Adj3,
 		)
 
-		result.Messages = append(
-			result.Messages,
-			fmt.Sprintf("You remove %s.", fullName),
+		// ------------------------------------------------------------
+		// IFVERB REMOVE
+		//
+		// Run after the successful action, just like WIELD.
+		// ------------------------------------------------------------
+
+		verbSC := e.RunVerbScripts(
+			player,
+			room,
+			"REMOVE",
+			&scriptItem,
+			itemDef,
 		)
 
-		result.RoomBroadcast = append(
-			result.RoomBroadcast,
-			fmt.Sprintf("%s removes %s.", player.FirstName, fullName),
+		// Script player text overrides the normal REMOVE message.
+		if len(verbSC.Messages) > 0 {
+			result.Messages = append(
+				result.Messages,
+				verbSC.Messages...,
+			)
+		} else {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf(
+					"You remove %s.",
+					fullName,
+				),
+			)
+		}
+
+		// Script room text overrides the normal REMOVE room message.
+		if len(verbSC.RoomMsgs) > 0 {
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				verbSC.RoomMsgs...,
+			)
+		} else {
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s removes %s.",
+					player.FirstName,
+					fullName,
+				),
+			)
+		}
+
+		result.GMBroadcast = append(
+			result.GMBroadcast,
+			verbSC.GMMsgs...,
 		)
+
+		// IFVERB may have changed or removed the item.
+		e.SavePlayer(ctx, player)
 
 		return result
 	}
