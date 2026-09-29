@@ -1916,7 +1916,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			RoomBroadcast: []string{fmt.Sprintf("Without warning, %s howls and collapses to the ground, shaking. Undergoing a terrible transformation, %s changes shape into that of a wolf!", player.FirstName, player.Pronoun())},
 		}
 	case "MOLD":
-		return &CommandResult{Messages: []string{"[Gem molding coming soon.]"}} // TODO: highlander gem improvement
+		return e.doMold(ctx, player, args)
 	case "DISGUISE":
 		return &CommandResult{Messages: []string{"[Disguise coming soon.]"}} // TODO: requires Disguise skill
 	case "SUBMIT":
@@ -14041,6 +14041,237 @@ func (e *GameEngine) doInitiate(ctx context.Context, player *Player, args []stri
 	}
 }
 
+func (e *GameEngine) doMold(ctx context.Context, player *Player, args []string) *CommandResult {
+	if player.Race != RaceHighlander {
+		return &CommandResult{
+			Messages: []string{"Only Highlanders possess the ability to mold gemstones."},
+		}
+	}
+
+	if player.Level < 5 {
+		return &CommandResult{
+			Messages: []string{"You must be at least level 5 to mold gemstones."},
+		}
+	}
+
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Mold what?"},
+		}
+	}
+
+	// Check roundtime.
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You are still working... %.0f seconds remaining.",
+					remaining+0.5,
+				),
+			},
+		}
+	}
+
+	target := strings.ToLower(strings.Join(args, " "))
+	target, ordSkip := parseOrdinal(target)
+	skip := ordSkip
+
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
+		def := e.items[ii.Archetype]
+		if def == nil {
+			continue
+		}
+
+		// Find the MINEDEF for this archetype.
+		// MINEDEF also contains ore/material entries, which are not gems.
+		var gemDef *gameworld.MineDef
+
+		for j := range e.mineDefs {
+			md := &e.mineDefs[j]
+
+			if md.ItemNum != ii.Archetype {
+				continue
+			}
+
+			if def.Type == "ORE" || def.Type == "MATERIAL" {
+				continue
+			}
+
+			gemDef = md
+			break
+		}
+
+		if gemDef == nil {
+			continue
+		}
+
+		// Match the base gem noun, with ordinal support.
+		name := strings.ToLower(e.getItemNounName(def))
+		if !strings.HasPrefix(name, target) {
+			continue
+		}
+
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		itemName := e.formatItemName(def, ii.Adj1, ii.Adj2, ii.Adj3)
+
+		// Val4 marks a gem that has already had a MOLD attempt.
+		if ii.Val4 == 1 {
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("%s has already been molded.", itemName),
+				},
+			}
+		}
+
+		// Flawless is already the highest possible quality.
+		if ii.Adj2 == 129 {
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("%s is already flawless and cannot be improved further.", itemName),
+				},
+			}
+		}
+
+		const rtSec = 10
+
+		player.RoundTimeExpiry = time.Now().Add(rtSec * time.Second)
+		player.RoundTime = rtSec
+
+		// A gem may only be molded once.
+		// The attempt is consumed regardless of success or failure.
+		ii.Val4 = 1
+
+		roll := rand.Intn(100) + 1
+
+		// 96-100: backfire and destroy the gem.
+		if roll > 95 {
+			player.Inventory = append(
+				player.Inventory[:i],
+				player.Inventory[i+1:]...,
+			)
+
+			e.SavePlayer(ctx, player)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"As you mold %s, a flaw spreads through the stone and it crumbles apart!",
+						itemName,
+					),
+					fmt.Sprintf("[Round: %d sec]", player.RoundTime),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s attempts to mold a gemstone, but it crumbles apart.",
+						player.FirstName,
+					),
+				},
+				PlayerState: player,
+			}
+		}
+
+		// 76-95: unsuccessful. The gem survives, but the MOLD
+		// attempt has still been consumed.
+		if roll > 75 {
+			e.SavePlayer(ctx, player)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You carefully mold %s, but are unable to improve it.",
+						itemName,
+					),
+					fmt.Sprintf("[Round: %d sec]", player.RoundTime),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s carefully works on a gemstone.",
+						player.FirstName,
+					),
+				},
+				PlayerState: player,
+			}
+		}
+
+		// 1-75: improve the gem by exactly one quality level.
+		switch ii.Adj2 {
+		case 83: // damaged
+			ii.Adj2 = 53 // chipped
+
+		case 53: // chipped
+			ii.Adj2 = 0 // normal
+
+		case 0: // normal
+			ii.Adj2 = 241 // polished
+
+		case 241: // polished
+			ii.Adj2 = 118 // faceted
+
+		case 118: // faceted
+			ii.Adj2 = 37 // brilliant
+
+		case 37: // brilliant
+			ii.Adj2 = 129 // flawless
+
+		default:
+			// Unknown quality. Since no valid attempt can be made,
+			// undo the MOLD flag and roundtime.
+			ii.Val4 = 0
+			player.RoundTimeExpiry = time.Time{}
+			player.RoundTime = 0
+
+			return &CommandResult{
+				Messages: []string{
+					"You are unable to mold that gemstone.",
+				},
+			}
+		}
+
+		// Recalculate value from the gem's original MINEDEF value.
+		// Adj1 (size) and Adj3 (variant) remain unchanged.
+		ii.Val1 = gemValue(gemDef.Value, ii.Adj1, ii.Adj2)
+
+		newName := e.formatItemName(def, ii.Adj1, ii.Adj2, ii.Adj3)
+
+		xpMsgs := e.awardExperience(player, 50)
+
+		e.SavePlayer(ctx, player)
+
+		messages := []string{
+			fmt.Sprintf(
+				"You carefully mold %s, improving it into %s.",
+				itemName,
+				newName,
+			),
+			fmt.Sprintf("[Round: %d sec]", player.RoundTime),
+		}
+
+		messages = append(messages, xpMsgs...)
+
+		return &CommandResult{
+			Messages: messages,
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s carefully molds a gemstone.",
+					player.FirstName,
+				),
+			},
+			PlayerState: player,
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{"You don't seem to have a gemstone like that."},
+	}
+}
+
 func organizationName(org int) string {
 	names := map[int]string{
 		1:  "Adventurer's Guild",
@@ -14154,7 +14385,9 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 	target, ordSkip := parseOrdinal(rawTarget)
 
 	if e.monsterMgr == nil {
-		return &CommandResult{Messages: []string{"You don't see that here."}}
+		return &CommandResult{
+			Messages: []string{"You don't see that here."},
+		}
 	}
 
 	matchCount := 0
@@ -14170,7 +14403,9 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 			continue
 		}
 
-		name := strings.ToLower(FormatMonsterName(def, e.monAdjs))
+		name := strings.ToLower(
+			FormatMonsterName(def, e.monAdjs),
+		)
 		noun := strings.ToLower(def.Name)
 
 		if !strings.HasPrefix(name, target) &&
@@ -14185,20 +14420,29 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 
 		if def.Discorporate {
 			return &CommandResult{
-				Messages: []string{"There is nothing left to skin."},
+				Messages: []string{
+					"There is nothing left to skin.",
+				},
 			}
 		}
 
 		if inst.Skinned {
 			return &CommandResult{
-				Messages: []string{"This corpse has already been skinned."},
+				Messages: []string{
+					"This corpse has already been skinned.",
+				},
 			}
 		}
 
 		// Check for skin items.
 		if len(def.SkinItems) == 0 && def.SkinAdj == 0 {
 			return &CommandResult{
-				Messages: []string{fmt.Sprintf("You can't skin a %s.", def.Name)},
+				Messages: []string{
+					fmt.Sprintf(
+						"You can't skin a %s.",
+						def.Name,
+					),
+				},
 			}
 		}
 
@@ -14214,7 +14458,9 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 
 		if skill <= 0 {
 			return &CommandResult{
-				Messages: []string{"You lack the skill to properly skin this creature."},
+				Messages: []string{
+					"You lack the skill to properly skin this creature.",
+				},
 			}
 		}
 
@@ -14227,46 +14473,66 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 			def.Armor/2
 
 		// LOFP-style skill check:
-		// 25% base + 5% per skill rank, reduced by monster difficulty.
+		// 25% base + 5% per skill rank,
+		// reduced by monster difficulty.
 		chance := 25 + skill*5 - baseXP/10
 
 		if chance < 1 {
 			chance = 1
 		}
+
 		if chance > 95 {
 			chance = 95
 		}
 
 		skinRoll := rand.Intn(100) + 1
 
-		// Skinning takes 5 seconds.
-		player.RoundTimeExpiry = time.Now().Add(5 * time.Second)
+		// Every valid skinning attempt takes 5 seconds.
+		player.RoundTimeExpiry = time.Now().Add(
+			5 * time.Second,
+		)
+		player.RoundTime = 5
 
-		// A skinning attempt consumes the corpse whether it succeeds or fails.
+		// A skinning attempt consumes the corpse whether
+		// it succeeds or fails.
 		e.monsterMgr.MarkSkinned(inst.ID)
+
+		// ------------------------------------------------------------
+		// FAILED SKINNING ATTEMPT
+		// ------------------------------------------------------------
 
 		if skinRoll > chance {
 			e.SavePlayer(ctx, player)
+
 			return &CommandResult{
 				Messages: []string{
 					"You fail to salvage an intact specimen.",
 					"[Round: 5 sec]",
 				},
 				RoomBroadcast: []string{
-					fmt.Sprintf("%s attempts to skin %s%s.",
+					fmt.Sprintf(
+						"%s attempts to skin %s%s.",
 						player.FirstName,
 						articleFor(displayName, def.Unique),
-						displayName),
+						displayName,
+					),
 				},
+				PlayerState: player,
 			}
 		}
 
-		// Successful skinning attempt.
-		// Choose the specimen using the SKINITEM weighted probabilities.
-		var skinMsgs []string
+		// ------------------------------------------------------------
+		// SUCCESSFUL SKINNING ATTEMPT
+		// ------------------------------------------------------------
 
+		var skinMsgs []string
+		gotSpecimen := false
+
+		// Choose the specimen using the SKINITEM
+		// weighted probabilities.
 		if len(def.SkinItems) > 0 {
 			totalProb := 0
+
 			for _, si := range def.SkinItems {
 				totalProb += si.Probability
 			}
@@ -14278,39 +14544,53 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 				for _, si := range def.SkinItems {
 					cumProb += si.Probability
 
-					if roll < cumProb {
-						skinDef := e.items[si.Archetype]
-						if skinDef != nil {
-							adj := def.SkinAdj
-							skinName := e.formatItemName(skinDef, adj, 0, 0)
+					if roll >= cumProb {
+						continue
+					}
 
-							item := InventoryItem{
-								Archetype: si.Archetype,
-								Adj1:      adj,
-								Val1:      si.Value, // SKINITEM copper value
-								Val2:      si.Magic, // SKINITEM magic/spell-component value
-								Val5:      si.Val5,  //alchemy reagent type
-							}
+					skinDef := e.items[si.Archetype]
+					if skinDef != nil {
+						adj := def.SkinAdj
 
-							player.Inventory = append(player.Inventory, item)
+						skinName := e.formatItemName(
+							skinDef,
+							adj,
+							0,
+							0,
+						)
 
-							skinMsgs = append(
-								skinMsgs,
-								fmt.Sprintf(
-									"You remove %s.",
-									skinName,
-								),
-							)
-							skinMsgs = append(skinMsgs, "[Round: 5 sec]")
+						item := InventoryItem{
+							Archetype: si.Archetype,
+							Adj1:      adj,
+							Val1:      si.Value, // SKINITEM copper value
+							Val2:      si.Magic, // SKINITEM magic/spell-component value
+							Val5:      si.Val5,  // alchemy reagent type
 						}
 
-						break
+						player.Inventory = append(
+							player.Inventory,
+							item,
+						)
+
+						skinMsgs = append(
+							skinMsgs,
+							fmt.Sprintf(
+								"You remove %s.",
+								skinName,
+							),
+						)
+
+						gotSpecimen = true
 					}
+
+					break
 				}
 			}
 		}
 
-		if len(skinMsgs) == 0 {
+		// The skill check succeeded, but no usable
+		// specimen was produced.
+		if !gotSpecimen {
 			skinMsgs = append(
 				skinMsgs,
 				fmt.Sprintf(
@@ -14320,6 +14600,25 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 				),
 			)
 		}
+
+		// Award XP only when skinning actually produces
+		// an intact specimen.
+		if gotSpecimen {
+			xpMsgs := e.awardExperience(
+				player,
+				25,
+			)
+
+			skinMsgs = append(
+				skinMsgs,
+				xpMsgs...,
+			)
+		}
+
+		skinMsgs = append(
+			skinMsgs,
+			"[Round: 5 sec]",
+		)
 
 		e.SavePlayer(ctx, player)
 
@@ -14333,11 +14632,14 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 					displayName,
 				),
 			},
+			PlayerState: player,
 		}
 	}
 
 	return &CommandResult{
-		Messages: []string{"You don't see a dead creature to skin here."},
+		Messages: []string{
+			"You don't see a dead creature to skin here.",
+		},
 	}
 }
 
@@ -14649,6 +14951,71 @@ func (e *GameEngine) doTurnPage(ctx context.Context, player *Player, args []stri
 	}
 
 	return nil // fall through to item interaction
+}
+
+func (e *GameEngine) awardExperience(player *Player, amount int) []string {
+	if player == nil || amount <= 0 {
+		return nil
+	}
+
+	oldBP := player.BuildPoints
+
+	player.Experience += amount
+
+	leveledUp := recalcBuildPoints(player)
+
+	messages := []string{
+		fmt.Sprintf("[+%d experience]", amount),
+	}
+
+	if player.BuildPoints > oldBP {
+		messages = append(
+			messages,
+			fmt.Sprintf(
+				"[+%d build points! Total: %d]",
+				player.BuildPoints-oldBP,
+				player.BuildPoints,
+			),
+		)
+	}
+
+	if leveledUp {
+		player.MaxBodyPoints += player.Constitution / 10
+		player.BodyPoints = player.MaxBodyPoints
+
+		player.MaxFatigue += player.Constitution / 15
+		player.Fatigue = player.MaxFatigue
+
+		player.MaxMana += (player.Willpower + player.Empathy) / 15
+		player.Mana = player.MaxMana
+
+		player.MaxPsi += player.Willpower / 10
+		player.Psi = player.MaxPsi
+
+		messages = append(
+			messages,
+			fmt.Sprintf(
+				"Congratulations! You have advanced to level %d!",
+				player.Level,
+			),
+		)
+
+		if e.roomBroadcast != nil {
+			e.roomBroadcast(
+				player.RoomNumber,
+				player.FirstName,
+				[]string{
+					fmt.Sprintf(
+						"%s has advanced to level %d!",
+						player.FirstName,
+						player.Level,
+					),
+				},
+			)
+		}
+	}
+
+	return messages
 }
 
 func rollStatsForRace(race int) PendingStats {

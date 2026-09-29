@@ -718,11 +718,13 @@ func (e *GameEngine) doRepair(ctx context.Context, player *Player, args []string
 
 	// Check roundtime
 	if player.RoundTimeExpiry.After(time.Now()) {
-		remaining := player.RoundTimeExpiry.Sub(time.Now()).Seconds()
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
 		return &CommandResult{Messages: []string{fmt.Sprintf("You are still working... %.0f seconds remaining.", remaining+0.5)}}
 	}
 
 	target := strings.ToLower(strings.Join(args, " "))
+	target, ordSkip := parseOrdinal(target)
+	skip := ordSkip
 
 	// Find the weapon in inventory with DAMAGED state
 	for i, ii := range player.Inventory {
@@ -730,16 +732,25 @@ func (e *GameEngine) doRepair(ctx context.Context, player *Player, args []string
 		if def == nil {
 			continue
 		}
+
 		if !isWeapon(def.Type) {
 			continue
 		}
+
 		name := strings.ToLower(e.getItemNounName(def))
 		if !strings.HasPrefix(name, target) {
 			continue
 		}
 
+		if skip > 0 {
+			skip--
+			continue
+		}
+
 		if ii.State != "DAMAGED" {
-			return &CommandResult{Messages: []string{"That doesn't need repair."}}
+			return &CommandResult{
+				Messages: []string{"That doesn't need repair."},
+			}
 		}
 
 		// Skill check: base 40% + smithSkill*5
@@ -757,7 +768,14 @@ func (e *GameEngine) doRepair(ctx context.Context, player *Player, args []string
 		if roll > chance {
 			e.SavePlayer(ctx, player)
 			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("[Success: %d%%, Roll %d] You are unable to repair the weapon.", chance, roll)},
+				Messages: []string{
+					fmt.Sprintf(
+						"[Success: %d%%, Roll %d] You are unable to repair the weapon.",
+						chance,
+						roll,
+					),
+					fmt.Sprintf("[Round: %d sec]", player.RoundTime),
+				},
 				RoomBroadcast: []string{fmt.Sprintf("%s works at the forge, trying to repair a weapon.", player.FirstName)},
 				PlayerState:   player,
 			}
@@ -765,12 +783,32 @@ func (e *GameEngine) doRepair(ctx context.Context, player *Player, args []string
 
 		// Success: remove DAMAGED state
 		player.Inventory[i].State = ""
+
+		xpMsgs := e.awardExperience(player, 50)
+
 		e.SavePlayer(ctx, player)
 
+		messages := []string{
+			fmt.Sprintf(
+				"[Success: %d%%, Roll %d] You carefully repair your %s.",
+				chance,
+				roll,
+				itemName,
+			),
+			fmt.Sprintf("[Round: %d sec]", player.RoundTime),
+		}
+
+		messages = append(messages, xpMsgs...)
+
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("[Success: %d%%, Roll %d] You carefully repair your %s.", chance, roll, itemName)},
-			RoomBroadcast: []string{fmt.Sprintf("%s works at the forge, repairing a weapon.", player.FirstName)},
-			PlayerState:   player,
+			Messages: messages,
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s works at the forge, repairing a weapon.",
+					player.FirstName,
+				),
+			},
+			PlayerState: player,
 		}
 	}
 
@@ -923,6 +961,10 @@ func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandR
 		}
 
 		player.Inventory = append(player.Inventory, item)
+
+		// Successful forage earns experience.
+		xpMsgs := e.awardExperience(player, 100)
+
 		e.SavePlayer(ctx, player)
 
 		itemName := e.formatItemName(
@@ -932,14 +974,22 @@ func (e *GameEngine) doForageReal(ctx context.Context, player *Player) *CommandR
 			item.Adj3,
 		)
 
+		messages := []string{
+			fmt.Sprintf(
+				"You search the area and find %s!",
+				itemName,
+			),
+		}
+
+		messages = append(messages, xpMsgs...)
+
+		messages = append(
+			messages,
+			fmt.Sprintf("[Round: %d sec]", rtSec),
+		)
+
 		return &CommandResult{
-			Messages: []string{
-				fmt.Sprintf(
-					"You search the area and find %s!",
-					itemName,
-				),
-				fmt.Sprintf("[Round: %d sec]", rtSec),
-			},
+			Messages: messages,
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s forages in the area.",
