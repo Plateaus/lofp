@@ -1658,11 +1658,14 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		if len(args) == 0 {
 			return &CommandResult{Messages: []string{"Attack what?"}}
 		}
-		if player.CombatTarget == nil || !player.Joined {
-			return &CommandResult{
-				Messages: []string{"You are not engaged with anything."},
-			}
-		}
+
+		/*
+			if player.CombatTarget == nil || !player.Joined {
+				return &CommandResult{
+					Messages: []string{"You are not engaged with anything."},
+				}
+			}  */
+
 		return e.doAttackMonster(ctx, player, strings.Join(args, " "))
 	case "FLEE":
 		return e.doFlee(ctx, player)
@@ -1765,6 +1768,17 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		if player.CombatTarget == nil && !player.Joined {
 			return &CommandResult{
 				Messages: []string{"You are not engaged with anything."},
+			}
+		}
+
+		// RETREAT is instant, but cannot be used while another
+		// action's roundtime is still active.
+		if player.RoundTimeExpiry.After(time.Now()) {
+			remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf("[Wait %d seconds...]", remaining),
+				},
 			}
 		}
 

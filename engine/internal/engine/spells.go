@@ -552,8 +552,13 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		return &CommandResult{Messages: []string{"You can't cast spells while unconscous."}}
 	}
 
+	if player.Wielded != nil || player.Offhand != nil {
+		return &CommandResult{Messages: []string{"You'll have to unwield to do that."}}
+	}
+
 	// If no spell prepared, try to prepare+cast in one step
 	if player.PreparedSpell == 0 {
+
 		if len(args) == 0 {
 			return &CommandResult{Messages: []string{"You have no spell prepared. Use PREPARE <spell> first."}}
 		}

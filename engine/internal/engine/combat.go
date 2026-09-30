@@ -950,9 +950,36 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		}
 	}
 
-	// We may attack either:
-	//   1. our explicitly engaged combat target, OR
-	//   2. a monster which has engaged/attacked us.
+	// ------------------------------------------------------------
+	// PRIMARY WEAPON / ATTACK RANGE
+	// ------------------------------------------------------------
+
+	var primaryDef *gameworld.ItemDef
+
+	if player.Wielded != nil {
+		primaryDef = e.items[player.Wielded.Archetype]
+	}
+
+	// These weapon types attack at reach/range.
+	//
+	// They:
+	//   - do not require ADVANCE
+	//   - bypass GUARD
+	//   - do not establish engagement
+	//
+	// Throwable weapon types are intentionally NOT included here.
+	// THROW will handle those separately.
+	isReachAttack := primaryDef != nil &&
+		(primaryDef.Type == "POLE_WEAPON" ||
+			primaryDef.Type == "DRAKIN_POLE" ||
+			primaryDef.Type == "BOW_WEAPON" ||
+			primaryDef.Type == "HANDGUN" ||
+			primaryDef.Type == "RIFLE")
+
+	// ------------------------------------------------------------
+	// ENGAGEMENT CHECK
+	// ------------------------------------------------------------
+
 	engaged := player.CombatTarget != nil &&
 		player.CombatTarget.IsMonster &&
 		player.CombatTarget.MonsterID == inst.ID
@@ -962,7 +989,9 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		player.FirstName,
 	)
 
-	if !engaged && !attackingUs {
+	// Normal melee requires engagement.
+	// Reach/ranged attacks do not.
+	if !isReachAttack && !engaged && !attackingUs {
 		return &CommandResult{
 			Messages: []string{
 				"You are not engaged with that opponent.",
@@ -970,9 +999,9 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		}
 	}
 
-	// If the monster engaged us first, it now becomes
-	// our combat target too.
-	if !engaged && attackingUs {
+	// If a monster engaged us first, a normal melee attack joins us
+	// to that combat. Reach/ranged attacks do not establish engagement.
+	if !isReachAttack && !engaged && attackingUs {
 		player.CombatTarget = &CombatTarget{
 			IsMonster: true,
 			MonsterID: inst.ID,
@@ -984,53 +1013,50 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	// GUARD INTERCEPTION
 	// ------------------------------------------------------------
 
-	guardInst, guardDef := e.findGuardFor(
-		inst,
-		player.RoomNumber,
-	)
-
-	if guardInst != nil && guardDef != nil {
-		guardName := FormatMonsterName(
-			guardDef,
-			e.monAdjs,
+	// Reach/ranged attacks bypass guards.
+	if !isReachAttack {
+		guardInst, guardDef := e.findGuardFor(
+			inst,
+			player.RoomNumber,
 		)
 
-		guardArticle := articleFor(
-			guardName,
-			guardDef.Unique,
-		)
-
-		if e.sendToPlayer != nil {
-			e.sendToPlayer(
-				player.FirstName,
-				[]string{
-					fmt.Sprintf(
-						"%s%s is now guarding %s%s.",
-						capArticle(guardArticle),
-						guardName,
-						articleFor(
-							FormatMonsterName(def, e.monAdjs),
-							def.Unique,
-						),
-						FormatMonsterName(def, e.monAdjs),
-					),
-				},
+		if guardInst != nil && guardDef != nil {
+			guardName := FormatMonsterName(
+				guardDef,
+				e.monAdjs,
 			)
+
+			guardArticle := articleFor(
+				guardName,
+				guardDef.Unique,
+			)
+
+			if e.sendToPlayer != nil {
+				e.sendToPlayer(
+					player.FirstName,
+					[]string{
+						fmt.Sprintf(
+							"%s%s is now guarding %s%s.",
+							capArticle(guardArticle),
+							guardName,
+							articleFor(
+								FormatMonsterName(def, e.monAdjs),
+								def.Unique,
+							),
+							FormatMonsterName(def, e.monAdjs),
+						),
+					},
+				)
+			}
+
+			inst = guardInst
+			def = guardDef
 		}
-
-		inst = guardInst
-		def = guardDef
 	}
 
 	// ------------------------------------------------------------
-	// PRIMARY WEAPON
+	// RANGED WEAPON CHECK
 	// ------------------------------------------------------------
-
-	var primaryDef *gameworld.ItemDef
-
-	if player.Wielded != nil {
-		primaryDef = e.items[player.Wielded.Archetype]
-	}
 
 	// Check ranged weapon is loaded.
 	isRangedWeapon := primaryDef != nil &&
@@ -1081,25 +1107,29 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	// ENGAGE
 	// ------------------------------------------------------------
 
-	player.CombatTarget = &CombatTarget{
-		IsMonster: true,
-		MonsterID: inst.ID,
-	}
-	player.Joined = true
-
-	e.monsterMgr.mu.Lock()
-
-	for i := range e.monsterMgr.instances {
-		if e.monsterMgr.instances[i].ID == inst.ID {
-			if e.monsterMgr.instances[i].Target == "" {
-				e.monsterMgr.instances[i].Target =
-					player.FirstName
-			}
-			break
+	// Normal melee attacks establish engagement.
+	// Reach/ranged attacks remain unjoined.
+	if !isReachAttack {
+		player.CombatTarget = &CombatTarget{
+			IsMonster: true,
+			MonsterID: inst.ID,
 		}
-	}
+		player.Joined = true
 
-	e.monsterMgr.mu.Unlock()
+		e.monsterMgr.mu.Lock()
+
+		for i := range e.monsterMgr.instances {
+			if e.monsterMgr.instances[i].ID == inst.ID {
+				if e.monsterMgr.instances[i].Target == "" {
+					e.monsterMgr.instances[i].Target =
+						player.FirstName
+				}
+				break
+			}
+		}
+
+		e.monsterMgr.mu.Unlock()
+	}
 
 	// Cry for law (strategy 1-25 or 101-125).
 	if (def.Strategy >= 1 && def.Strategy <= 25) ||

@@ -460,7 +460,7 @@ func (e *GameEngine) doWork(ctx context.Context, player *Player, args []string) 
 
 	// Check roundtime
 	if player.RoundTimeExpiry.After(time.Now()) {
-		remaining := player.RoundTimeExpiry.Sub(time.Now()).Seconds()
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
 		return &CommandResult{Messages: []string{fmt.Sprintf("You are still working... %.0f seconds remaining.", remaining+0.5)}}
 	}
 
