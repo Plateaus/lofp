@@ -81,6 +81,32 @@ type TraitDef struct {
 	Scripts []ScriptBlock `bson:"scripts,omitempty" json:"scripts,omitempty"`
 }
 
+// Monster immunity types.
+// Values normally use:
+//   0 = immune
+//   1 = half effect
+//   2 = normal effect
+//   3 = 1.5x effect
+//   4 = double effect
+//
+// ImmunityUndead is special:
+//   0 = not undead-affectable
+//   1 = extremely powerful undead
+//   2 = greater undead
+//   3 = lesser undead
+const (
+	ImmunityEnsnare       = 0
+	ImmunityCrushing      = 1
+	ImmunityEdged         = 2
+	ImmunityHeat          = 3
+	ImmunityElectrical    = 4
+	ImmunityCold          = 5
+	ImmunityNervousSystem = 6
+	ImmunityLife          = 7
+	ImmunityUndead        = 8
+	ImmunityDeathCritical = 9
+)
+
 // MonsterDef defines a monster type.
 type MonsterDef struct {
 	Number         int               `bson:"number" json:"number"`

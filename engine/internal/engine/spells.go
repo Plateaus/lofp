@@ -96,8 +96,9 @@ func init() {
 	}
 	// Necromancy (301-356)
 	necro := []SpellDef{
-		{ID: 301, Name: "Turn Undead I", School: "Necromancy", Level: 2, ManaCost: 4, CastTime: 3, Effect: "damage", DmgMin: 5, DmgMax: 15, DmgType: ""},
-		{ID: 302, Name: "Turn Undead II", School: "Necromancy", Level: 8, ManaCost: 10, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 30, DmgType: ""},
+		{ID: 301, Name: "Turn Undead I", School: "Necromancy", Level: 2, ManaCost: 4, CastTime: 3, Effect: "damage", DmgMin: 3, DmgMax: 8, DmgType: "undead"},
+		{ID: 302, Name: "Turn Undead II", School: "Necromancy", Level: 8, ManaCost: 10, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 15, DmgType: "undead"},
+		{ID: 304, Name: "Turn Undead III", School: "Necromancy", Level: 16, ManaCost: 22, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 25, DmgType: "undead"},
 		{ID: 313, Name: "Body Destruction I", School: "Necromancy", Level: 1, ManaCost: 3, CastTime: 3, Effect: "damage", DmgMin: 3, DmgMax: 10, DmgType: ""},
 		{ID: 314, Name: "Body Destruction II", School: "Necromancy", Level: 5, ManaCost: 7, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 20, DmgType: ""},
 		{ID: 315, Name: "Body Destruction III", School: "Necromancy", Level: 10, ManaCost: 14, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 35, DmgType: ""},
@@ -110,9 +111,9 @@ func init() {
 		{ID: 335, Name: "Invigoration II", School: "Necromancy", Level: 9, ManaCost: 10, CastTime: 3, Effect: "heal", HealMin: 8, HealMax: 25, StatusType: StatFatigue},
 		{ID: 337, Name: "Reconstruction", School: "Necromancy", Level: 4, ManaCost: 6, CastTime: 3, Effect: "heal", HealMin: 5, HealMax: 20},
 		{ID: 338, Name: "Unstun", School: "Necromancy", Level: 9, ManaCost: 8, CastTime: 2, Effect: "utility"},
-		{ID: 339, Name: "Destroy Undead I", School: "Necromancy", Level: 3, ManaCost: 5, CastTime: 3, Effect: "damage", DmgMin: 8, DmgMax: 20, DmgType: ""},
-		{ID: 340, Name: "Destroy Undead II", School: "Necromancy", Level: 8, ManaCost: 12, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 40, DmgType: ""},
-		{ID: 341, Name: "Destroy Undead III", School: "Necromancy", Level: 13, ManaCost: 20, CastTime: 3, Effect: "damage", DmgMin: 25, DmgMax: 60, DmgType: ""},
+		{ID: 339, Name: "Destroy Undead I", School: "Necromancy", Level: 3, ManaCost: 5, CastTime: 3, Effect: "damage", DmgMin: 8, DmgMax: 20, DmgType: "undead"},
+		{ID: 340, Name: "Destroy Undead II", School: "Necromancy", Level: 8, ManaCost: 12, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 40, DmgType: "undead"},
+		{ID: 341, Name: "Destroy Undead III", School: "Necromancy", Level: 13, ManaCost: 20, CastTime: 3, Effect: "damage", DmgMin: 25, DmgMax: 60, DmgType: "undead"},
 		{ID: 343, Name: "Regeneration", School: "Necromancy", Level: 27, ManaCost: 35, CastTime: 4, Effect: "heal", HealMin: 40, HealMax: 80},
 		{ID: 345, Name: "Spectral Sword", School: "Necromancy", Level: 7, ManaCost: 10, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 22, DmgType: ""},
 		{ID: 347, Name: "Divine Blessing", School: "Necromancy", Level: 10, ManaCost: 12, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
@@ -552,8 +553,15 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		return &CommandResult{Messages: []string{"You can't cast spells while unconscous."}}
 	}
 
-	if player.Wielded != nil || player.Offhand != nil {
+	if player.Wielded != nil {
 		return &CommandResult{Messages: []string{"You'll have to unwield to do that."}}
+	}
+
+	if player.Offhand != nil {
+		offhandDef := e.items[player.Offhand.Archetype]
+		if offhandDef == nil || offhandDef.Type != "SHIELD" {
+			return &CommandResult{Messages: []string{"You'll have to unwield to do that."}}
+		}
 	}
 
 	// If no spell prepared, try to prepare+cast in one step
@@ -1398,12 +1406,13 @@ func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []str
 }
 
 func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []string, spectacular bool) *CommandResult {
-	// Find target
+	// Find target.
 	targetName := ""
+
 	if len(args) > 0 {
 		targetName = strings.Join(args, " ")
 	} else if player.CombatTarget != nil && player.CombatTarget.IsMonster {
-		// Auto-target current combat target
+		// Auto-target current combat target.
 		e.monsterMgr.mu.RLock()
 		for _, inst := range e.monsterMgr.instances {
 			if inst.ID == player.CombatTarget.MonsterID && inst.Alive {
@@ -1417,31 +1426,60 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 	}
 
 	if targetName == "" {
-		return &CommandResult{Messages: []string{"Cast at what? Specify a target."}}
+		return &CommandResult{
+			Messages: []string{"Cast at what? Specify a target."},
+		}
 	}
 
 	inst, def := e.findMonsterInRoom(player, targetName)
 	if inst == nil {
-		return &CommandResult{Messages: []string{fmt.Sprintf("You don't see '%s' here.", targetName)}}
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("You don't see '%s' here.", targetName),
+			},
+		}
 	}
 
 	name := FormatMonsterName(def, e.monAdjs)
+
 	dmg := rand.Intn(spell.DmgMax-spell.DmgMin+1) + spell.DmgMin
 
-	// Apply magic resistance
+	// Apply magic resistance.
 	if def.MagicResist > 0 {
 		resistRoll := rand.Intn(100)
+
 		if resistRoll < def.MagicResist {
 			return &CommandResult{
-				Messages:      []string{fmt.Sprintf("You gesture and cast %s at a %s, but it resists the spell!", spell.Name, name)},
-				RoomBroadcast: []string{fmt.Sprintf("%s casts %s at a %s, but it resists!", player.FirstName, spell.Name, name)},
+				Messages: []string{
+					fmt.Sprintf(
+						"You gesture and cast %s at a %s, but it resists the spell!",
+						spell.Name,
+						name,
+					),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s casts %s at a %s, but it resists!",
+						player.FirstName,
+						spell.Name,
+						name,
+					),
+				},
 			}
 		}
 	}
 
-	// Apply elemental immunity
-	if spell.DmgType != "" {
+	// Apply damage-type immunity.
+	if spell.DmgType == "undead" {
+		// IMMUNITY 8 is special. Its documented default is 0,
+		// so monsters without IMMUNITY 8 are unaffected by
+		// undead-affecting spells.
+		undeadPower := def.Immunities[gameworld.ImmunityUndead]
+		dmg = applyImmunity(dmg, undeadPower)
+
+	} else if spell.DmgType != "" {
 		immType := elementalImmunityType(spell.DmgType)
+
 		if level, ok := def.Immunities[immType]; ok {
 			dmg = applyImmunity(dmg, level)
 		}
@@ -1449,60 +1487,221 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 
 	if dmg <= 0 {
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("You cast %s at a %s, but it seems unaffected!", spell.Name, name)},
-			RoomBroadcast: []string{fmt.Sprintf("%s casts %s at a %s!", player.FirstName, spell.Name, name)},
+			Messages: []string{
+				fmt.Sprintf(
+					"You cast %s at a %s, but it seems unaffected!",
+					spell.Name,
+					name,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s casts %s at a %s!",
+					player.FirstName,
+					spell.Name,
+					name,
+				),
+			},
 		}
 	}
 
 	if spectacular {
-		dmg = dmg * 2
+		dmg *= 2
 	}
 
-	// Article for monster name ("a " prefix)
 	article := "a "
 
-	// Spell flavor text based on damage type
-	flavorSelf := fmt.Sprintf("%s forms a bolt of energy and hurls it at %s%s!", player.FirstName, article, name)
-	flavorDmg := fmt.Sprintf("%s %s to %s. [%d Damage]", damageSeverity(dmg), spellDmgNoun(spell.DmgType), randomBodyPart(def.BodyType), dmg)
+	// Default spell flavor.
+	flavorSelf := fmt.Sprintf(
+		"%s forms a bolt of energy and hurls it at %s%s!",
+		player.FirstName,
+		article,
+		name,
+	)
+
+	flavorDmg := fmt.Sprintf(
+		"%s %s to %s. [%d Damage]",
+		damageSeverity(dmg),
+		spellDmgNoun(spell.DmgType),
+		randomBodyPart(def.BodyType),
+		dmg,
+	)
+
+	// Damage-type-specific flavor.
 	switch spell.DmgType {
 	case "heat":
-		flavorSelf = fmt.Sprintf("%s forms a ball of flame and hurls it at %s%s!", player.FirstName, article, name)
-		flavorDmg = fmt.Sprintf("%s burn to %s. [%d Damage]", damageSeverity(dmg), randomBodyPart(def.BodyType), dmg)
+		flavorSelf = fmt.Sprintf(
+			"%s forms a ball of flame and hurls it at %s%s!",
+			player.FirstName,
+			article,
+			name,
+		)
+
+		flavorDmg = fmt.Sprintf(
+			"%s burn to %s. [%d Damage]",
+			damageSeverity(dmg),
+			randomBodyPart(def.BodyType),
+			dmg,
+		)
+
 	case "cold":
-		flavorSelf = fmt.Sprintf("%s forms a freezing sphere from the air and hurls it at %s%s!", player.FirstName, article, name)
-		flavorDmg = fmt.Sprintf("%s blast to %s. [%d Damage]", damageSeverity(dmg), randomBodyPart(def.BodyType), dmg)
+		flavorSelf = fmt.Sprintf(
+			"%s forms a freezing sphere from the air and hurls it at %s%s!",
+			player.FirstName,
+			article,
+			name,
+		)
+
+		flavorDmg = fmt.Sprintf(
+			"%s blast to %s. [%d Damage]",
+			damageSeverity(dmg),
+			randomBodyPart(def.BodyType),
+			dmg,
+		)
+
 	case "electric":
-		flavorSelf = fmt.Sprintf("%s releases a bolt of lightning at %s%s!", player.FirstName, article, name)
-		flavorDmg = fmt.Sprintf("%s shock to %s. [%d Damage]", damageSeverity(dmg), randomBodyPart(def.BodyType), dmg)
+		flavorSelf = fmt.Sprintf(
+			"%s releases a bolt of lightning at %s%s!",
+			player.FirstName,
+			article,
+			name,
+		)
+
+		flavorDmg = fmt.Sprintf(
+			"%s shock to %s. [%d Damage]",
+			damageSeverity(dmg),
+			randomBodyPart(def.BodyType),
+			dmg,
+		)
+
 	case "crushing":
-		flavorSelf = fmt.Sprintf("%s hurls a force blast at %s%s!", player.FirstName, article, name)
-		flavorDmg = fmt.Sprintf("%s strike to %s. [%d Damage]", damageSeverity(dmg), randomBodyPart(def.BodyType), dmg)
+		flavorSelf = fmt.Sprintf(
+			"%s hurls a force blast at %s%s!",
+			player.FirstName,
+			article,
+			name,
+		)
+
+		flavorDmg = fmt.Sprintf(
+			"%s strike to %s. [%d Damage]",
+			damageSeverity(dmg),
+			randomBodyPart(def.BodyType),
+			dmg,
+		)
+
+	case "undead":
+		flavorSelf = fmt.Sprintf(
+			"%s directs a surge of necromantic power at %s%s!",
+			player.FirstName,
+			article,
+			name,
+		)
+
+		flavorDmg = fmt.Sprintf(
+			"%s blast to %s. [%d Damage]",
+			damageSeverity(dmg),
+			randomBodyPart(def.BodyType),
+			dmg,
+		)
 	}
 
+	// Apply damage.
 	killed := e.damageMonster(player, inst.ID, dmg, false)
 
+	// Determine whether Turn Undead also causes the surviving
+	// monster to flee.
+	turned := false
+
+	if !killed && (spell.ID == 301 || spell.ID == 302 || spell.ID == 304) {
+		undeadPower := def.Immunities[gameworld.ImmunityUndead]
+
+		if canTurnUndead(spell.ID, undeadPower) {
+			spellcraft := player.Skills[23]
+			turnChance := turnUndeadChance(spellcraft, undeadPower)
+
+			if rand.Intn(100)+1 <= turnChance {
+				turned = true
+			}
+		}
+	}
+
 	var msgs, roomMsgs []string
-	msgs = append(msgs, fmt.Sprintf("You gesture at %s%s.", article, name))
-	roomMsgs = append(roomMsgs, fmt.Sprintf("%s gestures at %s%s.", player.FirstName, article, name))
+
+	msgs = append(
+		msgs,
+		fmt.Sprintf("You gesture at %s%s.", article, name),
+	)
+
+	roomMsgs = append(
+		roomMsgs,
+		fmt.Sprintf("%s gestures at %s%s.", player.FirstName, article, name),
+	)
+
 	msgs = append(msgs, flavorSelf)
 	roomMsgs = append(roomMsgs, flavorSelf)
+
 	msgs = append(msgs, flavorDmg)
+
+	// Successful turning causes the monster to flee immediately.
+	if turned {
+		msgs = append(
+			msgs,
+			fmt.Sprintf("The %s recoils and flees!", name),
+		)
+
+		roomMsgs = append(
+			roomMsgs,
+			fmt.Sprintf("The %s recoils and flees!", name),
+		)
+
+		e.monsterFlee(inst, def)
+
+		if player.CombatTarget != nil &&
+			player.CombatTarget.IsMonster &&
+			player.CombatTarget.MonsterID == inst.ID {
+
+			player.CombatTarget = nil
+			player.Joined = false
+		}
+	} else if !killed && (spell.ID == 301 || spell.ID == 302 || spell.ID == 304) {
+		msgs = append(msgs, fmt.Sprintf("The %s resists being turned!", name))
+	}
 
 	if killed {
 		deathText := def.TextOverrides["TEXD"]
+
 		if deathText != "" {
-			msgs = append(msgs, fmt.Sprintf("A %s %s", name, deathText))
-			roomMsgs = append(roomMsgs, fmt.Sprintf("A %s %s", name, deathText))
+			msgs = append(
+				msgs,
+				fmt.Sprintf("A %s %s", name, deathText),
+			)
+
+			roomMsgs = append(
+				roomMsgs,
+				fmt.Sprintf("A %s %s", name, deathText),
+			)
 		} else {
-			msgs = append(msgs, "He collapses, dead.")
-			roomMsgs = append(roomMsgs, fmt.Sprintf("A %s collapses, dead!", name))
+			msgs = append(
+				msgs,
+				"He collapses, dead.",
+			)
+
+			roomMsgs = append(
+				roomMsgs,
+				fmt.Sprintf("A %s collapses, dead!", name),
+			)
 		}
+
 		e.handleMonsterDeath(player, inst, def)
+
 		player.CombatTarget = nil
 		player.Joined = false
 	}
 
-	return &CommandResult{Messages: msgs, RoomBroadcast: roomMsgs}
+	return &CommandResult{
+		Messages:      msgs,
+		RoomBroadcast: roomMsgs,
+	}
 }
 
 func (e *GameEngine) castHealSpell(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
@@ -1976,6 +2175,45 @@ func (e *GameEngine) castDefenseSpell(player *Player, spell *SpellDef, args []st
 		RoomBroadcast: []string{
 			fmt.Sprintf("%s gestures and casts %s.", player.FirstName, spell.Name),
 		},
+	}
+}
+
+func turnUndeadChance(spellcraft int, undeadPower int) int {
+	chance := 40 + spellcraft*5
+
+	switch undeadPower {
+	case 3: // lesser undead
+		// no penalty
+
+	case 2: // greater undead
+		chance -= 25
+
+	case 1: // extremely powerful undead
+		chance -= 50
+	}
+
+	if chance < 5 {
+		chance = 5
+	}
+	if chance > 95 {
+		chance = 95
+	}
+
+	return chance
+}
+func canTurnUndead(spellID int, undeadPower int) bool {
+	switch spellID {
+	case 301: // Turn Undead I - lesser undead
+		return undeadPower == 3
+
+	case 302: // Turn Undead II - lesser and greater undead
+		return undeadPower >= 2
+
+	case 304: // Turn Undead III -
+		return undeadPower > 1
+
+	default:
+		return false
 	}
 }
 

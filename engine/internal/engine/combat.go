@@ -223,13 +223,17 @@ func (e *GameEngine) weaponCritDamage(wielded *InventoryItem, weaponDef *gamewor
 func elementalImmunityType(dmgType string) int {
 	switch strings.ToLower(dmgType) {
 	case "heat":
-		return 3
-	case "cold":
-		return 4
+		return gameworld.ImmunityHeat
 	case "electric":
-		return 5
+		return gameworld.ImmunityElectrical
+	case "cold":
+		return gameworld.ImmunityCold
+	case "crushing":
+		return gameworld.ImmunityCrushing
+	case "undead":
+		return gameworld.ImmunityUndead
 	default:
-		return 0
+		return gameworld.ImmunityEnsnare
 	}
 }
 
@@ -809,7 +813,7 @@ func weaponImmunityType(weaponDef *gameworld.ItemDef) int {
 	}
 }
 
-func (e *GameEngine) weaponDisplayName(player *Player, weaponDef *gameworld.ItemDef) string {
+func (e *GameEngine) weaponDisplayName(player *Player, weaponDef *gameworld.ItemDef, weapon *InventoryItem) string {
 	clawGrowth := player.EffectiveStat(ClawGrowth)
 
 	if weaponDef == nil {
@@ -818,10 +822,18 @@ func (e *GameEngine) weaponDisplayName(player *Player, weaponDef *gameworld.Item
 		}
 		return "fists"
 	}
+
 	// Return name WITHOUT article — caller adds "your" prefix
-	if player.Wielded != nil {
-		return e.formatItemNameNoArticle(weaponDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3, player.Wielded.State)
+	if weapon != nil {
+		return e.formatItemNameNoArticle(
+			weaponDef,
+			weapon.Adj1,
+			weapon.Adj2,
+			weapon.Adj3,
+			weapon.State,
+		)
 	}
+
 	return strings.ToLower(e.nouns[weaponDef.NameID])
 }
 
@@ -1460,11 +1472,7 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 			attackVerb(weaponDef)
 	}
 
-	weaponName :=
-		e.weaponDisplayName(
-			player,
-			weaponDef,
-		)
+	weaponName := e.weaponDisplayName(player, weaponDef, weapon)
 
 	var msgs []string
 

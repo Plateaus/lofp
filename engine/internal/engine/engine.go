@@ -13425,6 +13425,7 @@ func (e *GameEngine) formatItemNameNoArticle(def *gameworld.ItemDef, adj1, adj2,
 
 	return strings.Join(parts, " ")
 }
+
 func (e *GameEngine) formatItemName(def *gameworld.ItemDef, adj1, adj2, adj3 int, state ...string) string {
 	var parts []string
 
