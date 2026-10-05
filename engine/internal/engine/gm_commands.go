@@ -1960,13 +1960,54 @@ func (e *GameEngine) gmEds(ctx context.Context, args []string) *CommandResult {
 
 func (e *GameEngine) gmGrantSp(ctx context.Context, args []string) *CommandResult {
 	if len(args) < 2 {
-		return &CommandResult{Messages: []string{"Usage: @grantsp <name> <spell>"}}
+		return &CommandResult{
+			Messages: []string{"Usage: @grantsp <name> <spell>"},
+		}
 	}
+
 	target, err := e.resolvePlayerArg(ctx, args)
 	if err != nil {
-		return &CommandResult{Messages: []string{err.Error()}}
+		return &CommandResult{
+			Messages: []string{err.Error()},
+		}
 	}
-	return &CommandResult{Messages: []string{fmt.Sprintf("Granted spell %s to %s.", args[1], target.FullName())}}
+
+	spellID, err := strconv.Atoi(args[1])
+	if err != nil {
+		return &CommandResult{
+			Messages: []string{"Spell must be a spell number."},
+		}
+	}
+
+	spell := FindSpellByID(spellID)
+	if spell == nil {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("Spell %d does not exist.", spellID),
+			},
+		}
+	}
+
+	if target.KnownSpells == nil {
+		target.KnownSpells = make(map[int]bool)
+	}
+
+	target.KnownSpells[spellID] = true
+
+	if e.db != nil {
+		e.SavePlayer(ctx, target)
+	}
+
+	return &CommandResult{
+		Messages: []string{
+			fmt.Sprintf(
+				"Granted %s (%d) to %s.",
+				spell.Name,
+				spell.ID,
+				target.FullName(),
+			),
+		},
+	}
 }
 
 func (e *GameEngine) gmPsi(ctx context.Context, args []string) *CommandResult {

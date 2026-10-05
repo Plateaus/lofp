@@ -28,6 +28,7 @@ type SpellDef struct {
 	DmgType  string        // "heat", "cold", "electric", "crushing", ""
 	Duration time.Duration // seconds; 0 = instant/permanent
 	Family   string        // "", "agility", "strength", "armor", etc.
+	Ticks    int           `bson:"ticks,omitempty" json:"ticks,omitempty"` // number of ticks for periodic effects
 
 	StatusType StatID
 	StatusMsg  string
@@ -63,7 +64,7 @@ func init() {
 		{ID: 124, Name: "Inferno Glyph", School: "Conjuration", Level: 20, ManaCost: 25, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 55, DmgType: "heat"},
 		{ID: 125, Name: "Thunder Glyph", School: "Conjuration", Level: 10, ManaCost: 15, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 30, DmgType: "electric"},
 		{ID: 126, Name: "Ice Glyph", School: "Conjuration", Level: 15, ManaCost: 20, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 40, DmgType: "cold"},
-		{ID: 127, Name: "Web", School: "Conjuration", Level: 10, ManaCost: 12, CastTime: 3, Effect: "debuff", Duration: 2 * time.Minute, DefBonus: -25},
+		{ID: 127, Name: "Web", School: "Conjuration", Level: 10, ManaCost: 12, CastTime: 3, Effect: "debuff", Duration: 2 * time.Minute, DefBonus: -25, StatusMsg: "Thick strands of sticky webbing cover %s!", StatusType: RestrainedEffect},
 		{ID: 130, Name: "Mass Protection", School: "Conjuration", Level: 23, ManaCost: 30, CastTime: 4, Effect: "defense", DefBonus: 25, Duration: 45 * time.Minute, Family: "armor"},
 		{ID: 131, Name: "Flaming Arrows", School: "Conjuration", Level: 18, ManaCost: 22, CastTime: 3, Effect: "damage", DmgMin: 15, DmgMax: 35, DmgType: "heat"},
 		{ID: 132, Name: "Chain Lightning", School: "Conjuration", Level: 23, ManaCost: 28, CastTime: 4, Effect: "damage", DmgMin: 20, DmgMax: 50, DmgType: "electric"},
@@ -77,8 +78,8 @@ func init() {
 	}
 	// Enchantment (200-250)
 	ench := []SpellDef{
-		{ID: 200, Name: "Fear", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "utility"},
-		{ID: 201, Name: "Charm", School: "Enchantment", Level: 3, ManaCost: 8, CastTime: 3, Effect: "utility"},
+		{ID: 200, Name: "Fear", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "debuff", Duration: 5 * time.Second, Ticks: 5, StatusMsg: "%s is overcome with fear!", StatusType: FearEffect},
+		{ID: 201, Name: "Charm", School: "Enchantment", Level: 3, ManaCost: 8, CastTime: 3, Effect: "debuff", Duration: 30 * time.Minute},
 		{ID: 202, Name: "Enchantment I", School: "Enchantment", Level: 5, ManaCost: 10, CastTime: 4, Effect: "buff", Duration: 45 * time.Minute, Family: "enchantment"},
 		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "strength", StatusType: StatStrength},
 		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "strength", StatusType: StatStrength},
@@ -96,9 +97,9 @@ func init() {
 	}
 	// Necromancy (301-356)
 	necro := []SpellDef{
-		{ID: 301, Name: "Turn Undead I", School: "Necromancy", Level: 2, ManaCost: 4, CastTime: 3, Effect: "damage", DmgMin: 3, DmgMax: 8, DmgType: "undead"},
-		{ID: 302, Name: "Turn Undead II", School: "Necromancy", Level: 8, ManaCost: 10, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 15, DmgType: "undead"},
-		{ID: 304, Name: "Turn Undead III", School: "Necromancy", Level: 16, ManaCost: 22, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 25, DmgType: "undead"},
+		{ID: 301, Name: "Turn Undead I", School: "Necromancy", Level: 2, ManaCost: 4, CastTime: 3, Effect: "damage", DmgMin: 3, DmgMax: 8, DmgType: "undead", Duration: 30 * time.Second, StatusMsg: "%s is overcome with fear!"},
+		{ID: 302, Name: "Turn Undead II", School: "Necromancy", Level: 8, ManaCost: 10, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 15, DmgType: "undead", Duration: 30 * time.Second, StatusMsg: "%s is overcome with fear!"},
+		{ID: 304, Name: "Turn Undead III", School: "Necromancy", Level: 16, ManaCost: 22, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 25, DmgType: "undead", Duration: 30 * time.Second, StatusMsg: "%s is overcome with fear!"},
 		{ID: 313, Name: "Body Destruction I", School: "Necromancy", Level: 1, ManaCost: 3, CastTime: 3, Effect: "damage", DmgMin: 3, DmgMax: 10, DmgType: ""},
 		{ID: 314, Name: "Body Destruction II", School: "Necromancy", Level: 5, ManaCost: 7, CastTime: 3, Effect: "damage", DmgMin: 6, DmgMax: 20, DmgType: ""},
 		{ID: 315, Name: "Body Destruction III", School: "Necromancy", Level: 10, ManaCost: 14, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 35, DmgType: ""},
@@ -133,7 +134,7 @@ func init() {
 	}
 	// Druidic (500-538)
 	druid := []SpellDef{
-		{ID: 500, Name: "Plant Snare", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "utility"},
+		{ID: 500, Name: "Plant Snare", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "debuff", Duration: 2 * time.Minute, DefBonus: -25, StatusMsg: "Plant tendrils shoot up from the ground and ensnare %s!", StatusType: RestrainedEffect},
 		{ID: 504, Name: "Call Animal", School: "Druidic", Level: 1, ManaCost: 5, CastTime: 5, Effect: "summon"},
 		{ID: 505, Name: "Freedom", School: "Druidic", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility"},
 		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 50, Duration: 45 * time.Minute, Family: "heat shield", StatusType: ColdResistance, StatusMsg: "A translucent blue sphere surrounds you."},
@@ -1119,7 +1120,9 @@ func (e *GameEngine) castSummonSpell(player *Player, spell *SpellDef, args []str
 		}
 	}
 }
+
 func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, showCastMessage bool) *CommandResult {
+
 	if len(args) == 0 {
 		return &CommandResult{
 			Messages: []string{"Cast at what?"},
@@ -1136,36 +1139,111 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 
 	if inst != nil {
 
-		switch spell.ID {
+		name := FormatMonsterName(def, e.monAdjs)
+		article := articleFor(name, def.Unique)
+		displayName := article + name
 
-		case 127, 500: // Web / Plant Snare
-			if !e.monsterMgr.MarkRestrained(inst.ID) {
-				return &CommandResult{
-					Messages: []string{"Nothing happens."},
-				}
-			}
+		duration := spell.Duration
 
-			name := FormatMonsterName(def, e.monAdjs)
-			article := articleFor(name, def.Unique)
+		// Determine which monster immunity applies to this status.
+		switch spell.StatusType {
 
-			msg := fmt.Sprintf(
-				"%s%s is covered with strands of sticky webbing!",
-				capArticle(article),
-				name,
+		case RestrainedEffect:
+			duration = durationByImmunity(
+				duration,
+				monsterImmunity(def, gameworld.ImmunityEnsnare),
 			)
 
-			if spell.ID == 500 {
-				msg = fmt.Sprintf(
-					"%s%s is entangled by twisting vines and roots!",
-					capArticle(article),
-					name,
-				)
-			}
+		case FearEffect:
+			duration = durationByImmunity(
+				duration,
+				monsterImmunity(def, gameworld.ImmunityNervousSystem),
+			)
+		}
 
+		// Immune to the effect.
+		if duration <= 0 {
 			return &CommandResult{
-				Messages: []string{msg},
+				Messages: []string{
+					fmt.Sprintf(
+						"%s%s is unaffected.",
+						capArticle(article),
+						name,
+					),
+				},
 			}
 		}
+
+		// Apply the status.
+		e.applyMonsterStatEffect(
+			inst.ID,
+			spell.ID,
+			EffectSourceSpell,
+			spell.StatusType,
+			spell.DefBonus,
+			duration,
+		)
+
+		// Build the spell-specific message from the definition.
+		statusMsg := spell.StatusMsg
+
+		if strings.Contains(statusMsg, "%s") {
+			statusMsg = fmt.Sprintf(statusMsg, displayName)
+		}
+
+		result := &CommandResult{}
+
+		if showCastMessage {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf(
+					"You gesture at %s and cast %s.",
+					displayName,
+					spell.Name,
+				),
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s gestures at %s and casts %s.",
+					player.FirstName,
+					displayName,
+					spell.Name,
+				),
+			)
+		}
+
+		if statusMsg != "" {
+			result.Messages = append(
+				result.Messages,
+				statusMsg,
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				statusMsg,
+			)
+		}
+
+		// Fear causes an immediate flee.
+		if spell.StatusType == FearEffect {
+
+			e.monsterFlee(
+				inst,
+				def,
+			)
+
+			if player.CombatTarget != nil &&
+				player.CombatTarget.IsMonster &&
+				player.CombatTarget.MonsterID == inst.ID {
+
+				player.CombatTarget = nil
+				player.Joined = false
+			}
+		}
+
+		return result
 	}
 
 	// ---------------------------------------------------------
@@ -1176,11 +1254,16 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 
 	if e.sessions != nil {
 		for _, p := range e.sessions.OnlinePlayers() {
-			if p == nil || p.RoomNumber != player.RoomNumber {
+
+			if p == nil ||
+				p.RoomNumber != player.RoomNumber {
 				continue
 			}
 
-			if strings.EqualFold(p.FirstName, targetName) {
+			if strings.EqualFold(
+				p.FirstName,
+				targetName,
+			) {
 				target = p
 				break
 			}
@@ -1189,37 +1272,73 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 
 	if target != nil {
 
-		switch spell.ID {
+		target.ApplyStatEffect(
+			spell.ID,
+			EffectSourceSpell,
+			spell.StatusType,
+			spell.DefBonus,
+			spell.Duration,
+			spell.Ticks,
+		)
 
-		case 127, 500: // Web and snare
-			/*	if target.IsRestrained() {
-					return &CommandResult{
-						Messages: []string{"Nothing happens."},
-					}
-				}
-			*/
-			/*
-				We'll put the actual player restraint assignment here
-				once we confirm how your permanent stat effects are stored.
+		statusMsg := spell.StatusMsg
 
-				Do NOT use castStatusSpell's duration handling because
-				duration == 0 becomes 30 minutes there.
-			*/
-
-			return &CommandResult{
-				Messages: []string{
-					fmt.Sprintf(
-						"%s is covered with strands of sticky webbing!",
-						target.FirstName,
-					),
-				},
-			}
+		if strings.Contains(statusMsg, "%s") {
+			statusMsg = fmt.Sprintf(
+				statusMsg,
+				target.FirstName,
+			)
 		}
+
+		result := &CommandResult{}
+
+		if showCastMessage {
+			result.Messages = append(
+				result.Messages,
+				fmt.Sprintf(
+					"You gesture at %s and cast %s.",
+					target.FirstName,
+					spell.Name,
+				),
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s gestures at %s and casts %s.",
+					player.FirstName,
+					target.FirstName,
+					spell.Name,
+				),
+			)
+		}
+
+		if statusMsg != "" {
+			result.Messages = append(
+				result.Messages,
+				statusMsg,
+			)
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				statusMsg,
+			)
+		}
+
+		return result
 	}
 
 	return &CommandResult{
 		Messages: []string{"You don't see that here."},
 	}
+}
+
+func monsterImmunity(def *gameworld.MonsterDef, immunityType int) int {
+	if level, ok := def.Immunities[immunityType]; ok {
+		return level
+	}
+
+	return 2
 }
 
 func (e *GameEngine) summonCreature(player *Player, monsterNum int) *CommandResult {
@@ -1349,6 +1468,7 @@ func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []str
 		spell.StatusType,
 		spell.DefBonus,
 		duration,
+		spell.Ticks,
 	)
 
 	// Build the spell's status message.
@@ -1406,7 +1526,11 @@ func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []str
 }
 
 func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []string, spectacular bool) *CommandResult {
-	// Find target.
+
+	// ------------------------------------------------------------
+	// FIND TARGET
+	// ------------------------------------------------------------
+
 	targetName := ""
 
 	if len(args) > 0 {
@@ -1414,37 +1538,55 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 	} else if player.CombatTarget != nil && player.CombatTarget.IsMonster {
 		// Auto-target current combat target.
 		e.monsterMgr.mu.RLock()
+
 		for _, inst := range e.monsterMgr.instances {
 			if inst.ID == player.CombatTarget.MonsterID && inst.Alive {
 				def := e.monsters[inst.DefNumber]
+
 				if def != nil {
 					targetName = def.Name
 				}
+
+				break
 			}
 		}
+
 		e.monsterMgr.mu.RUnlock()
 	}
 
 	if targetName == "" {
 		return &CommandResult{
-			Messages: []string{"Cast at what? Specify a target."},
+			Messages: []string{
+				"Cast at what? Specify a target.",
+			},
 		}
 	}
 
 	inst, def := e.findMonsterInRoom(player, targetName)
+
 	if inst == nil {
 		return &CommandResult{
 			Messages: []string{
-				fmt.Sprintf("You don't see '%s' here.", targetName),
+				fmt.Sprintf(
+					"You don't see '%s' here.",
+					targetName,
+				),
 			},
 		}
 	}
 
 	name := FormatMonsterName(def, e.monAdjs)
 
+	// ------------------------------------------------------------
+	// ROLL DAMAGE
+	// ------------------------------------------------------------
+
 	dmg := rand.Intn(spell.DmgMax-spell.DmgMin+1) + spell.DmgMin
 
-	// Apply magic resistance.
+	// ------------------------------------------------------------
+	// MAGIC RESISTANCE
+	// ------------------------------------------------------------
+
 	if def.MagicResist > 0 {
 		resistRoll := rand.Intn(100)
 
@@ -1469,12 +1611,19 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		}
 	}
 
-	// Apply damage-type immunity.
+	// ------------------------------------------------------------
+	// DAMAGE-TYPE IMMUNITY
+	// ------------------------------------------------------------
+
 	if spell.DmgType == "undead" {
-		// IMMUNITY 8 is special. Its documented default is 0,
-		// so monsters without IMMUNITY 8 are unaffected by
-		// undead-affecting spells.
+		// IMMUNITY 8 is special.
+		//
+		// 0 = not undead-affectable
+		// 1 = extremely powerful undead
+		// 2 = greater undead
+		// 3 = lesser undead
 		undeadPower := def.Immunities[gameworld.ImmunityUndead]
+
 		dmg = applyImmunity(dmg, undeadPower)
 
 	} else if spell.DmgType != "" {
@@ -1505,9 +1654,17 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		}
 	}
 
+	// ------------------------------------------------------------
+	// SPECTACULAR SUCCESS
+	// ------------------------------------------------------------
+
 	if spectacular {
 		dmg *= 2
 	}
+
+	// ------------------------------------------------------------
+	// SPELL FLAVOR
+	// ------------------------------------------------------------
 
 	article := "a "
 
@@ -1529,6 +1686,7 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 
 	// Damage-type-specific flavor.
 	switch spell.DmgType {
+
 	case "heat":
 		flavorSelf = fmt.Sprintf(
 			"%s forms a ball of flame and hurls it at %s%s!",
@@ -1605,57 +1763,126 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		)
 	}
 
-	// Apply damage.
-	killed := e.damageMonster(player, inst.ID, dmg, false)
+	// ------------------------------------------------------------
+	// APPLY DAMAGE
+	// ------------------------------------------------------------
 
-	// Determine whether Turn Undead also causes the surviving
-	// monster to flee.
+	killed := e.damageMonster(
+		player,
+		inst.ID,
+		dmg,
+		false,
+	)
+
+	// ------------------------------------------------------------
+	// TURN UNDEAD
+	//
+	// Turn Undead is a damage spell with an additional chance
+	// to inflict Fear on a surviving undead monster.
+	// ------------------------------------------------------------
+
 	turned := false
 
-	if !killed && (spell.ID == 301 || spell.ID == 302 || spell.ID == 304) {
+	isTurnUndead :=
+		spell.ID == 301 ||
+			spell.ID == 302 ||
+			spell.ID == 304
+
+	if !killed && isTurnUndead {
 		undeadPower := def.Immunities[gameworld.ImmunityUndead]
 
 		if canTurnUndead(spell.ID, undeadPower) {
 			spellcraft := player.Skills[23]
-			turnChance := turnUndeadChance(spellcraft, undeadPower)
+
+			turnChance := turnUndeadChance(
+				spellcraft,
+				undeadPower,
+			)
 
 			if rand.Intn(100)+1 <= turnChance {
 				turned = true
+
+				e.applyMonsterStatEffect(
+					inst.ID,
+					spell.ID,
+					EffectSourceSpell,
+					FearEffect,
+					0,
+					spell.Duration,
+				)
 			}
 		}
 	}
+
+	// ------------------------------------------------------------
+	// BUILD MESSAGES
+	// ------------------------------------------------------------
 
 	var msgs, roomMsgs []string
 
 	msgs = append(
 		msgs,
-		fmt.Sprintf("You gesture at %s%s.", article, name),
+		fmt.Sprintf(
+			"You gesture at %s%s.",
+			article,
+			name,
+		),
 	)
 
 	roomMsgs = append(
 		roomMsgs,
-		fmt.Sprintf("%s gestures at %s%s.", player.FirstName, article, name),
+		fmt.Sprintf(
+			"%s gestures at %s%s.",
+			player.FirstName,
+			article,
+			name,
+		),
 	)
 
-	msgs = append(msgs, flavorSelf)
-	roomMsgs = append(roomMsgs, flavorSelf)
+	msgs = append(
+		msgs,
+		flavorSelf,
+	)
 
-	msgs = append(msgs, flavorDmg)
+	roomMsgs = append(
+		roomMsgs,
+		flavorSelf,
+	)
 
-	// Successful turning causes the monster to flee immediately.
+	msgs = append(
+		msgs,
+		flavorDmg,
+	)
+
+	// ------------------------------------------------------------
+	// SUCCESSFUL TURN
+	// ------------------------------------------------------------
+
 	if turned {
 		msgs = append(
 			msgs,
-			fmt.Sprintf("The %s recoils and flees!", name),
+			fmt.Sprintf(
+				"The %s recoils and flees!",
+				name,
+			),
 		)
 
 		roomMsgs = append(
 			roomMsgs,
-			fmt.Sprintf("The %s recoils and flees!", name),
+			fmt.Sprintf(
+				"The %s recoils and flees!",
+				name,
+			),
 		)
 
-		e.monsterFlee(inst, def)
+		// Immediate flee. FearEffect will cause continued fleeing
+		// on subsequent monster action ticks.
+		e.monsterFlee(
+			inst,
+			def,
+		)
 
+		// Turning also disengages the caster from this monster.
 		if player.CombatTarget != nil &&
 			player.CombatTarget.IsMonster &&
 			player.CombatTarget.MonsterID == inst.ID {
@@ -1663,9 +1890,20 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 			player.CombatTarget = nil
 			player.Joined = false
 		}
-	} else if !killed && (spell.ID == 301 || spell.ID == 302 || spell.ID == 304) {
-		msgs = append(msgs, fmt.Sprintf("The %s resists being turned!", name))
+
+	} else if !killed && isTurnUndead {
+		msgs = append(
+			msgs,
+			fmt.Sprintf(
+				"The %s resists being turned!",
+				name,
+			),
+		)
 	}
+
+	// ------------------------------------------------------------
+	// MONSTER DEATH
+	// ------------------------------------------------------------
 
 	if killed {
 		deathText := def.TextOverrides["TEXD"]
@@ -1673,13 +1911,22 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		if deathText != "" {
 			msgs = append(
 				msgs,
-				fmt.Sprintf("A %s %s", name, deathText),
+				fmt.Sprintf(
+					"A %s %s",
+					name,
+					deathText,
+				),
 			)
 
 			roomMsgs = append(
 				roomMsgs,
-				fmt.Sprintf("A %s %s", name, deathText),
+				fmt.Sprintf(
+					"A %s %s",
+					name,
+					deathText,
+				),
 			)
+
 		} else {
 			msgs = append(
 				msgs,
@@ -1688,11 +1935,18 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 
 			roomMsgs = append(
 				roomMsgs,
-				fmt.Sprintf("A %s collapses, dead!", name),
+				fmt.Sprintf(
+					"A %s collapses, dead!",
+					name,
+				),
 			)
 		}
 
-		e.handleMonsterDeath(player, inst, def)
+		e.handleMonsterDeath(
+			player,
+			inst,
+			def,
+		)
 
 		player.CombatTarget = nil
 		player.Joined = false
@@ -1701,6 +1955,23 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 	return &CommandResult{
 		Messages:      msgs,
 		RoomBroadcast: roomMsgs,
+	}
+}
+
+func durationByImmunity(base time.Duration, immunity int) time.Duration {
+	switch immunity {
+	case 0:
+		return 0
+	case 1:
+		return base / 2
+	case 2:
+		return base
+	case 3:
+		return base * 3 / 2
+	case 4:
+		return base * 2
+	default:
+		return base
 	}
 }
 
@@ -2074,6 +2345,7 @@ func (e *GameEngine) castBuffSpell(player *Player, spell *SpellDef, args []strin
 			spell.StatusType,
 			spell.DefBonus,
 			buffDuration,
+			spell.Ticks,
 		)
 
 		result := &CommandResult{}
@@ -2162,6 +2434,7 @@ func (e *GameEngine) castDefenseSpell(player *Player, spell *SpellDef, args []st
 		DefensiveBuff,
 		spell.DefBonus,
 		buffDuration,
+		spell.Ticks,
 	)
 
 	return &CommandResult{

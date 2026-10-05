@@ -37,57 +37,12 @@ var RaceStatRanges = map[int][7][2]int{
 	RaceWolfling:   {{30, 100}, {40, 110}, {40, 110}, {30, 100}, {40, 110}, {30, 100}, {30, 100}},
 }
 
-type StatID int
-
-const (
-	StatStrength StatID = iota
-	StatAgility
-	StatQuickness
-	StatConstitution
-	StatPerception
-	StatWillpower
-	StatEmpathy
-	HasteBuff
-	SlowDebuff
-	StatBodyPoint
-	StatFatigue
-	StatMana
-	StatPsi
-	DefensiveBuff
-	LightBuff
-	NightVisionBuff
-	RemovePoison
-	RemoveDisease
-	StunnedEffect
-	HeatResistance
-	ColdResistance
-	RestrainedEffect
-	ClawGrowth
-	UnconsciousEffect
-)
-
 const (
 	PoisonMinor    = 5
 	PoisonModerate = 15
 	PoisonMajor    = 30
 	PoisonNerveGas = 40
 	PoisonLethal   = 60
-)
-
-type EffectSource int
-
-const (
-	EffectSourceSpell EffectSource = iota
-	EffectSourcePotion
-	EffectSourcePoison
-	EffectSourceDisease
-	EffectSourceItem
-	EffectSourceGM
-	EffectSourceScript
-	EffectSourceEncumbrance
-	EffectStunned
-	EffectRestrained
-	EffectUnconscious
 )
 
 // Gender constants
@@ -306,15 +261,6 @@ type InventoryItem struct {
 	Identified bool            `bson:"identified,omitempty" json:"identified,omitempty"`
 }
 
-type StatEffect struct {
-	EffectID  int          `bson:"effectId" json:"effectId"`
-	Source    EffectSource `bson:"source" json:"source"`
-	Stat      StatID       `bson:"stat" json:"stat"`
-	Modifier  int          `bson:"modifier" json:"modifier"`
-	ExpiresAt time.Time    `bson:"expiresAt,omitempty" json:"expiresAt,omitempty"`
-	Permanent bool         `bson:"permanent,omitempty" json:"permanent,omitempty"`
-}
-
 // FullName returns the player's display name.
 func (p *Player) FullName() string {
 	return p.FirstName + " " + p.LastName
@@ -479,13 +425,7 @@ func formatEffectiveStat(player *Player, stat StatID, base int) string {
 	return fmt.Sprintf("%d", effective)
 }
 
-func (p *Player) ApplyStatEffect(
-	effectID int,
-	source EffectSource,
-	stat StatID,
-	modifier int,
-	duration time.Duration,
-) {
+func (p *Player) ApplyStatEffect(effectID int, source EffectSource, stat StatID, modifier int, duration time.Duration, ticks int) {
 	expiresAt := time.Now().Add(duration)
 
 	for i := range p.ActiveStatEffects {
@@ -495,6 +435,7 @@ func (p *Player) ApplyStatEffect(
 			effect.Stat = stat
 			effect.Modifier = modifier
 			effect.ExpiresAt = expiresAt
+			effect.Ticks = ticks
 			return
 		}
 	}
@@ -505,8 +446,8 @@ func (p *Player) ApplyStatEffect(
 		Stat:      stat,
 		Modifier:  modifier,
 		ExpiresAt: expiresAt,
+		Ticks:     ticks,
 	})
-
 }
 
 func (p *Player) RemoveStatEffectsBySource(source EffectSource) bool {

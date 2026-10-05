@@ -1668,7 +1668,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 
 		return e.doAttackMonster(ctx, player, strings.Join(args, " "))
 	case "FLEE":
-		return e.doFlee(ctx, player)
+		return e.doFlee(player)
 	case "ADVANCE", "ADV":
 		if len(args) == 0 {
 			return &CommandResult{Messages: []string{"Advance on what?"}}
@@ -2090,15 +2090,46 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 
 	for _, effect := range player.ActiveStatEffects {
 
+		// Only process periodic effects here.
 		if effect.Source != EffectSourcePoison &&
 			effect.Source != EffectSourceDisease &&
-			effect.Source != EffectUnconscious {
+			effect.Source != EffectUnconscious &&
+			effect.Stat != FearEffect {
 
 			active = append(active, effect)
 			continue
 		}
 
+		// Effect is not ready to tick yet.
 		if effect.ExpiresAt.After(now) {
+			active = append(active, effect)
+			continue
+		}
+
+		// --------------------------------------------------------
+		// Fear
+		// --------------------------------------------------------
+
+		if effect.Stat == FearEffect {
+			result := e.doFlee(player)
+
+			if result != nil {
+				messages = append(messages, result.Messages...)
+			}
+
+			effect.Ticks--
+
+			if effect.Ticks <= 0 {
+				messages = append(
+					messages,
+					"You regain control of your fear.",
+				)
+
+				// Do not re-add the effect.
+				continue
+			}
+
+			effect.ExpiresAt = now.Add(5 * time.Second)
 			active = append(active, effect)
 			continue
 		}
@@ -2128,7 +2159,8 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 				)
 			}
 
-			effect.Modifier++ // -5 -> -4
+			// Poison weakens each tick: -5 -> -4 -> -3 -> ...
+			effect.Modifier++
 
 			if effect.Modifier >= 0 {
 				player.Poisoned = false
@@ -2138,6 +2170,7 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 					"The poison finally leaves your system.",
 				)
 
+				// Do not re-add the effect.
 				continue
 			}
 
@@ -2167,7 +2200,8 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 				)
 			}
 
-			effect.Modifier++ // -5 -> -4
+			// Disease weakens each tick: -5 -> -4 -> -3 -> ...
+			effect.Modifier++
 
 			if effect.Modifier >= 0 {
 				player.Diseased = false
@@ -2177,6 +2211,7 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 					"You finally recover from the disease.",
 				)
 
+				// Do not re-add the effect.
 				continue
 			}
 
@@ -2200,6 +2235,7 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 			// ----------------------------------------------------
 			// Improve: +1 BP
 			// ----------------------------------------------------
+
 			case 0:
 				player.BodyPoints++
 
@@ -2235,6 +2271,7 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 			// ----------------------------------------------------
 			// No change
 			// ----------------------------------------------------
+
 			case 1:
 				messages = append(
 					messages,
@@ -2244,6 +2281,7 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 			// ----------------------------------------------------
 			// Worsen: -1 BP
 			// ----------------------------------------------------
+
 			case 2:
 				player.BodyPoints--
 
@@ -9506,11 +9544,11 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 1: // Needle, minor poison
 		msgs = append(msgs, "A needle springs out and pricks your finger!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMinor, time.Duration(PoisonMinor)*time.Minute)
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMinor, time.Duration(PoisonMinor)*time.Minute, 0)
 	case trapType == 2: // Gas, minor poison
 		msgs = append(msgs, "A cloud of noxious gas billows out!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonNerveGas, time.Duration(PoisonNerveGas)*time.Minute)
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonNerveGas, time.Duration(PoisonNerveGas)*time.Minute, 0)
 	case trapType == 3: // Acid
 		dmg := 10 + rand.Intn(15)
 		player.BodyPoints -= dmg
@@ -9528,11 +9566,11 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 5: // Needle, moderate poison
 		msgs = append(msgs, "A poison-coated needle jabs into your hand!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute)
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
 	case trapType == 7: // Needle, major poison
 		msgs = append(msgs, "A large needle drives deep into your finger, delivering a potent venom!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMajor, time.Duration(PoisonMajor)*time.Minute)
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMajor, time.Duration(PoisonMajor)*time.Minute, 0)
 	case trapType == 8: // Explosive
 		dmg := 30 + rand.Intn(30)
 		player.BodyPoints -= dmg
@@ -9550,7 +9588,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 12: // Gas, moderate poison
 		msgs = append(msgs, "A thick cloud of poisonous gas engulfs you!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute)
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
 	case trapType == 13: // Black needle, lethal
 		dmg := 40 + rand.Intn(30)
 		player.BodyPoints -= dmg
@@ -9559,7 +9597,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 		}
 		msgs = append(msgs, fmt.Sprintf("A black needle strikes you, delivering a lethal toxin! [%d Damage]", dmg))
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonLethal, time.Duration(PoisonLethal)*time.Minute)
+		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonLethal, time.Duration(PoisonLethal)*time.Minute, 0)
 	case trapType >= 1000: // Glyph traps (spell-based)
 		spellDmg := 20 + rand.Intn(40)
 		player.BodyPoints -= spellDmg

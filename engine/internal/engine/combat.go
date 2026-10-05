@@ -1983,7 +1983,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 	// Monster is restrained (webbed, trapped, etc.) — check escape.
 	// ------------------------------------------------------------
 
-	if inst.Restrained {
+	if inst.HasStatEffect(RestrainedEffect) {
 		name := FormatMonsterName(def, e.monAdjs)
 		article := articleFor(name, def.Unique)
 
@@ -1999,6 +1999,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 
 		if rand.Intn(100) < chance {
 			inst.Restrained = false
+			inst.RemoveStatEffect(RestrainedEffect)
 
 			return nil, []string{
 				fmt.Sprintf(
@@ -2235,6 +2236,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 						UnconsciousEffect,
 						0,
 						12*time.Second,
+						0,
 					)
 				}
 			}
@@ -2355,8 +2357,9 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 
 	// Apply restrained modifiers.
 	vRestrainedMod := player.EffectiveStat(RestrainedEffect)
+	vFearMod := player.EffectiveStat(FearEffect)
 
-	defRating += visionMod/2 + vRestrainedMod
+	defRating += visionMod/2 + (vRestrainedMod + vFearMod)
 
 	// Multi-attacker penalty:
 	// -5 per 2 additional attackers beyond the first.
@@ -2453,6 +2456,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 					UnconsciousEffect,
 					0,
 					12*time.Second,
+					0,
 				)
 			}
 		}
@@ -2483,7 +2487,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 				StatBodyPoint,
 				-def.PoisonLevel,
 				time.Duration(def.PoisonLevel)*time.Minute,
-			)
+				0)
 
 			playerMsgs = append(
 				playerMsgs,
@@ -2502,6 +2506,7 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 				StatFatigue,
 				-def.DiseaseLevel,
 				time.Duration(def.DiseaseLevel)*time.Minute,
+				0,
 			)
 
 			playerMsgs = append(
@@ -2790,6 +2795,39 @@ func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int, stunn
 		}
 
 		return false
+	}
+
+	return false
+}
+
+func (e *GameEngine) applyMonsterStatEffect(
+	monsterID int,
+	effectID int,
+	source EffectSource,
+	stat StatID,
+	modifier int,
+	duration time.Duration,
+) bool {
+
+	e.monsterMgr.mu.Lock()
+	defer e.monsterMgr.mu.Unlock()
+
+	for i := range e.monsterMgr.instances {
+		inst := &e.monsterMgr.instances[i]
+
+		if inst.ID != monsterID || !inst.Alive {
+			continue
+		}
+
+		inst.ApplyStatEffect(
+			effectID,
+			source,
+			stat,
+			modifier,
+			duration,
+		)
+
+		return true
 	}
 
 	return false
@@ -3182,7 +3220,7 @@ func (e *GameEngine) clearCombatTargetsForMonster(monsterID int) {
 
 // ---- Flee ----
 
-func (e *GameEngine) doFlee(ctx context.Context, player *Player) *CommandResult {
+func (e *GameEngine) doFlee(player *Player) *CommandResult {
 	if player.CombatTarget == nil && !player.Joined {
 		return &CommandResult{Messages: []string{"You are not in combat."}}
 	}
@@ -3639,9 +3677,20 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 		return
 	}
 
+	if inst.HasStatEffect(FearEffect) {
+		if !inst.HasStatEffect(RestrainedEffect) {
+			inst.PreparedSpell = 0
+			inst.SpellReadyAt = time.Time{}
+
+			e.monsterFlee(inst, def)
+		}
+
+		return
+	}
+
 	// Player has no current engagement.
 	// A restrained monster cannot close with them.
-	if !inst.Restrained &&
+	if !inst.HasStatEffect(RestrainedEffect) &&
 		(!target.Joined || target.CombatTarget == nil) {
 
 		target.CombatTarget = &CombatTarget{
@@ -3849,6 +3898,7 @@ func (e *GameEngine) monsterFlee(inst *MonsterInstance, def *gameworld.MonsterDe
 			}
 		}
 	}
+
 	e.monsterMgr.moveMonster(e.monsterMgr.indexOfID(inst.ID), chosen.destID)
 }
 
@@ -3862,6 +3912,7 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 
 	for i := range e.monsterMgr.instances {
 		inst := &e.monsterMgr.instances[i]
+
 		if inst.RoomNumber != roomNum ||
 			!inst.Alive ||
 			inst.Sedated ||
@@ -3869,15 +3920,18 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 			inst.TargetMonsterID >= 0 {
 			continue
 		}
+
 		def := e.monsters[inst.DefNumber]
 		if def == nil || def.Strategy < 301 {
 			continue
 		}
-		inst.Target = player.FirstName
 
-		if inst.Restrained {
+		// A restrained monster cannot close with the player.
+		if inst.HasStatEffect(RestrainedEffect) {
 			break
 		}
+
+		inst.Target = player.FirstName
 
 		// If the player isn't already engaged, this monster closing
 		// with them establishes the player's engagement.
@@ -3908,12 +3962,7 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 
 // ---- Monster attacks Monster ----
 
-func (e *GameEngine) monsterAttackMonster(
-	attacker *MonsterInstance,
-	attackerDef *gameworld.MonsterDef,
-	target *MonsterInstance,
-	targetDef *gameworld.MonsterDef,
-) {
+func (e *GameEngine) monsterAttackMonster(attacker *MonsterInstance, attackerDef *gameworld.MonsterDef, target *MonsterInstance, targetDef *gameworld.MonsterDef) {
 
 	if attacker == nil ||
 		target == nil ||

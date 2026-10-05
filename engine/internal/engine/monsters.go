@@ -39,6 +39,9 @@ type MonsterInstance struct {
 	PreparedSpell int
 	SpellReadyAt  time.Time
 	Mana          int
+
+	// Temporary spell/stat modifiers
+	ActiveStatEffects []StatEffect `bson:"activeStatEffects,omitempty" json:"activeStatEffects,omitempty"`
 }
 
 // monsterManager handles monster spawning and tracking.
@@ -276,26 +279,6 @@ func (mm *monsterManager) MarkSkinned(instanceID int) bool {
 		}
 
 		mm.instances[i].Skinned = true
-		return true
-	}
-
-	return false
-}
-
-func (mm *monsterManager) MarkRestrained(instanceID int) bool {
-	mm.mu.Lock()
-	defer mm.mu.Unlock()
-
-	for i := range mm.instances {
-		if mm.instances[i].ID != instanceID {
-			continue
-		}
-
-		if mm.instances[i].Restrained {
-			return false
-		}
-
-		mm.instances[i].Restrained = true
 		return true
 	}
 
@@ -561,18 +544,39 @@ func (e *GameEngine) monsterTick(tick int) {
 		}
 
 		// ------------------------------------------------------------
+		// TEMPORARY EFFECTS
+		// ------------------------------------------------------------
+
+		expiredEffects := inst.RemoveExpiredStatEffects()
+
+		for _, effect := range expiredEffects {
+			name := FormatMonsterName(def, e.monAdjs)
+
+			if e.localRoomBroadcast != nil {
+				e.localRoomBroadcast(
+					inst.RoomNumber,
+					[]string{
+						fmt.Sprintf(
+							"DEBUG: %s effect expired: EffectID=%d Stat=%d Source=%d ExpiresAt=%s Now=%s",
+							name,
+							effect.EffectID,
+							effect.Stat,
+							effect.Source,
+							effect.ExpiresAt.Format("15:04:05"),
+							time.Now().Format("15:04:05"),
+						),
+					},
+				)
+			}
+		}
+
+		// ------------------------------------------------------------
 		// COMBAT
 		//
 		// A monster may now be fighting either:
 		//   Target          = player
 		//   TargetMonsterID = monster
 		// ------------------------------------------------------------
-
-		// Stunned monsters lose their next action and recover.
-		//if inst.Stunned {
-		//		inst.Stunned = false
-		//		continue
-		//	}
 
 		if inst.Target != "" || inst.TargetMonsterID >= 0 {
 			e.monsterCombatTick(inst, def)
@@ -782,12 +786,7 @@ func (e *GameEngine) beginMonsterSpell(inst *MonsterInstance, def *gameworld.Mon
 	return fmt.Sprintf("%s incants a spell.", monsterName)
 }
 
-func (e *GameEngine) releaseMonsterSpell(
-	inst *MonsterInstance,
-	def *gameworld.MonsterDef,
-	player *Player,
-	spell *SpellDef,
-) ([]string, []string) {
+func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef, player *Player, spell *SpellDef) ([]string, []string) {
 
 	if inst == nil || def == nil || player == nil || spell == nil {
 		return nil, nil
@@ -823,11 +822,20 @@ func (e *GameEngine) releaseMonsterSpell(
 		),
 	)
 
-	// Monster spell skill appears to already be stored as a percentage.
-	castChance := def.SpellSkill
+	// Monster spellcasting is opposed by the target's innate
+	// level-based magic resistance.
+	//
+	// SPELLSKILL is already stored on the 5%-per-level scale.
+	//
+	// Equal skill/level:
+	//   SPELLSKILL 75 vs level 15
+	//   50 + 75 - (15 * 5) = 50%
+	//
+	// All spell chances are capped at 5% minimum and 95% maximum.
+	castChance := 50 + def.SpellSkill - (player.Level * 5)
 
-	if castChance <= 0 {
-		castChance = 25
+	if castChance < 5 {
+		castChance = 5
 	}
 
 	if castChance > 95 {
@@ -866,6 +874,7 @@ func (e *GameEngine) releaseMonsterSpell(
 				RestrainedEffect,
 				spell.DefBonus,
 				spell.Duration,
+				0,
 			)
 
 			releaseMsg := def.TextOverrides["TEXL"]
@@ -894,6 +903,7 @@ func (e *GameEngine) releaseMonsterSpell(
 				RestrainedEffect,
 				spell.DefBonus,
 				spell.Duration,
+				0,
 			)
 
 			releaseMsg := def.TextOverrides["TEXL"]
@@ -906,6 +916,35 @@ func (e *GameEngine) releaseMonsterSpell(
 			playerMsgs = append(
 				playerMsgs,
 				"Thick vines and roots coil around you, holding you fast!",
+			)
+
+			return playerMsgs, roomMsgs
+
+		case 200: // Fear
+			if _, ok := player.HasStatEffect(FearEffect); ok {
+				roomMsgs = append(roomMsgs, "Nothing happens.")
+				return playerMsgs, roomMsgs
+			}
+
+			player.ApplyStatEffect(
+				spell.ID,
+				EffectSourceSpell,
+				FearEffect,
+				spell.DefBonus,
+				spell.Duration,
+				spell.Ticks,
+			)
+
+			releaseMsg := def.TextOverrides["TEXL"]
+			if releaseMsg == "" {
+				releaseMsg = fmt.Sprintf("%s casts Fear.", monsterName)
+			}
+
+			roomMsgs = append(roomMsgs, releaseMsg)
+
+			playerMsgs = append(
+				playerMsgs,
+				"You are overcome with fear!",
 			)
 
 			return playerMsgs, roomMsgs
@@ -1103,4 +1142,102 @@ func (e *GameEngine) moveMonsterDirection(idx int, inst *MonsterInstance, def *g
 	}
 
 	return true
+}
+
+func (m *MonsterInstance) ApplyStatEffect(effectID int, source EffectSource, stat StatID, modifier int, duration time.Duration) {
+
+	expiresAt := time.Now().Add(duration)
+
+	for i := range m.ActiveStatEffects {
+		effect := &m.ActiveStatEffects[i]
+
+		if effect.EffectID == effectID && effect.Source == source {
+			effect.Stat = stat
+			effect.Modifier = modifier
+			effect.ExpiresAt = expiresAt
+			return
+		}
+	}
+
+	m.ActiveStatEffects = append(m.ActiveStatEffects, StatEffect{
+		EffectID:  effectID,
+		Source:    source,
+		Stat:      stat,
+		Modifier:  modifier,
+		ExpiresAt: expiresAt,
+	})
+}
+
+func (m *MonsterInstance) RemoveStatEffectsBySource(source EffectSource) bool {
+	removed := false
+	active := m.ActiveStatEffects[:0]
+
+	for _, effect := range m.ActiveStatEffects {
+		if effect.Source == source {
+			removed = true
+			continue
+		}
+
+		active = append(active, effect)
+	}
+
+	m.ActiveStatEffects = active
+	return removed
+}
+
+func (m *MonsterInstance) RemoveStatEffect(stat StatID) bool {
+	removed := false
+	active := m.ActiveStatEffects[:0]
+
+	for _, effect := range m.ActiveStatEffects {
+		if effect.Stat == stat {
+			removed = true
+			continue
+		}
+
+		active = append(active, effect)
+	}
+
+	m.ActiveStatEffects = active
+	return removed
+}
+
+func (m *MonsterInstance) HasStatEffect(stat StatID) bool {
+	now := time.Now()
+
+	for _, effect := range m.ActiveStatEffects {
+		if effect.Stat != stat {
+			continue
+		}
+
+		if effect.Permanent || effect.ExpiresAt.After(now) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (m *MonsterInstance) RemoveExpiredStatEffects() []StatEffect {
+	now := time.Now()
+
+	if len(m.ActiveStatEffects) == 0 {
+		return nil
+	}
+
+	var expired []StatEffect
+	active := m.ActiveStatEffects[:0]
+
+	for _, effect := range m.ActiveStatEffects {
+		if effect.Permanent || effect.ExpiresAt.After(now) {
+			active = append(active, effect)
+			continue
+		}
+
+		expired = append(expired, effect)
+	}
+
+	m.ActiveStatEffects = active
+
+	return expired
 }
