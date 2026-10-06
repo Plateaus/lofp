@@ -31,6 +31,7 @@ const (
 	UnconsciousEffect
 	FearEffect
 	SleepEffect
+	CharmEffect
 )
 
 type EffectSource int
@@ -47,6 +48,7 @@ const (
 	EffectStunned
 	EffectRestrained
 	EffectUnconscious
+	EffectCharm
 )
 
 type StatEffect struct {

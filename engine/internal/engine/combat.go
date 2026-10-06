@@ -618,6 +618,18 @@ func playerDamage(player *Player, weaponDef *gameworld.ItemDef) int {
 	return dmg
 }
 
+func dancingWeaponDamage(player *Player, spell *SpellDef) int {
+	maxDmg := spell.DmgMax
+	if maxDmg <= 0 {
+		maxDmg = 3
+	}
+
+	dmg := rand.Intn(maxDmg) + 1
+	dmg += player.EffectiveStat(StatEmpathy) / 10
+
+	return dmg
+}
+
 // weaponCritDamage checks VAL3 for elemental crit or slayer bonus.
 // Returns (extra damage, crit type description, hit).
 func weaponCritDamage(wielded *InventoryItem, weaponDef *gameworld.ItemDef, monDef *gameworld.MonsterDef) (int, string) {
@@ -1407,8 +1419,7 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 		player.RoomNumber,
 	)
 
-	vRestrainedMod :=
-		player.EffectiveStat(RestrainedEffect)
+	vRestrainedMod := player.EffectiveStat(RestrainedEffect)
 
 	// Primary uses normal weapon skill.
 	// Offhand caps weapon skill by Two Weapons skill.
@@ -1786,6 +1797,10 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 				dmg,
 				stunned,
 			)
+
+		if inst.RemoveStatEffect(CharmEffect) && !killed {
+			msgs = append(msgs, "The pain snaps it out of the charm.")
+		}
 
 		// Weapon poison.
 		if poisonLvl :=
@@ -2210,6 +2225,15 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 
 			player.BodyPoints -= specDmg
 
+			if specDmg > 0 {
+				if player.RemoveStatEffect(CharmEffect) {
+					playerMsgs = append(
+						playerMsgs,
+						"The pain snaps you out of the charm.",
+					)
+				}
+			}
+
 			if frenziedMurg {
 				// First hit that crosses zero stops at 0,
 				// but a berserk Murg remains conscious.
@@ -2428,6 +2452,15 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 		wasAtOrBelowZero := player.BodyPoints <= 0
 
 		player.BodyPoints -= dmg
+
+		if dmg > 0 {
+			if player.RemoveStatEffect(CharmEffect) {
+				playerMsgs = append(
+					playerMsgs,
+					"The pain snaps you out of the charm.",
+				)
+			}
+		}
 
 		if frenziedMurg {
 			// First hit that crosses zero stops at 0,
@@ -2807,6 +2840,7 @@ func (e *GameEngine) applyMonsterStatEffect(
 	stat StatID,
 	modifier int,
 	duration time.Duration,
+	ticks int,
 ) bool {
 
 	e.monsterMgr.mu.Lock()
@@ -2825,6 +2859,7 @@ func (e *GameEngine) applyMonsterStatEffect(
 			stat,
 			modifier,
 			duration,
+			ticks,
 		)
 
 		return true
@@ -3232,9 +3267,18 @@ func (e *GameEngine) doFlee(player *Player) *CommandResult {
 		return &CommandResult{Messages: []string{"You can't flee. You are unconscious."}}
 	}
 
-	if player.EffectiveStat(RestrainedEffect) != 0 {
+	// Web, Plant Snare, etc.
+	if result := e.checkPlayerCanMove(player); result != nil {
+		return result
+	}
+
+	// Normally you can only flee while in combat.
+	// Fear keeps you running even after you've escaped combat.
+	_, feared := player.HasStatEffect(FearEffect)
+
+	if player.CombatTarget == nil && !player.Joined && !feared {
 		return &CommandResult{
-			Messages: []string{"You are restrained and cannot flee!"},
+			Messages: []string{"You are not in combat."},
 		}
 	}
 
@@ -3292,10 +3336,21 @@ func (e *GameEngine) doFlee(player *Player) *CommandResult {
 	player.Submitting = false
 
 	result := e.doLook(player)
-	result.Messages = append([]string{fmt.Sprintf("You flee %s!", dirName)}, result.Messages...)
+
+	result.Messages = append(
+		[]string{fmt.Sprintf("You flee %s!", dirName)},
+		result.Messages...,
+	)
+
 	result.OldRoom = oldRoom
-	result.OldRoomMsg = []string{fmt.Sprintf("%s flees %s!", player.FirstName, dirName)}
-	result.RoomBroadcast = []string{fmt.Sprintf("%s arrives, looking panicked.", player.FirstName)}
+
+	result.OldRoomMsg = []string{
+		fmt.Sprintf("%s flees %s!", player.FirstName, dirName),
+	}
+
+	result.RoomBroadcast = []string{
+		fmt.Sprintf("%s arrives, looking panicked.", player.FirstName),
+	}
 
 	return result
 }

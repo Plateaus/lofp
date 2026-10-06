@@ -459,23 +459,62 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 	}
 
 	killed := e.damageMonster(player, inst.ID, dmg, false)
+
+	brokeCharm := inst.RemoveStatEffect(CharmEffect)
+
 	if killed {
 		deathText := def.TextOverrides["TEXD"]
 		deathMsg := fmt.Sprintf("A %s collapses, dead!", name)
+
 		if deathText != "" {
 			deathMsg = fmt.Sprintf("A %s %s", name, deathText)
 		}
+
 		e.handleMonsterDeath(player, inst, def)
 		player.CombatTarget = nil
 		player.Joined = false
+
+		messages := []string{
+			fmt.Sprintf(
+				"You project %s at a %s for %d damage!",
+				disc.Name,
+				name,
+				dmg,
+			),
+			deathMsg,
+		}
+
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("You project %s at a %s for %d damage!", disc.Name, name, dmg), deathMsg},
+			Messages:      messages,
 			RoomBroadcast: []string{fmt.Sprintf("%s focuses psychic energy at a %s!", player.FirstName, name), deathMsg},
 		}
 	}
+
+	messages := []string{
+		fmt.Sprintf(
+			"You project %s at a %s for %d damage!",
+			disc.Name,
+			name,
+			dmg,
+		),
+	}
+
+	if brokeCharm {
+		messages = append(
+			messages,
+			fmt.Sprintf("The pain snaps the %s out of the charm.", name),
+		)
+	}
+
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You project %s at a %s for %d damage!", disc.Name, name, dmg)},
-		RoomBroadcast: []string{fmt.Sprintf("%s focuses psychic energy at a %s!", player.FirstName, name)},
+		Messages: messages,
+		RoomBroadcast: []string{
+			fmt.Sprintf(
+				"%s focuses psychic energy at a %s!",
+				player.FirstName,
+				name,
+			),
+		},
 	}
 }
 

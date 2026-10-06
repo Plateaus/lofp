@@ -79,7 +79,7 @@ func init() {
 	// Enchantment (200-250)
 	ench := []SpellDef{
 		{ID: 200, Name: "Fear", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "debuff", Duration: 5 * time.Second, Ticks: 5, StatusMsg: "%s is overcome with fear!", StatusType: FearEffect},
-		{ID: 201, Name: "Charm", School: "Enchantment", Level: 3, ManaCost: 8, CastTime: 3, Effect: "debuff", Duration: 30 * time.Minute},
+		{ID: 201, Name: "Charm", School: "Enchantment", Level: 3, ManaCost: 8, CastTime: 3, Effect: "debuff", Duration: 5 * time.Second, StatusType: CharmEffect, Ticks: 5, StatusMsg: "%s gets a friendly look."},
 		{ID: 202, Name: "Enchantment I", School: "Enchantment", Level: 5, ManaCost: 10, CastTime: 4, Effect: "buff", Duration: 45 * time.Minute, Family: "enchantment"},
 		{ID: 207, Name: "Strength I", School: "Enchantment", Level: 4, ManaCost: 6, CastTime: 3, Effect: "buff", DefBonus: 10, Duration: 30 * time.Minute, Family: "strength", StatusType: StatStrength},
 		{ID: 208, Name: "Strength II", School: "Enchantment", Level: 8, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 20, Duration: 45 * time.Minute, Family: "strength", StatusType: StatStrength},
@@ -88,6 +88,8 @@ func init() {
 		{ID: 211, Name: "Slow", School: "Enchantment", Level: 5, ManaCost: 8, CastTime: 3, Effect: "utility", Duration: 60 * time.Minute, Family: "slow"},
 		{ID: 216, Name: "Slumber I", School: "Enchantment", Level: 2, ManaCost: 4, CastTime: 3, Effect: "utility"},
 		{ID: 219, Name: "Silence", School: "Enchantment", Level: 7, ManaCost: 10, CastTime: 3, Effect: "utility"},
+		{ID: 220, Name: "Dancing Blade", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "damage", DmgMin: 1, DmgMax: 8, DmgType: "slashing", StatusMsg: "An animate blade leaps forth from %s's hand and slashes at %s with expert skill!"},
+		{ID: 221, Name: "Dancing Sword", School: "Enchantment", Level: 6, ManaCost: 8, CastTime: 3, Effect: "damage", DmgMin: 1, DmgMax: 13, DmgType: "slashing", StatusMsg: "An animate sword leaps forth from %s's hand and slashes at %s with expert skill!"},
 		{ID: 224, Name: "Fly", School: "Enchantment", Level: 11, ManaCost: 15, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
 		{ID: 225, Name: "Invisibility", School: "Enchantment", Level: 14, ManaCost: 18, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
 		{ID: 228, Name: "Identify", School: "Enchantment", Level: 7, ManaCost: 5, CastTime: 3, Effect: "utility"},
@@ -1182,6 +1184,7 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 			spell.StatusType,
 			spell.DefBonus,
 			duration,
+			spell.Ticks,
 		)
 
 		// Build the spell-specific message from the definition.
@@ -1581,7 +1584,13 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 	// ROLL DAMAGE
 	// ------------------------------------------------------------
 
-	dmg := rand.Intn(spell.DmgMax-spell.DmgMin+1) + spell.DmgMin
+	var dmg int
+
+	if spell.ID == 220 || spell.ID == 221 {
+		dmg = dancingWeaponDamage(player, spell)
+	} else {
+		dmg = rand.Intn(spell.DmgMax-spell.DmgMin+1) + spell.DmgMin
+	}
 
 	// ------------------------------------------------------------
 	// MAGIC RESISTANCE
@@ -1626,7 +1635,14 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 
 		dmg = applyImmunity(dmg, undeadPower)
 
+	} else if spell.DmgType == "slashing" {
+
+		if level, ok := def.Immunities[gameworld.ImmunityEdged]; ok {
+			dmg = applyImmunity(dmg, level)
+		}
+
 	} else if spell.DmgType != "" {
+
 		immType := elementalImmunityType(spell.DmgType)
 
 		if level, ok := def.Immunities[immType]; ok {
@@ -1676,6 +1692,14 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		name,
 	)
 
+	if spell.StatusMsg != "" {
+		flavorSelf = fmt.Sprintf(
+			spell.StatusMsg,
+			player.FirstName,
+			article+name,
+		)
+	}
+
 	flavorDmg := fmt.Sprintf(
 		"%s %s to %s. [%d Damage]",
 		damageSeverity(dmg),
@@ -1686,6 +1710,14 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 
 	// Damage-type-specific flavor.
 	switch spell.DmgType {
+
+	case "slashing":
+		flavorDmg = fmt.Sprintf(
+			"%s slash to %s. [%d Damage]",
+			damageSeverity(dmg),
+			randomBodyPart(def.BodyType),
+			dmg,
+		)
 
 	case "heat":
 		flavorSelf = fmt.Sprintf(
@@ -1809,6 +1841,7 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 					FearEffect,
 					0,
 					spell.Duration,
+					spell.Ticks,
 				)
 			}
 		}
@@ -1899,6 +1932,10 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 				name,
 			),
 		)
+	}
+
+	if inst.RemoveStatEffect(CharmEffect) {
+		msgs = append(msgs, "The pain snaps it out of the charm.")
 	}
 
 	// ------------------------------------------------------------

@@ -552,22 +552,54 @@ func (e *GameEngine) monsterTick(tick int) {
 		for _, effect := range expiredEffects {
 			name := FormatMonsterName(def, e.monAdjs)
 
-			if e.localRoomBroadcast != nil {
+			switch effect.Stat {
+			case FearEffect:
 				e.localRoomBroadcast(
 					inst.RoomNumber,
 					[]string{
 						fmt.Sprintf(
-							"DEBUG: %s effect expired: EffectID=%d Stat=%d Source=%d ExpiresAt=%s Now=%s",
+							"The %s is no longer afraid.",
 							name,
-							effect.EffectID,
-							effect.Stat,
-							effect.Source,
-							effect.ExpiresAt.Format("15:04:05"),
-							time.Now().Format("15:04:05"),
+						),
+					},
+				)
+
+			case CharmEffect:
+				e.localRoomBroadcast(
+					inst.RoomNumber,
+					[]string{
+						fmt.Sprintf(
+							"The %s no longer looks quite so friendly.",
+							name,
 						),
 					},
 				)
 			}
+		}
+
+		// ------------------------------------------------------------
+		// CHARM
+		//
+		// Charmed monsters remain peaceful and take no hostile
+		// actions. Occasionally show a little flavor text instead.
+		// ------------------------------------------------------------
+
+		if inst.HasStatEffect(CharmEffect) {
+			if rand.Intn(100) < 20 {
+				name := FormatMonsterName(def, e.monAdjs)
+
+				e.localRoomBroadcast(
+					inst.RoomNumber,
+					[]string{
+						fmt.Sprintf(
+							"The %s smiles warmly at you.",
+							name,
+						),
+					},
+				)
+			}
+
+			continue
 		}
 
 		// ------------------------------------------------------------
@@ -832,7 +864,10 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 	//   50 + 75 - (15 * 5) = 50%
 	//
 	// All spell chances are capped at 5% minimum and 95% maximum.
-	castChance := 50 + def.SpellSkill - (player.Level * 5)
+
+	//castChance := 50 + def.SpellSkill - (player.Level * 5)
+
+	castChance := 95
 
 	if castChance < 5 {
 		castChance = 5
@@ -948,6 +983,37 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 			)
 
 			return playerMsgs, roomMsgs
+		case 201: // Charm
+			if _, ok := player.HasStatEffect(CharmEffect); ok {
+				roomMsgs = append(roomMsgs, "Nothing happens.")
+				return playerMsgs, roomMsgs
+			}
+
+			player.ApplyStatEffect(
+				spell.ID,
+				EffectSourceSpell,
+				CharmEffect,
+				spell.DefBonus,
+				spell.Duration,
+				spell.Ticks,
+			)
+
+			if spell.StatusMsg != "" {
+				roomMsgs = append(
+					roomMsgs,
+					fmt.Sprintf(
+						spell.StatusMsg,
+						player.FirstName,
+					),
+				)
+			} else {
+				roomMsgs = append(
+					roomMsgs,
+					fmt.Sprintf("%s gets a friendly look.", player.FirstName),
+				)
+			}
+
+			return playerMsgs, roomMsgs
 		}
 	}
 	// ------------------------------------------------------------
@@ -958,10 +1024,19 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		return playerMsgs, roomMsgs
 	}
 
-	dmg := spell.DmgMin
+	var dmg int
 
-	if spell.DmgMax > spell.DmgMin {
-		dmg += rand.Intn(spell.DmgMax - spell.DmgMin + 1)
+	if spell.ID == 220 || spell.ID == 221 {
+		// Dancing weapons use the monster's spell skill
+		// in place of the player's Empathy bonus.
+		dmg = rand.Intn(spell.DmgMax) + 1
+		dmg += def.SpellSkill / 10
+	} else {
+		dmg = spell.DmgMin
+
+		if spell.DmgMax > spell.DmgMin {
+			dmg += rand.Intn(spell.DmgMax - spell.DmgMin + 1)
+		}
 	}
 
 	damageType := strings.ToUpper(spell.DmgType)
@@ -994,9 +1069,22 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		dmg = dmg * (100 - resistance) / 100
 	}
 
+	wasConscious := player.BodyPoints > 0
+
 	player.BodyPoints -= dmg
 
-	if player.BodyPoints < 0 {
+	if dmg > 0 {
+		if player.RemoveStatEffect(CharmEffect) {
+			playerMsgs = append(
+				playerMsgs,
+				"The pain snaps you out of the charm.",
+			)
+		}
+	}
+
+	// The initial knockout cannot take the player below 0.
+	// Damage received while already unconscious can.
+	if wasConscious && player.BodyPoints < 0 {
 		player.BodyPoints = 0
 	}
 
@@ -1006,6 +1094,9 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 	damageNoun := "blast"
 
 	switch damageType {
+
+	case "SLASHING":
+		damageNoun = "slash"
 
 	case "HEAT", "FIRE", "BURN":
 		damageNoun = "burn"
@@ -1031,15 +1122,26 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		),
 	)
 
-	roomMsgs = append(
-		roomMsgs,
-		fmt.Sprintf(
-			"%s casts %s at %s.",
-			monsterName,
-			spell.Name,
-			player.FirstName,
-		),
-	)
+	if spell.StatusMsg != "" {
+		roomMsgs = append(
+			roomMsgs,
+			fmt.Sprintf(
+				spell.StatusMsg,
+				monsterName,
+				player.FirstName,
+			),
+		)
+	} else {
+		roomMsgs = append(
+			roomMsgs,
+			fmt.Sprintf(
+				"%s casts %s at %s.",
+				monsterName,
+				spell.Name,
+				player.FirstName,
+			),
+		)
+	}
 
 	if player.BodyPoints <= 0 {
 		if e.isArenaRoom(player.RoomNumber) {
@@ -1144,7 +1246,7 @@ func (e *GameEngine) moveMonsterDirection(idx int, inst *MonsterInstance, def *g
 	return true
 }
 
-func (m *MonsterInstance) ApplyStatEffect(effectID int, source EffectSource, stat StatID, modifier int, duration time.Duration) {
+func (m *MonsterInstance) ApplyStatEffect(effectID int, source EffectSource, stat StatID, modifier int, duration time.Duration, ticks int) {
 
 	expiresAt := time.Now().Add(duration)
 
@@ -1155,6 +1257,7 @@ func (m *MonsterInstance) ApplyStatEffect(effectID int, source EffectSource, sta
 			effect.Stat = stat
 			effect.Modifier = modifier
 			effect.ExpiresAt = expiresAt
+			effect.Ticks = ticks
 			return
 		}
 	}
@@ -1165,6 +1268,7 @@ func (m *MonsterInstance) ApplyStatEffect(effectID int, source EffectSource, sta
 		Stat:      stat,
 		Modifier:  modifier,
 		ExpiresAt: expiresAt,
+		Ticks:     ticks,
 	})
 }
 
@@ -1234,6 +1338,16 @@ func (m *MonsterInstance) RemoveExpiredStatEffects() []StatEffect {
 			continue
 		}
 
+		// Periodic effect still has ticks remaining.
+		if effect.Ticks > 1 {
+			effect.Ticks--
+			effect.ExpiresAt = now.Add(5 * time.Second)
+
+			active = append(active, effect)
+			continue
+		}
+
+		// Final tick has expired.
 		expired = append(expired, effect)
 	}
 

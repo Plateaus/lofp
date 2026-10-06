@@ -810,6 +810,33 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		}
 	}
 
+	// Charmed players may only perform peaceful actions.
+	if _, ok := player.HasStatEffect(CharmEffect); ok {
+		verb := strings.ToUpper(strings.Fields(input)[0])
+		switch verb {
+		case "LOOK",
+			"EXAMINE",
+			"INVENTORY",
+			"STATUS",
+			"HELP",
+			"SAY",
+			"WHISPER",
+			"REST",
+			"STAND",
+			"SIT",
+			"STAT",
+			"KNEEL":
+			// Allowed.
+
+		default:
+			return &CommandResult{
+				Messages: []string{
+					"You feel far too friendly to do that.",
+				},
+			}
+		}
+	}
+
 	// Handle speech
 	if strings.HasPrefix(input, "'") || strings.HasPrefix(input, "\"") {
 		msg := input[1:]
@@ -2094,7 +2121,8 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 		if effect.Source != EffectSourcePoison &&
 			effect.Source != EffectSourceDisease &&
 			effect.Source != EffectUnconscious &&
-			effect.Stat != FearEffect {
+			effect.Stat != FearEffect &&
+			effect.Stat != CharmEffect {
 
 			active = append(active, effect)
 			continue
@@ -2134,6 +2162,28 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 			continue
 		}
 
+		// --------------------------------------------------------
+		// Charm
+		// --------------------------------------------------------
+
+		if effect.Stat == CharmEffect {
+			effect.Ticks--
+
+			if effect.Ticks <= 0 {
+				messages = append(
+					messages,
+					"You no longer feel so friendly.",
+				)
+
+				// Do not re-add the effect.
+				continue
+			}
+
+			effect.ExpiresAt = now.Add(5 * time.Second)
+			active = append(active, effect)
+			continue
+		}
+
 		switch effect.Source {
 
 		// --------------------------------------------------------
@@ -2145,6 +2195,15 @@ func (e *GameEngine) ProcessPeriodicStatEffects(player *Player) []string {
 
 			if damage > 0 {
 				player.BodyPoints -= damage
+
+				if damage > 0 {
+					if player.RemoveStatEffect(CharmEffect) {
+						messages = append(
+							messages,
+							"The pain snaps you out of the charm.",
+						)
+					}
+				}
 
 				if player.BodyPoints < 0 {
 					player.BodyPoints = 0
@@ -5025,6 +5084,18 @@ func (e *GameEngine) checkPlayerCanMove(player *Player) *CommandResult {
 					"You can't do that while %s! Try STANDing first.",
 					posName,
 				),
+			},
+		}
+	}
+
+	return nil
+}
+
+func (e *GameEngine) checkPlayerCanAttack(player *Player) *CommandResult {
+	if _, ok := player.HasStatEffect(CharmEffect); ok {
+		return &CommandResult{
+			Messages: []string{
+				"You feel far too friendly to attack.",
 			},
 		}
 	}
