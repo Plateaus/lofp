@@ -458,9 +458,8 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 		}
 	}
 
-	killed := e.damageMonster(player, inst.ID, dmg, false)
-
-	brokeCharm := inst.RemoveStatEffect(CharmEffect)
+	damageResult := e.damageMonster(player, inst.ID, dmg, false)
+	killed := damageResult.Killed
 
 	if killed {
 		deathText := def.TextOverrides["TEXD"]
@@ -499,10 +498,26 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 		),
 	}
 
-	if brokeCharm {
+	if damageResult.BrokeCharm {
 		messages = append(
 			messages,
-			fmt.Sprintf("The pain snaps the %s out of the charm.", name),
+			"The pain snaps it out of the charm.",
+		)
+	}
+
+	if damageResult.DisruptedSpell {
+		messages = append(
+			messages,
+			fmt.Sprintf("The %s's spell is disrupted!", name),
+		)
+	}
+
+	disruptedSpell := e.tryInterruptMonsterSpell(inst, def)
+
+	if disruptedSpell {
+		messages = append(
+			messages,
+			fmt.Sprintf("The %s's spell is disrupted!", name),
 		)
 	}
 

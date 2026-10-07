@@ -546,6 +546,63 @@ func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResul
 	}
 }
 
+func (e *GameEngine) tryInterruptPlayerSpell(player *Player) bool {
+	if player == nil {
+		return false
+	}
+
+	// No spell is currently prepared.
+	if player.PreparedSpell <= 0 {
+		return false
+	}
+
+	// Wizard's Armor prevents spell disruption.
+	// Uncomment when Wizard's Armor is implemented.
+	//
+	// if _, ok := player.HasStatEffect(WizardsArmorEffect); ok {
+	// 	return false
+	// }
+
+	// Successful damaging hits have a 50% chance
+	// to disrupt the prepared spell.
+	if rand.Intn(2) != 0 {
+		return false
+	}
+
+	player.PreparedSpell = 0
+
+	return true
+}
+
+func (e *GameEngine) tryInterruptMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef) bool {
+	if inst == nil || def == nil {
+		return false
+	}
+
+	// No spell is currently being prepared.
+	if inst.PreparedSpell <= 0 {
+		return false
+	}
+
+	// NONDISRUPTABLE monsters cannot have their spells disrupted.
+	// Wire this in once NONDISRUPTABLE is implemented.
+	//
+	// if def.NonDisruptable {
+	// 	return false
+	// }
+
+	// 50% chance to disrupt.
+	if rand.Intn(2) != 0 {
+		return false
+	}
+
+	// Cancel the pending spell completely.
+	inst.PreparedSpell = 0
+	inst.SpellReadyAt = time.Time{}
+
+	return true
+}
+
 // doCastSpell handles CAST [target].
 func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []string) *CommandResult {
 	if player.Dead {
@@ -1799,12 +1856,8 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 	// APPLY DAMAGE
 	// ------------------------------------------------------------
 
-	killed := e.damageMonster(
-		player,
-		inst.ID,
-		dmg,
-		false,
-	)
+	damageResult := e.damageMonster(player, inst.ID, dmg, false)
+	killed := damageResult.Killed
 
 	// ------------------------------------------------------------
 	// TURN UNDEAD
@@ -1934,8 +1987,18 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		)
 	}
 
-	if inst.RemoveStatEffect(CharmEffect) {
-		msgs = append(msgs, "The pain snaps it out of the charm.")
+	if damageResult.BrokeCharm {
+		msgs = append(
+			msgs,
+			fmt.Sprintf("The pain snaps the %s out of the charm.", name),
+		)
+	}
+
+	if damageResult.DisruptedSpell {
+		msgs = append(
+			msgs,
+			fmt.Sprintf("%s%s's spell is disrupted!", article, name),
+		)
 	}
 
 	// ------------------------------------------------------------

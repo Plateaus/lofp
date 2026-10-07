@@ -1082,6 +1082,12 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		}
 	}
 
+	disruptedSpell := e.tryInterruptPlayerSpell(player)
+
+	if disruptedSpell {
+		playerMsgs = append(playerMsgs, "Your spell is disrupted!")
+	}
+
 	// The initial knockout cannot take the player below 0.
 	// Damage received while already unconscious can.
 	if wasConscious && player.BodyPoints < 0 {

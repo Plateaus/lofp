@@ -1790,16 +1790,21 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 		//stunned was falling out due to monster locking, so added it to damage monster where its locked/unlocked.
 		stunned := excellent && rand.Intn(100) < 30
 
-		killed :=
-			e.damageMonster(
-				player,
-				inst.ID,
-				dmg,
-				stunned,
-			)
+		damageResult := e.damageMonster(player, inst.ID, dmg, stunned)
+		killed := damageResult.Killed
 
-		if inst.RemoveStatEffect(CharmEffect) && !killed {
-			msgs = append(msgs, "The pain snaps it out of the charm.")
+		if damageResult.BrokeCharm {
+			msgs = append(
+				msgs,
+				"The pain snaps it out of the charm.",
+			)
+		}
+
+		if damageResult.DisruptedSpell {
+			msgs = append(
+				msgs,
+				fmt.Sprintf("The %s's spell is disrupted!", name),
+			)
 		}
 
 		// Weapon poison.
@@ -2234,6 +2239,12 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 				}
 			}
 
+			disruptedSpell := e.tryInterruptPlayerSpell(player)
+
+			if disruptedSpell {
+				playerMsgs = append(playerMsgs, "Your spell is disrupted!")
+			}
+
 			if frenziedMurg {
 				// First hit that crosses zero stops at 0,
 				// but a berserk Murg remains conscious.
@@ -2460,6 +2471,12 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 					"The pain snaps you out of the charm.",
 				)
 			}
+		}
+
+		disruptedSpell := e.tryInterruptPlayerSpell(player)
+
+		if disruptedSpell {
+			playerMsgs = append(playerMsgs, "Your spell is disrupted!")
 		}
 
 		if frenziedMurg {
@@ -2788,7 +2805,16 @@ func (e *GameEngine) doDepart(player *Player) *CommandResult {
 	return result
 }
 
-func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int, stunned bool) bool {
+type MonsterDamageResult struct {
+	Killed         bool
+	Stunned        bool
+	BrokeCharm     bool
+	DisruptedSpell bool
+}
+
+func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int, stunned bool) MonsterDamageResult {
+
+	var result MonsterDamageResult
 
 	e.monsterMgr.mu.Lock()
 	defer e.monsterMgr.mu.Unlock()
@@ -2801,11 +2827,16 @@ func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int, stunn
 			continue
 		}
 
+		// --------------------------------------------------------
+		// DAMAGE CREDIT
+		// --------------------------------------------------------
+
 		if inst.DamageByPlayer == nil {
 			inst.DamageByPlayer = make(map[bson.ObjectID]int)
 		}
 
 		creditedDamage := dmg
+
 		if creditedDamage > inst.CurrentHP {
 			creditedDamage = inst.CurrentHP
 		}
@@ -2814,23 +2845,72 @@ func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int, stunn
 			inst.DamageByPlayer[player.ID] += creditedDamage
 		}
 
+		// --------------------------------------------------------
+		// APPLY DAMAGE
+		// --------------------------------------------------------
+
 		inst.CurrentHP -= dmg
+
+		// --------------------------------------------------------
+		// DAMAGE-TRIGGERED EFFECTS
+		// --------------------------------------------------------
+
+		if dmg > 0 {
+
+			// Any direct damage breaks Charm.
+			if inst.RemoveStatEffect(CharmEffect) {
+				result.BrokeCharm = true
+			}
+
+			// A monster preparing a spell has a 50% chance
+			// of having that spell disrupted by damage.
+			if inst.PreparedSpell > 0 {
+
+				// NONDISRUPTABLE monsters cannot have their
+				// spells disrupted.
+				//
+				// Uncomment once NONDISRUPTABLE is wired
+				// into MonsterDef.
+				//
+				// if !def.NonDisruptable {
+
+				if rand.Intn(2) == 0 {
+					inst.PreparedSpell = 0
+					inst.SpellReadyAt = time.Time{}
+					result.DisruptedSpell = true
+				}
+
+				// }
+			}
+		}
+
+		// --------------------------------------------------------
+		// DEATH
+		// --------------------------------------------------------
 
 		if inst.CurrentHP <= 0 {
 			inst.Alive = false
 			inst.CurrentHP = 0
 			inst.DeathTime = time.Now()
-			return true
+
+			result.Killed = true
+
+			return result
 		}
+
+		// --------------------------------------------------------
+		// STUN
+		// --------------------------------------------------------
 
 		if stunned {
 			inst.Stunned = true
+			result.Stunned = true
 		}
 
-		return false
+		return result
 	}
 
-	return false
+	return result
 }
 
 func (e *GameEngine) applyMonsterStatEffect(
@@ -3268,8 +3348,10 @@ func (e *GameEngine) doFlee(player *Player) *CommandResult {
 	}
 
 	// Web, Plant Snare, etc.
-	if result := e.checkPlayerCanMove(player); result != nil {
-		return result
+	if player.EffectiveStat(RestrainedEffect) != 0 {
+		return &CommandResult{
+			Messages: []string{"You are restrained and cannot flee!"},
+		}
 	}
 
 	// Normally you can only flee while in combat.
