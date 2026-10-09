@@ -167,6 +167,26 @@ TRAITDEF GENERIC_BOW
     ENDIF
 ENDTRAIT
 
+TRAITDEF GENERIC_BLOWGUN
+    IFVERB WIELD -1
+        ECHO PLAYER You take %a in hand, readying it for use.
+        ECHO OTHERS %N takes %a in hand, readying it for use.
+    ENDIF
+
+    IFVERB UNWIELD -1
+        ECHO PLAYER You lower %a and put it away.
+        ECHO OTHERS %N lowers %a and puts it away.
+    ENDIF
+
+    IFPREVERB TURN -1
+        IFITEM -1 WIELDED
+            CLEARVERB
+            ECHO PLAYER You turn %a in your hands, inspecting it carefully.
+            ECHO OTHERS %N turns %a in %h hands, inspecting it carefully.
+        ENDIF
+    ENDIF
+ENDTRAIT
+
 
 TRAITDEF GENERIC_CROSSBOW
     IFVERB WIELD -1

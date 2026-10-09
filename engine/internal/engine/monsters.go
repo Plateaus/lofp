@@ -865,9 +865,7 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 	//
 	// All spell chances are capped at 5% minimum and 95% maximum.
 
-	//castChance := 50 + def.SpellSkill - (player.Level * 5)
-
-	castChance := 95
+	castChance := 50 + def.SpellSkill - (player.Level * 5)
 
 	if castChance < 5 {
 		castChance = 5

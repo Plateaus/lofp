@@ -3014,15 +3014,17 @@ func (e *GameEngine) handleMonsterDeath(killer *Player, inst *MonsterInstance, d
 		}
 	}
 
-	// ------------------------------------------------------------
-	// Base XP.
-	// ------------------------------------------------------------
-
-	// Base XP formula: Body (not ExtraBody) + Attack/5 + Defense/5 + Armor/2.
+	// Base XP formula:
+	// Body + Attack/5 + Defense/5 + Armor/2
+	// + MagicResist/5 + SpellSkill/5.
 	baseXP := def.Body + def.Attack1/5 + def.Defense/5 + def.Armor/2
 
 	if def.MagicResist > 0 {
 		baseXP += def.MagicResist / 5
+	}
+
+	if def.SpellSkill > 0 {
+		baseXP += def.SpellSkill / 2
 	}
 
 	if baseXP < 10 {

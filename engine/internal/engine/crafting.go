@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1235,7 +1236,27 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Analyze what?"}}
 	}
+
+	// Support an optional ordinal at the end:
+	//   ANALYZE LEG
+	//   ANALYZE LEG 2
+	//   ANALYZE SPIDER LEG
+	//   ANALYZE ARACHEN LEG
+	ordinal := 1
+
+	if len(args) > 1 {
+		if n, err := strconv.Atoi(args[len(args)-1]); err == nil && n > 0 {
+			ordinal = n
+			args = args[:len(args)-1]
+		}
+	}
+
+	if len(args) == 0 {
+		return &CommandResult{Messages: []string{"Analyze what?"}}
+	}
+
 	target := strings.ToLower(strings.Join(args, " "))
+	matchCount := 0
 
 	for i := range player.Inventory {
 		ii := &player.Inventory[i]
@@ -1244,23 +1265,45 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 		if def == nil {
 			continue
 		}
+
 		nounName := strings.ToLower(e.getItemNounName(def))
+
 		fullName := strings.ToLower(
 			e.formatItemName(def, ii.Adj1, ii.Adj2, ii.Adj3),
 		)
 
+		// Strip the article from the formatted name so:
+		// "spider leg" matches "a spider leg"
+		searchName := fullName
+		searchName = strings.TrimPrefix(searchName, "a ")
+		searchName = strings.TrimPrefix(searchName, "an ")
+		searchName = strings.TrimPrefix(searchName, "the ")
+
+		// Match either the noun ("leg") or the compound item name
+		// ("spider leg", "arachen leg", etc.).
 		if !strings.HasPrefix(nounName, target) &&
-			!strings.HasPrefix(fullName, target) {
+			!strings.HasPrefix(searchName, target) {
+			continue
+		}
+
+		matchCount++
+		if matchCount != ordinal {
 			continue
 		}
 
 		if def.Type == "ORE" {
 			miningSkill := player.Skills[35]
 			if miningSkill < 3 {
-				return &CommandResult{Messages: []string{"You don't have enough mining skill to analyze this ore. (Need Mining 3+)"}}
+				return &CommandResult{
+					Messages: []string{
+						"You don't have enough mining skill to analyze this ore. (Need Mining 3+)",
+					},
+				}
 			}
+
 			purity := ii.Val3
 			desc := "poor"
+
 			if purity > 80 {
 				desc = "nearly solid metal"
 			} else if purity > 60 {
@@ -1270,7 +1313,26 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 			} else if purity > 20 {
 				desc = "fair"
 			}
-			return &CommandResult{Messages: []string{fmt.Sprintf("You examine the ore carefully. It appears to be of %s quality. (Purity: %d%%)", desc, purity)}}
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You examine the ore carefully. It appears to be of %s quality. (Purity: %d%%)",
+						desc,
+						purity,
+					),
+				},
+			}
+		}
+
+		alchemyRank := player.Skills[31] // whatever your actual skill lookup is
+
+		if alchemyRank <= 0 {
+			return &CommandResult{
+				Messages: []string{
+					"You lack the alchemical knowledge needed to analyze that.",
+				},
+			}
 		}
 
 		// Reagent analysis for alchemy
@@ -1290,18 +1352,38 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 				12: "Mind",
 				13: "Protect",
 			}
-			//rType := ii.Val5
+
 			// Val5 isn't always stored, so resolve it from FORAGEDEF if necessary.
 			rType := e.resolveReagentType(ii)
+
 			typeName := reagentTypes[rType]
 			if typeName == "" {
 				typeName = "unknown"
 			}
-			itemName := e.formatItemName(def, ii.Adj1, ii.Adj2, ii.Adj3)
-			return &CommandResult{Messages: []string{fmt.Sprintf("You analyze %s. Alchemical properties: %s.", itemName, typeName)}}
+
+			itemName := e.formatItemName(
+				def,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			)
+
+			return &CommandResult{
+				Messages: []string{
+					fmt.Sprintf(
+						"You analyze %s. Alchemical properties: %s.",
+						itemName,
+						typeName,
+					),
+				},
+			}
 		}
 
-		return &CommandResult{Messages: []string{"You can't determine anything special about that."}}
+		return &CommandResult{
+			Messages: []string{
+				"You can't determine anything special about that.",
+			},
+		}
 	}
 
 	return &CommandResult{Messages: []string{"You don't have that."}}

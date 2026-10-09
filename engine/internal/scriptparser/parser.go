@@ -90,6 +90,9 @@ func ParseConfig(configPath string) (*ParseResult, error) {
 			result.BumpRoom, _ = strconv.Atoi(fields[1])
 		case "SCRIPT":
 			scriptFile := resolveFileCaseInsensitive(filepath.Join(dir, fields[1]))
+
+			fmt.Printf("CONFIG SCRIPT: %s -> %s\n", fields[1], scriptFile)
+
 			if err := parseScriptFile(scriptFile, result); err != nil {
 				fmt.Printf("Warning: could not parse %s: %v\n", fields[1], err)
 			}
@@ -266,6 +269,11 @@ func (p *fileParser) parse() {
 		cmd := strings.ToUpper(fields[0])
 
 		/*  testing forage loads
+		if strings.HasPrefix(strings.ToUpper(line), "MLIST 103 ") {
+			fmt.Printf("RAW MLIST 103 REACHED: pos=%d line=%q\n", p.pos, line)
+		}
+
+
 		if strings.Contains(strings.ToUpper(line), "FORAGEDEF") {
 			fmt.Printf(
 				"FORAGE RAW: file=%s pos=%d line=%q fields=%v\n",
@@ -334,7 +342,9 @@ func (p *fileParser) parse() {
 				p.result.MonsterLists = append(p.result.MonsterLists, gameworld.MonsterList{
 					Room: room, MonsterID: mid, Probability: prob, MaxCount: maxCount,
 				})
+
 			}
+
 			p.pos++
 		case "MONEYDEF":
 			if len(fields) >= 5 {
@@ -794,7 +804,16 @@ func (p *fileParser) parseMonster(fields []string) {
 		if cmd == "NUMBER" ||
 			cmd == "INUMBER" ||
 			cmd == "MNUMBER" ||
-			cmd == "TRAITDEF" {
+			cmd == "TRAITDEF" ||
+			cmd == "NOUNDEF" ||
+			cmd == "ADJDEF" ||
+			cmd == "MADJDEF" ||
+			cmd == "VARIABLE" ||
+			cmd == "REGIONDEF" ||
+			cmd == "MLIST" ||
+			cmd == "MONEYDEF" ||
+			cmd == "FORAGEDEF" ||
+			cmd == "MINEDEF" {
 			break
 		}
 

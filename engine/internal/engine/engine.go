@@ -5150,6 +5150,21 @@ func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gamew
 	if len(sc.GMMsgs) > 0 {
 		result.GMBroadcast = append(result.GMBroadcast, sc.GMMsgs...)
 	}
+	// Scripted MOVEGROUP needs to be handled before normal portal movement.
+	// applyScriptResult performs the group move, LOOK, persistence, etc.
+	if sc.MoveGroupTo > 0 {
+		if e.applyScriptResult(
+			ctx,
+			player,
+			player.RoomNumber,
+			sc,
+			result,
+		) {
+			return result
+		}
+	}
+
+	// CLEARVERB blocks normal portal behavior unless the script performed MOVE.
 	if sc.Blocked && sc.MoveTo == 0 {
 		if len(result.Messages) == 0 {
 			result.Messages = []string{"You can't go that way."}
@@ -7445,17 +7460,47 @@ func (e *GameEngine) doPut(ctx context.Context, player *Player, args []string) *
 	return result
 }
 
-func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Player, itemTarget string, containerTarget string) *CommandResult {
+func (e *GameEngine) doPutInInventoryContainer(
+	ctx context.Context,
+	player *Player,
+	itemTarget string,
+	containerTarget string,
+) *CommandResult {
+
+	// ------------------------------------------------------------
+	// Parse container ordinal.
+	//
+	// Examples:
+	//   PUT CLAW IN BACKPACK
+	//   PUT CLAW IN BACKPACK 2
+	// ------------------------------------------------------------
 
 	containerTarget, ordSkip := parseOrdinal(containerTarget)
 	skip := ordSkip
 
-	for containerIndex := range player.Inventory {
-		container := &player.Inventory[containerIndex]
+	// ------------------------------------------------------------
+	// Find the destination container.
+	//
+	// A container may either be:
+	//   - carried in player.Inventory
+	//   - worn in player.Worn
+	//
+	// Keep track of which collection owns it so we can modify the
+	// authoritative InventoryItem rather than a copy.
+	// ------------------------------------------------------------
+
+	containerIndex := -1
+	containerIsWorn := false
+
+	// Helper used for both carried and worn containers.
+	matchesContainer := func(container *InventoryItem) bool {
+		if container == nil {
+			return false
+		}
 
 		containerDef := e.items[container.Archetype]
 		if containerDef == nil {
-			continue
+			return false
 		}
 
 		containerNoun := e.getItemNounName(containerDef)
@@ -7468,177 +7513,321 @@ func (e *GameEngine) doPutInInventoryContainer(ctx context.Context, player *Play
 			!matchesTarget(
 				containerNoun,
 				containerTarget,
+				e.getAdjName(container.Adj2),
+			) &&
+			!matchesTarget(
+				containerNoun,
+				containerTarget,
 				e.getAdjName(container.Adj3),
 			) {
-			continue
+			return false
 		}
 
+		// It must actually be capable of containing things.
 		if containerDef.Container != "IN" &&
 			containerDef.Type != "CONTAINER" &&
 			!containsFlag(containerDef.Flags, "CONTAINER") {
+			return false
+		}
+
+		return true
+	}
+
+	// ------------------------------------------------------------
+	// Search carried containers first.
+	// ------------------------------------------------------------
+
+	for i := range player.Inventory {
+		container := &player.Inventory[i]
+
+		if !matchesContainer(container) {
 			continue
 		}
 
-		// Ordinal support:
-		// PUT CLAW IN CHEST 2
-		// PUT CLAW IN SECOND CHEST
 		if skip > 0 {
 			skip--
 			continue
 		}
 
-		containerName := e.formatItemName(
-			containerDef,
-			container.Adj1,
-			container.Adj2,
-			container.Adj3,
-		)
+		containerIndex = i
+		containerIsWorn = false
+		break
+	}
 
-		if container.State != "OPEN" && container.State != "" {
-			return &CommandResult{
-				Messages: []string{
-					fmt.Sprintf(
-						"You'll need to open %s first.",
-						containerName,
-					),
-				},
-			}
-		}
+	// ------------------------------------------------------------
+	// If no carried container matched, search worn containers.
+	//
+	// Continue using the same ordinal skip count so:
+	//
+	//   PUT CLAW IN BACKPACK 2
+	//
+	// can still distinguish multiple matching containers.
+	// ------------------------------------------------------------
 
-		// Find the item being placed into the container.
-		itemTargetParsed, itemOrdSkip := parseOrdinal(itemTarget)
-		itemSkip := itemOrdSkip
-		itemIndex := -1
+	if containerIndex < 0 {
+		for i := range player.Worn {
+			container := &player.Worn[i]
 
-		for i := range player.Inventory {
-			// Don't allow putting a container into itself.
-			if i == containerIndex {
+			if !matchesContainer(container) {
 				continue
 			}
 
-			item := &player.Inventory[i]
-
-			itemDef := e.items[item.Archetype]
-			if itemDef == nil {
+			if skip > 0 {
+				skip--
 				continue
 			}
 
-			itemNoun := e.getItemNounName(itemDef)
-
-			if !matchesTarget(
-				itemNoun,
-				itemTargetParsed,
-				e.getAdjName(item.Adj1),
-			) &&
-				!matchesTarget(
-					itemNoun,
-					itemTargetParsed,
-					e.getAdjName(item.Adj3),
-				) {
-				continue
-			}
-
-			if itemSkip > 0 {
-				itemSkip--
-				continue
-			}
-
-			itemIndex = i
+			containerIndex = i
+			containerIsWorn = true
 			break
 		}
+	}
 
-		if itemIndex < 0 {
-			return &CommandResult{
-				Messages: []string{
-					"You aren't carrying that.",
-				},
-			}
+	if containerIndex < 0 {
+		return &CommandResult{
+			Messages: []string{
+				"You don't see that container here.",
+			},
 		}
+	}
 
-		item := player.Inventory[itemIndex]
-		itemDef := e.items[item.Archetype]
+	// ------------------------------------------------------------
+	// Get a pointer to the actual destination container.
+	// ------------------------------------------------------------
 
-		// ---------------------------------------------------------
-		// Container volume rules from original game docs.
-		// ---------------------------------------------------------
+	var container *InventoryItem
 
-		// Item itself must be smaller than the container's VOLUME.
-		if itemDef.Volume >= containerDef.Volume {
-			return &CommandResult{
-				Messages: []string{
-					"That item is too large to fit in the container.",
-				},
-			}
+	if containerIsWorn {
+		container = &player.Worn[containerIndex]
+	} else {
+		container = &player.Inventory[containerIndex]
+	}
+
+	containerDef := e.items[container.Archetype]
+	if containerDef == nil {
+		return &CommandResult{
+			Messages: []string{
+				"You don't see that container here.",
+			},
 		}
+	}
 
-		// Total contents may not exceed container INTERIOR.
-		usedVolume := 0
+	containerName := e.formatItemName(
+		containerDef,
+		container.Adj1,
+		container.Adj2,
+		container.Adj3,
+	)
 
-		for _, child := range container.Contents {
-			if def := e.items[child.Archetype]; def != nil {
-				usedVolume += def.Volume
-			}
-		}
+	// ------------------------------------------------------------
+	// Container must be open if it has a state.
+	// ------------------------------------------------------------
 
-		if usedVolume+itemDef.Volume > containerDef.Interior {
-			return &CommandResult{
-				Messages: []string{
-					"There isn't enough room in the container.",
-				},
-			}
-		}
-
-		/*
-			Remove the item before modifying the container.
-
-			Removing from player.Inventory can shift the container's
-			index, so adjust it if necessary.
-		*/
-		player.Inventory = append(
-			player.Inventory[:itemIndex],
-			player.Inventory[itemIndex+1:]...,
-		)
-
-		if itemIndex < containerIndex {
-			containerIndex--
-		}
-
-		player.Inventory[containerIndex].Contents = append(
-			player.Inventory[containerIndex].Contents,
-			item,
-		)
-
-		e.SavePlayer(ctx, player)
-
-		itemName := e.formatItemName(
-			itemDef,
-			item.Adj1,
-			item.Adj2,
-			item.Adj3,
-		)
-
+	if container.State != "OPEN" && container.State != "" {
 		return &CommandResult{
 			Messages: []string{
 				fmt.Sprintf(
-					"You put %s in %s.",
-					itemName,
-					containerName,
-				),
-			},
-			RoomBroadcast: []string{
-				fmt.Sprintf(
-					"%s puts %s in %s.",
-					player.FirstName,
-					itemName,
+					"You'll need to open %s first.",
 					containerName,
 				),
 			},
 		}
 	}
 
+	// ------------------------------------------------------------
+	// Find the item being placed into the container.
+	//
+	// The item itself must be in normal carried inventory.
+	// ------------------------------------------------------------
+
+	itemTargetParsed, itemOrdSkip := parseOrdinal(itemTarget)
+	itemSkip := itemOrdSkip
+	itemIndex := -1
+
+	for i := range player.Inventory {
+
+		// If the destination is also in Inventory, don't allow
+		// putting the container inside itself.
+		if !containerIsWorn && i == containerIndex {
+			continue
+		}
+
+		item := &player.Inventory[i]
+
+		itemDef := e.items[item.Archetype]
+		if itemDef == nil {
+			continue
+		}
+
+		itemNoun := e.getItemNounName(itemDef)
+
+		if !matchesTarget(
+			itemNoun,
+			itemTargetParsed,
+			e.getAdjName(item.Adj1),
+		) &&
+			!matchesTarget(
+				itemNoun,
+				itemTargetParsed,
+				e.getAdjName(item.Adj2),
+			) &&
+			!matchesTarget(
+				itemNoun,
+				itemTargetParsed,
+				e.getAdjName(item.Adj3),
+			) {
+			continue
+		}
+
+		if itemSkip > 0 {
+			itemSkip--
+			continue
+		}
+
+		itemIndex = i
+		break
+	}
+
+	if itemIndex < 0 {
+		return &CommandResult{
+			Messages: []string{
+				"You aren't carrying that.",
+			},
+		}
+	}
+
+	item := player.Inventory[itemIndex]
+	itemDef := e.items[item.Archetype]
+
+	if itemDef == nil {
+		return &CommandResult{
+			Messages: []string{
+				"You aren't carrying that.",
+			},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Container volume rules.
+	//
+	// The individual item must be smaller than the container's
+	// VOLUME.
+	// ------------------------------------------------------------
+
+	if itemDef.Volume >= containerDef.Volume {
+		return &CommandResult{
+			Messages: []string{
+				"That item is too large to fit in the container.",
+			},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Total contents may not exceed INTERIOR.
+	//
+	// Example:
+	//
+	//   Backpack
+	//   VOLUME   7
+	//   INTERIOR 40
+	//
+	// Each individual item must fit through the container's volume
+	// limit, while all contents together may occupy up to 40.
+	// ------------------------------------------------------------
+
+	usedVolume := 0
+
+	for _, child := range container.Contents {
+		if def := e.items[child.Archetype]; def != nil {
+			usedVolume += def.Volume
+		}
+	}
+
+	if containerDef.Interior > 0 &&
+		usedVolume+itemDef.Volume > containerDef.Interior {
+
+		return &CommandResult{
+			Messages: []string{
+				"There isn't enough room in the container.",
+			},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// Save names BEFORE removing anything from Inventory.
+	// ------------------------------------------------------------
+
+	itemName := e.formatItemName(
+		itemDef,
+		item.Adj1,
+		item.Adj2,
+		item.Adj3,
+	)
+
+	// ------------------------------------------------------------
+	// Remove the item from normal inventory.
+	//
+	// If the destination container is ALSO in Inventory, removing
+	// an earlier item can shift the container's index.
+	// ------------------------------------------------------------
+
+	player.Inventory = append(
+		player.Inventory[:itemIndex],
+		player.Inventory[itemIndex+1:]...,
+	)
+
+	if !containerIsWorn {
+
+		if itemIndex < containerIndex {
+			containerIndex--
+		}
+
+		// Reacquire the pointer because modifying the Inventory
+		// slice may have invalidated the previous pointer.
+		container = &player.Inventory[containerIndex]
+
+	} else {
+
+		// Worn lives in a different slice, so removing something
+		// from Inventory cannot change its index.
+		container = &player.Worn[containerIndex]
+	}
+
+	// ------------------------------------------------------------
+	// Put the complete InventoryItem into the container.
+	//
+	// This preserves:
+	//   Traits
+	//   Identified
+	//   Val1-Val5
+	//   State
+	//   Contents
+	//
+	// So nested containers retain their contents as well.
+	// ------------------------------------------------------------
+
+	container.Contents = append(
+		container.Contents,
+		item,
+	)
+
+	e.SavePlayer(ctx, player)
+
 	return &CommandResult{
 		Messages: []string{
-			"You don't see that container here.",
+			fmt.Sprintf(
+				"You put %s in %s.",
+				itemName,
+				containerName,
+			),
+		},
+		RoomBroadcast: []string{
+			fmt.Sprintf(
+				"%s puts %s in %s.",
+				player.FirstName,
+				itemName,
+				containerName,
+			),
 		},
 	}
 }
@@ -7668,7 +7857,15 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 	//
 	// Currency normally lives directly on the Player, rather than
 	// as inventory items. Dropping it creates a MONEY RoomItem.
+	//
+	// IMPORTANT:
+	// RoomItem.Val1 stores the TOTAL COPPER VALUE of the money pile.
+	//
+	//   1 gold   = 100 copper
+	//   1 silver = 10 copper
+	//   1 copper = 1 copper
 	// ------------------------------------------------------------
+
 	if len(args) >= 2 {
 		amount, err := strconv.Atoi(args[0])
 
@@ -7679,25 +7876,30 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			var available *int
 			var denomName string
 			var adjName string
+			var copperMultiplier int
 
 			switch denom {
+
 			case "gold", "crown", "crowns":
 				archetype = 161
 				available = &player.Gold
 				denomName = "gold"
 				adjName = "gold"
+				copperMultiplier = 100
 
 			case "silver", "shilling", "shillings":
 				archetype = 162
 				available = &player.Silver
 				denomName = "silver"
 				adjName = "silver"
+				copperMultiplier = 10
 
 			case "copper", "penny", "pennies":
 				archetype = 163
 				available = &player.Copper
 				denomName = "copper"
 				adjName = "copper"
+				copperMultiplier = 1
 			}
 
 			// Recognized a currency denomination.
@@ -7719,13 +7921,17 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 				// hard-coding gold=147, etc.
 				adj := e.adjByName(adjName)
 
+				// Remove the requested denomination from the player.
 				*available -= amount
+
+				// MONEY room items store their value in copper.
+				copperValue := amount * copperMultiplier
 
 				droppedItem := gameworld.RoomItem{
 					Ref:       len(room.Items),
 					Archetype: archetype,
-					Adj3:      adj, //after much searching I found adj 3 is the one that controls the coin type
-					Val1:      amount,
+					Adj3:      adj, // Adj3 controls the displayed coin type.
+					Val1:      copperValue,
 					State:     "MONEY",
 				}
 
@@ -7748,10 +7954,11 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 					msgs = append(
 						msgs,
 						fmt.Sprintf(
-							"[TRACE] DROP MONEY archetype=%d adj3=%d val1=%d",
+							"[TRACE] DROP MONEY archetype=%d adj3=%d amount=%d copperValue=%d",
 							archetype,
 							adj,
 							amount,
+							copperValue,
 						),
 					)
 				}
@@ -7809,13 +8016,14 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			continue
 		}
 
-		/*
-			Run the inventory item's IFPREVERB DROP script before
-			performing the normal drop.
+		// --------------------------------------------------------
+		// Run the inventory item's IFPREVERB DROP script before
+		// performing the normal drop.
+		//
+		// RunPreverbScripts expects a RoomItem, so create a
+		// temporary script representation of the inventory item.
+		// --------------------------------------------------------
 
-			RunPreverbScripts expects a RoomItem, so create a
-			temporary script representation of the inventory item.
-		*/
 		scriptItem := gameworld.RoomItem{
 			Ref:        -1,
 			Archetype:  ii.Archetype,
@@ -7846,12 +8054,13 @@ func (e *GameEngine) doDrop(ctx context.Context, player *Player, args []string) 
 			GMBroadcast:   append([]string{}, sc.GMMsgs...),
 		}
 
-		/*
-			CLEARVERB means the script handled or blocked the drop.
+		// --------------------------------------------------------
+		// CLEARVERB means the script handled or blocked the drop.
+		//
+		// For example, REMOVEITEM -1 may already have deleted
+		// the inventory item, so normal DROP must not continue.
+		// --------------------------------------------------------
 
-			For example, REMOVEITEM -1 may already have deleted
-			the inventory item, so normal DROP must not continue.
-		*/
 		if sc.Blocked {
 			if len(result.Messages) == 0 {
 				result.Messages = []string{
@@ -10846,9 +11055,33 @@ func (e *GameEngine) doSell(ctx context.Context, player *Player, args []string) 
 			continue
 		}
 
-		name := e.getItemNounName(itemDef)
+		nounName := strings.ToLower(e.getItemNounName(itemDef))
 
-		if !matchesTarget(name, target, e.getAdjName(ii.Adj1)) {
+		fullName := strings.ToLower(
+			e.formatItemName(
+				itemDef,
+				ii.Adj1,
+				ii.Adj2,
+				ii.Adj3,
+			),
+		)
+
+		// Strip the article so "rat tooth" can match "a rat tooth".
+		searchName := fullName
+		searchName = strings.TrimPrefix(searchName, "a ")
+		searchName = strings.TrimPrefix(searchName, "an ")
+		searchName = strings.TrimPrefix(searchName, "the ")
+
+		// Allow noun or compound-name prefix matching.
+		//
+		// Examples:
+		//   sell tooth
+		//   sell rat
+		//   sell rat tooth
+		//   sell rat toot
+		//   sell rat tooth 2
+		if !strings.HasPrefix(nounName, target) &&
+			!strings.HasPrefix(searchName, target) {
 			continue
 		}
 

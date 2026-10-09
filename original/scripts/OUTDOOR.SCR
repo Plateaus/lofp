@@ -1705,7 +1705,7 @@ DAY_LIGHT
 CALL 33
 ITEM 9 693
 *DESCRIPTION_START
-Trees of all varieties, shapes and sizes, grow thickly on either side of the path, yet the trees do not have an ominous, suffocating appearance, rather they fill you with peace and serenity. In the middle of the path sits a boulder with a gold plaque mounted on it. The path leads back out of the copse and continues farther into the copse to the east.
+xxxxxTrees of all varieties, shapes and sizes, grow thickly on either side of the path, yet the trees do not have an ominous, suffocating appearance, rather they fill you with peace and serenity. In the middle of the path sits a boulder with a gold plaque mounted on it. The path leads back out of the copse and continues farther into the copse to the east.
 *DESCRIPTION_END
 EXIT E 570
 ITEM 0 74
@@ -1746,8 +1746,6 @@ CALL 33
 ITEM 9 693
 *DESCRIPTION_START
 A gently rolling meadow sits here in the middle of the copse. People of all races engage in the training for the various skills needed to protect and preserve nature. Amidst a garden of brightly colored flowers, students listen as their teacher speaks of different flora and fauna. On another side, a group of students studies various types of animals. The sounds of swords clashing and the twanging of bowstrings can be heard from the far side of the clearing, near a rickety shack. In the center of the meadow
-
-
 grows a tall silver oak tree that seems supernaturally lush and healthy. At the base of the tree is a door. To the side, you notice a rundown shed.
 *DESCRIPTION_END
 EXIT W 569

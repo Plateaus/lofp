@@ -1108,6 +1108,8 @@ func (sc *ScriptContext) doMoveGroup(args []string) {
 	dest := sc.resolveNumericArg(args[0])
 	if dest > 0 {
 		sc.MoveGroupTo = dest
+		//	sc.Player.RoomNumber = dest
+
 	}
 }
 
