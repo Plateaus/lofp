@@ -14760,9 +14760,7 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 			continue
 		}
 
-		name := strings.ToLower(
-			FormatMonsterName(def, e.monAdjs),
-		)
+		name := strings.ToLower(FormatMonsterName(def, e.monAdjs))
 		noun := strings.ToLower(def.Name)
 
 		if !strings.HasPrefix(name, target) &&

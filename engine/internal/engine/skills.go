@@ -684,6 +684,17 @@ func (e *GameEngine) doPick(ctx context.Context, player *Player, args []string) 
 			" [Round: 5 sec]",
 		)
 
+		// Award experience for successfully picking the lock.
+		xpMsgs := e.awardExperience(
+			player,
+			25,
+		)
+
+		result.Messages = append(
+			result.Messages,
+			xpMsgs...,
+		)
+
 		result.RoomBroadcast = append(
 			result.RoomBroadcast,
 			fmt.Sprintf(
@@ -697,7 +708,6 @@ func (e *GameEngine) doPick(ctx context.Context, player *Player, args []string) 
 
 		return result
 	}
-
 	// ------------------------------------------------------------
 	// EXTREME FAILURE
 	// ------------------------------------------------------------

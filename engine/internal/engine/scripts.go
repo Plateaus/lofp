@@ -1356,10 +1356,12 @@ func (sc *ScriptContext) evalIfVar(args []string) bool {
 	return false
 }
 
-// evalIfItem evaluates IFITEM conditions like "IFITEM 0 OPEN" or "IFITEM -1 CLOSED".
-// evalIfItem evaluates IFITEM conditions like "IFITEM 0 OPEN" or "IFITEM -1 CLOSED".
+// evalIfItem evaluates IFITEM conditions like:
+// IFITEM 1
+// IFITEM 0 OPEN
+// IFITEM -1 CLOSED
 func (sc *ScriptContext) evalIfItem(args []string) bool {
-	if len(args) < 2 {
+	if len(args) < 1 {
 		return false
 	}
 
@@ -1367,8 +1369,6 @@ func (sc *ScriptContext) evalIfItem(args []string) bool {
 	if err != nil {
 		return false
 	}
-
-	expectedState := strings.ToUpper(args[1])
 
 	var ri *gameworld.RoomItem
 
@@ -1383,10 +1383,16 @@ func (sc *ScriptContext) evalIfItem(args []string) bool {
 		}
 	}
 
+	// IFITEM <ref> by itself simply tests whether the item exists.
+	if len(args) == 1 {
+		return ri != nil
+	}
+
 	if ri == nil {
 		return false
 	}
 
+	expectedState := strings.ToUpper(args[1])
 	state := strings.ToUpper(ri.State)
 
 	switch expectedState {
