@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
 	"strings"
 	"sync"
@@ -51,12 +52,36 @@ type monsterManager struct {
 	nextID         int
 	monstersByRoom map[int][]int     // roomNumber -> slice of instance indices
 	roomLastPlayer map[int]time.Time // roomNumber -> last time a player was present
+
+	// Number of 5-second generation ticks since this room last
+	// successfully generated a monster.
+	roomSpawnTicks map[int]int
 }
 
 func newMonsterManager() *monsterManager {
 	return &monsterManager{
 		monstersByRoom: make(map[int][]int),
 		roomLastPlayer: make(map[int]time.Time),
+		roomSpawnTicks: make(map[int]int),
+	}
+}
+
+// monsterSpawnChance returns the chance that a room will generate
+// one monster on the current 5-second generation tick.
+//
+// This is an experimental reconstruction based on historical play logs.
+func monsterSpawnChance(ticksSinceSpawn int) int {
+	switch ticksSinceSpawn {
+	case 1:
+		return 0
+	case 2:
+		return 15
+	case 3:
+		return 30
+	case 4:
+		return 45
+	default:
+		return 0
 	}
 }
 
@@ -177,6 +202,363 @@ func (e *GameEngine) spawnForRoom(roomNum int) {
 		}
 	}
 }
+
+func (e *GameEngine) generateMonsterForRoom(roomNum int) {
+	log.Printf("[SPAWN] generateMonsterForRoom called for room %d", roomNum)
+
+	if e.monsterMgr == nil {
+		log.Printf("[SPAWN] room %d: no monster manager", roomNum)
+		return
+	}
+
+	room := e.rooms[roomNum]
+	if room == nil {
+		log.Printf("[SPAWN] room %d: room not found", roomNum)
+		return
+	}
+
+	if room.MonsterGroup == 0 {
+		log.Printf("[SPAWN] room %d: no monster group", roomNum)
+		return
+	}
+
+	if room.Terrain == "ABOVE" || room.Terrain == "SKY" {
+		log.Printf("[SPAWN] room %d: terrain %s does not allow spawning", roomNum, room.Terrain)
+		return
+	}
+
+	groupID := room.MonsterGroup
+	mm := e.monsterMgr
+
+	mm.mu.Lock()
+
+	// ------------------------------------------------------------
+	// GENERATION CYCLE
+	//
+	// Each occupied room gets one generation tick every 5 seconds:
+	//
+	//   Tick 1:  0%
+	//   Tick 2: 25%
+	//   Tick 3: 55%
+	//   Tick 4: 65%
+	//
+	// A successful spawn resets the cycle.
+	// If tick 4 fails, the cycle also resets with no monster.
+	// ------------------------------------------------------------
+
+	mm.roomSpawnTicks[roomNum]++
+
+	ticks := mm.roomSpawnTicks[roomNum]
+	chance := monsterSpawnChance(ticks)
+
+	log.Printf(
+		"[SPAWN] room %d group %d: cycle tick=%d chance=%d%%",
+		roomNum,
+		groupID,
+		ticks,
+		chance,
+	)
+
+	// Tick 1 deliberately cannot generate anything.
+	if chance <= 0 {
+		// Defensive reset in case the counter somehow gets outside
+		// the expected 1-4 range.
+		if ticks >= 4 {
+			mm.roomSpawnTicks[roomNum] = 0
+		}
+
+		mm.mu.Unlock()
+		return
+	}
+
+	chanceRoll := rand.Intn(100)
+
+	if chanceRoll >= chance {
+		log.Printf(
+			"[SPAWN] room %d: generation roll %d failed against %d%%",
+			roomNum,
+			chanceRoll,
+			chance,
+		)
+
+		// Tick 4 is the final attempt in this cycle.
+		// Failure here means this cycle produces no monster.
+		if ticks >= 4 {
+			log.Printf(
+				"[SPAWN] room %d group %d: generation cycle ended with no monster",
+				roomNum,
+				groupID,
+			)
+
+			mm.roomSpawnTicks[roomNum] = 0
+		}
+
+		mm.mu.Unlock()
+		return
+	}
+
+	log.Printf(
+		"[SPAWN] room %d: generation roll %d PASSED against %d%%",
+		roomNum,
+		chanceRoll,
+		chance,
+	)
+
+	// ------------------------------------------------------------
+	// BUILD ELIGIBLE MLIST CANDIDATES
+	//
+	// Probability is used as relative selection weight.
+	// MaxCount is the maximum number of that monster type
+	// currently alive in this room.
+	// ------------------------------------------------------------
+
+	type candidate struct {
+		monsterID int
+		weight    int
+	}
+
+	var candidates []candidate
+	totalWeight := 0
+
+	for _, ml := range e.monsterLists {
+		if ml.Room != groupID {
+			continue
+		}
+
+		def := e.monsters[ml.MonsterID]
+		if def == nil {
+			log.Printf(
+				"[SPAWN] room %d: MLIST monster %d has no definition",
+				roomNum,
+				ml.MonsterID,
+			)
+			continue
+		}
+
+		existingCount := 0
+
+		for _, idx := range mm.monstersByRoom[roomNum] {
+			if idx < 0 || idx >= len(mm.instances) {
+				continue
+			}
+
+			inst := &mm.instances[idx]
+
+			if inst.Alive && inst.DefNumber == ml.MonsterID {
+				existingCount++
+			}
+		}
+
+		log.Printf(
+			"[SPAWN] room %d: monster=%d weight=%d cap=%d alive=%d",
+			roomNum,
+			ml.MonsterID,
+			ml.Probability,
+			ml.MaxCount,
+			existingCount,
+		)
+
+		if existingCount >= ml.MaxCount {
+			continue
+		}
+
+		if ml.Probability <= 0 {
+			continue
+		}
+
+		candidates = append(
+			candidates,
+			candidate{
+				monsterID: ml.MonsterID,
+				weight:    ml.Probability,
+			},
+		)
+
+		totalWeight += ml.Probability
+	}
+
+	// The generation roll succeeded, but there is nothing eligible
+	// to generate because everything is capped or invalid.
+	if len(candidates) == 0 || totalWeight <= 0 {
+		log.Printf(
+			"[SPAWN] room %d group %d: no eligible MLIST candidates",
+			roomNum,
+			groupID,
+		)
+
+		mm.roomSpawnTicks[roomNum] = 0
+		mm.mu.Unlock()
+		return
+	}
+
+	// ------------------------------------------------------------
+	// WEIGHTED MLIST SELECTION
+	// ------------------------------------------------------------
+
+	weightRoll := rand.Intn(totalWeight)
+	originalWeightRoll := weightRoll
+
+	chosenID := 0
+
+	for _, candidate := range candidates {
+		if weightRoll < candidate.weight {
+			chosenID = candidate.monsterID
+			break
+		}
+
+		weightRoll -= candidate.weight
+	}
+
+	if chosenID == 0 {
+		log.Printf(
+			"[SPAWN] room %d: weighted selection failed unexpectedly",
+			roomNum,
+		)
+
+		mm.roomSpawnTicks[roomNum] = 0
+		mm.mu.Unlock()
+		return
+	}
+
+	def := e.monsters[chosenID]
+	if def == nil {
+		log.Printf(
+			"[SPAWN] room %d: selected monster %d has no definition",
+			roomNum,
+			chosenID,
+		)
+
+		mm.roomSpawnTicks[roomNum] = 0
+		mm.mu.Unlock()
+		return
+	}
+
+	log.Printf(
+		"[SPAWN] room %d: weight roll %d/%d selected monster %d (%s)",
+		roomNum,
+		originalWeightRoll,
+		totalWeight,
+		chosenID,
+		FormatMonsterName(def, e.monAdjs),
+	)
+
+	// ------------------------------------------------------------
+	// CREATE ONE MONSTER
+	// ------------------------------------------------------------
+
+	hp := def.Body
+
+	if def.ExtraBody > 0 {
+		hp += rand.Intn(def.ExtraBody/2+1) + def.ExtraBody/2
+	}
+
+	inst := MonsterInstance{
+		ID:              mm.nextID,
+		DefNumber:       chosenID,
+		RoomNumber:      roomNum,
+		Alive:           true,
+		CurrentHP:       hp,
+		DefenseBonus:    monsterPsiDefenseBonus(def.Disciplines),
+		TargetMonsterID: -1,
+		Mana:            def.Mana,
+	}
+
+	idx := len(mm.instances)
+
+	mm.instances = append(mm.instances, inst)
+	mm.monstersByRoom[roomNum] = append(
+		mm.monstersByRoom[roomNum],
+		idx,
+	)
+
+	mm.nextID++
+
+	// Successful generation ends the cycle.
+	mm.roomSpawnTicks[roomNum] = 0
+
+	log.Printf(
+		"[SPAWN] room %d: SPAWNED monster %d (%s), hp=%d",
+		roomNum,
+		chosenID,
+		FormatMonsterName(def, e.monAdjs),
+		hp,
+	)
+
+	// Don't hold the manager mutex while broadcasting.
+	mm.mu.Unlock()
+
+	// ------------------------------------------------------------
+	// GENERATION TEXT
+	// ------------------------------------------------------------
+
+	if e.localRoomBroadcast == nil {
+		return
+	}
+
+	genText := def.TextOverrides["TEXG"]
+
+	if genText != "" {
+		e.localRoomBroadcast(
+			roomNum,
+			[]string{genText},
+		)
+		return
+	}
+
+	name := FormatMonsterName(def, e.monAdjs)
+	article := articleFor(name, def.Unique)
+
+	e.localRoomBroadcast(
+		roomNum,
+		[]string{
+			fmt.Sprintf(
+				"%s%s appears.",
+				capArticle(article),
+				name,
+			),
+		},
+	)
+}
+
+func (e *GameEngine) StartMonsterSpawnLoop() {
+	log.Printf("[SPAWN] monster spawn loop STARTED")
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			log.Printf("[SPAWN] spawn loop tick")
+			e.monsterSpawnTick()
+		}
+	}()
+}
+
+func (e *GameEngine) monsterSpawnTick() {
+	if e.monsterMgr == nil || e.sessions == nil {
+		return
+	}
+
+	roomSet := make(map[int]bool)
+
+	for _, p := range e.sessions.OnlinePlayers() {
+		if p.Dead || p.GMInvis {
+			continue
+		}
+
+		roomSet[p.RoomNumber] = true
+
+		e.monsterMgr.mu.Lock()
+		e.monsterMgr.roomLastPlayer[p.RoomNumber] = time.Now()
+		e.monsterMgr.mu.Unlock()
+	}
+
+	for roomNum := range roomSet {
+		e.generateMonsterForRoom(roomNum)
+	}
+}
+
+//end new code
 
 // SpawnOne creates a single monster instance in a room. hp should include ExtraBody.
 func (mm *monsterManager) SpawnOne(defNum, roomNum, hp int, mana int) *MonsterInstance {
@@ -374,10 +756,11 @@ func (e *GameEngine) StartMonsterLoop() {
 			if tick%20 == 0 {
 				e.cleanupCorpses()
 			}
+			// commented out while we try the new spawn code
 			// Periodic respawn check near players every ~30 seconds
-			if tick%10 == 0 {
-				e.respawnNearPlayers()
-			}
+			//if tick%10 == 0 {
+			//	e.respawnNearPlayers()
+			//}
 			// Unload distant monsters every ~2 minutes
 			if tick%40 == 0 {
 				e.unloadDistantMonsters()
@@ -540,6 +923,32 @@ func (e *GameEngine) monsterTick(tick int) {
 		}
 
 		if tick%speed != 0 {
+			// While waiting for the monster's next action tick,
+			// occasionally emit ambient TEX1-TEX4 flavor text.
+			if rand.Intn(100) < 8 {
+				var texts []string
+
+				for _, key := range []string{
+					"TEX1",
+					"TEX2",
+					"TEX3",
+					"TEX4",
+				} {
+					if t, ok := def.TextOverrides[key]; ok && t != "" {
+						texts = append(texts, t)
+					}
+				}
+
+				if len(texts) > 0 {
+					msg := texts[rand.Intn(len(texts))]
+
+					e.localRoomBroadcast(
+						inst.RoomNumber,
+						[]string{msg},
+					)
+				}
+			}
+
 			continue
 		}
 
@@ -704,56 +1113,109 @@ func (e *GameEngine) monsterTick(tick int) {
 		// Never wander while fighting either a player or monster.
 		// ------------------------------------------------------------
 
-		if def.Strategy < 301 &&
-			inst.Target == "" &&
-			inst.TargetMonsterID < 0 &&
-			rand.Intn(100) < 5 {
+		//def.Strategy < 301 &&  removed this check so that monsters with strategy >= 301 can wander when not in combat
 
-			room := e.rooms[inst.RoomNumber]
-			if room == nil {
-				continue
-			}
+		if inst.Target == "" &&
+			inst.TargetMonsterID < 0 {
 
-			type exitInfo struct {
-				dir    string
-				destID int
-			}
+			wanderRoll := rand.Intn(100)
 
-			var exits []exitInfo
-
-			for dir, destID := range room.Exits {
-				if destID <= 0 {
-					continue
-				}
-
-				// Non-flying monsters can't use vertical exits.
-				if strings.EqualFold(dir, "ABOVE") ||
-					strings.EqualFold(dir, "UP") {
-					continue
-				}
-
-				exits = append(
-					exits,
-					exitInfo{
-						dir:    dir,
-						destID: destID,
-					},
+			// Only log successful wander rolls so we don't flood the console.
+			if wanderRoll < 6 {
+				log.Printf(
+					"[WANDER] %s (id=%d, monster=%d) room=%d passed wander roll=%d",
+					FormatMonsterName(def, e.monAdjs),
+					inst.ID,
+					inst.DefNumber,
+					inst.RoomNumber,
+					wanderRoll,
 				)
-			}
 
-			if len(exits) == 0 {
-				continue
-			}
+				room := e.rooms[inst.RoomNumber]
+				if room == nil {
+					log.Printf(
+						"[WANDER] monster id=%d FAILED: room %d not found",
+						inst.ID,
+						inst.RoomNumber,
+					)
+					continue
+				}
 
-			chosen := exits[rand.Intn(len(exits))]
+				type exitInfo struct {
+					dir    string
+					destID int
+				}
 
-			if !e.moveMonsterDirection(
-				idx,
-				inst,
-				def,
-				chosen.dir,
-			) {
-				continue
+				var exits []exitInfo
+
+				for dir, destID := range room.Exits {
+					if destID <= 0 {
+						continue
+					}
+
+					// Non-flying monsters can't use vertical exits.
+					if strings.EqualFold(dir, "ABOVE") ||
+						strings.EqualFold(dir, "UP") {
+						continue
+					}
+
+					exits = append(
+						exits,
+						exitInfo{
+							dir:    dir,
+							destID: destID,
+						},
+					)
+				}
+
+				if len(exits) == 0 {
+					log.Printf(
+						"[WANDER] %s (id=%d) FAILED: no usable exits from room %d",
+						FormatMonsterName(def, e.monAdjs),
+						inst.ID,
+						inst.RoomNumber,
+					)
+					continue
+				}
+
+				chosen := exits[rand.Intn(len(exits))]
+
+				oldRoom := inst.RoomNumber
+
+				log.Printf(
+					"[WANDER] %s (id=%d) attempting %s: room %d -> %d",
+					FormatMonsterName(def, e.monAdjs),
+					inst.ID,
+					chosen.dir,
+					oldRoom,
+					chosen.destID,
+				)
+
+				if !e.moveMonsterDirection(
+					idx,
+					inst,
+					def,
+					chosen.dir,
+				) {
+					log.Printf(
+						"[WANDER] %s (id=%d) MOVE FAILED: %s from room %d -> %d",
+						FormatMonsterName(def, e.monAdjs),
+						inst.ID,
+						chosen.dir,
+						oldRoom,
+						chosen.destID,
+					)
+					continue
+				}
+
+				log.Printf(
+					"[WANDER] %s (id=%d) MOVED: room %d -> %d via %s",
+					FormatMonsterName(def, e.monAdjs),
+					inst.ID,
+					oldRoom,
+					chosen.destID,
+					chosen.dir,
+				)
 			}
 		}
 	}

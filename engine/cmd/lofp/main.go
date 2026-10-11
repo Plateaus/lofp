@@ -161,6 +161,7 @@ func main() {
 	ge.StartRegenCycle()
 	ge.StartCEventLoop()
 	ge.StartMonsterLoop()
+	ge.StartMonsterSpawnLoop()
 
 	// Start telnet server (for MUD clients)
 	if cfg.Server.TelnetPort > 0 {

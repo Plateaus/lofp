@@ -3071,10 +3071,177 @@ func (e *GameEngine) applyEntryScripts(ctx context.Context, player *Player, room
 	e.SavePlayer(ctx, player)
 
 	// Spawn monsters for this room if needed (demand-based)
-	e.spawnForRoom(room.Number)
+	//	e.spawnForRoom(room.Number)
+
+	// Chance for a monster to already be present when entering the room.
+	e.spawnForRoomOnEntry(room.Number)
 
 	// Check if hostile monsters should aggro on the player entering the room
 	go e.monsterCheckAggro(player, room.Number)
+}
+
+// spawnForRoomOnEntry gives a room a chance to already contain a monster
+// when a player enters it.
+//
+// This is separate from the normal timed spawn cycle:
+//   - it does not advance roomSpawnTicks
+//   - it can spawn at most one monster
+//   - MLIST Probability is treated as a relative weight
+//   - MaxCount is respected
+//   - no TEXG message is shown because the monster is considered
+//     to have already been present when the player entered
+func (e *GameEngine) spawnForRoomOnEntry(roomNum int) {
+
+	//log.Printf("[SPAWN] room-entry CHECK: room=%d", roomNum)
+
+	if e.monsterMgr == nil {
+		return
+	}
+
+	room := e.rooms[roomNum]
+	if room == nil || room.MonsterGroup == 0 {
+		return
+	}
+
+	// Don't generate monsters in sky/above rooms.
+	if strings.EqualFold(room.Terrain, "SKY") ||
+		strings.EqualFold(room.Terrain, "ABOVE") {
+		return
+	}
+
+	entryRoll := rand.Intn(100)
+
+	log.Printf(
+		"[SPAWN] room-entry roll: room=%d group=%d roll=%d chance=25%%",
+		roomNum,
+		room.MonsterGroup,
+		entryRoll,
+	)
+
+	if entryRoll >= 25 {
+		return
+	}
+
+	type spawnCandidate struct {
+		monsterID int
+		weight    int
+	}
+
+	groupID := room.MonsterGroup
+	mm := e.monsterMgr
+
+	mm.mu.Lock()
+
+	var candidates []spawnCandidate
+	totalWeight := 0
+
+	for _, ml := range e.monsterLists {
+		// MLIST "Room" is actually the monster-group ID.
+		if ml.Room != groupID {
+			continue
+		}
+
+		if ml.Probability <= 0 || ml.MaxCount <= 0 {
+			continue
+		}
+
+		def := e.monsters[ml.MonsterID]
+		if def == nil {
+			continue
+		}
+
+		// Count living monsters of this definition already in this room.
+		aliveCount := 0
+
+		for _, idx := range mm.monstersByRoom[roomNum] {
+			if idx < 0 || idx >= len(mm.instances) {
+				continue
+			}
+
+			inst := &mm.instances[idx]
+
+			if inst.Alive && inst.DefNumber == ml.MonsterID {
+				aliveCount++
+			}
+		}
+
+		// MLIST MaxCount is the simultaneous cap.
+		if aliveCount >= ml.MaxCount {
+			continue
+		}
+
+		candidates = append(candidates, spawnCandidate{
+			monsterID: ml.MonsterID,
+			weight:    ml.Probability,
+		})
+
+		totalWeight += ml.Probability
+	}
+
+	if len(candidates) == 0 || totalWeight <= 0 {
+		mm.mu.Unlock()
+		return
+	}
+
+	// Weighted MLIST selection.
+	roll := rand.Intn(totalWeight)
+
+	chosenID := 0
+
+	for _, c := range candidates {
+		if roll < c.weight {
+			chosenID = c.monsterID
+			break
+		}
+
+		roll -= c.weight
+	}
+
+	if chosenID == 0 {
+		mm.mu.Unlock()
+		return
+	}
+
+	def := e.monsters[chosenID]
+	if def == nil {
+		mm.mu.Unlock()
+		return
+	}
+
+	// Same HP generation used by normal monster generation.
+	hp := def.Body
+
+	if def.ExtraBody > 0 {
+		hp += rand.Intn(def.ExtraBody/2+1) + def.ExtraBody/2
+	}
+
+	inst := MonsterInstance{
+		ID:              mm.nextID,
+		DefNumber:       chosenID,
+		RoomNumber:      roomNum,
+		Alive:           true,
+		CurrentHP:       hp,
+		DefenseBonus:    monsterPsiDefenseBonus(def.Disciplines),
+		TargetMonsterID: -1,
+		Mana:            def.Mana,
+	}
+
+	idx := len(mm.instances)
+
+	mm.instances = append(mm.instances, inst)
+	mm.monstersByRoom[roomNum] = append(mm.monstersByRoom[roomNum], idx)
+
+	mm.nextID++
+
+	mm.mu.Unlock()
+
+	log.Printf(
+		"[SPAWN] room-entry spawn: room=%d group=%d monster=%d (%s)",
+		roomNum,
+		groupID,
+		chosenID,
+		FormatMonsterName(def, e.monAdjs),
+	)
 }
 
 // doLookFull always shows the full room description (explicit LOOK command).
