@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonradoff/lofp/internal/gameworld"
-	"github.com/jonradoff/lofp/internal/scriptparser"
+	"github.com/metavert-io/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/scriptparser"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"

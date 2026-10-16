@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonradoff/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/gameworld"
 )
 
 // MonsterInstance represents a spawned monster in the world.

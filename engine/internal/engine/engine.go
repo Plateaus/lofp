@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonradoff/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/gameworld"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -1395,7 +1395,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			"  original materials used to reconstruct the game.",
 			"",
 			"  Available under the MIT License.",
-			"  https://github.com/jonradoff/lofp",
+			"  https://github.com/metavert-io/lofp",
 			"",
 		}}
 	// === COMMUNICATION ===

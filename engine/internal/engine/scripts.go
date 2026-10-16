@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jonradoff/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/gameworld"
 )
 
 // ScriptContext holds state for script execution within a single trigger.

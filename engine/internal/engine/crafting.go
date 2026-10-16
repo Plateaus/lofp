@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonradoff/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/gameworld"
 )
 
 // ---- MINING ----

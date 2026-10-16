@@ -15,14 +15,14 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	"github.com/jonradoff/lofp/internal/auth"
-	"github.com/jonradoff/lofp/internal/capture"
-	"github.com/jonradoff/lofp/internal/email"
-	"github.com/jonradoff/lofp/internal/engine"
-	"github.com/jonradoff/lofp/internal/feedback"
-	"github.com/jonradoff/lofp/internal/gamelog"
-	"github.com/jonradoff/lofp/internal/gameworld"
-	"github.com/jonradoff/lofp/internal/hub"
+	"github.com/metavert-io/lofp/internal/auth"
+	"github.com/metavert-io/lofp/internal/capture"
+	"github.com/metavert-io/lofp/internal/email"
+	"github.com/metavert-io/lofp/internal/engine"
+	"github.com/metavert-io/lofp/internal/feedback"
+	"github.com/metavert-io/lofp/internal/gamelog"
+	"github.com/metavert-io/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/hub"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
