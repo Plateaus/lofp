@@ -189,7 +189,7 @@ ws.on("message", (raw: WebSocket.Data) => {
             <h2 className="text-amber-400 text-lg font-bold mb-2">6. Full Examples</h2>
             <p className="text-gray-300 text-sm">
               Complete runnable bot examples with error handling and event loops are available in the{' '}
-              <a href="https://github.com/jonradoff/lofp/tree/main/bots" className="text-amber-400 hover:underline">
+              <a href="https://github.com/metavert-io/lofp/tree/main/bots" className="text-amber-400 hover:underline">
                 /bots directory on GitHub
               </a>.
             </p>

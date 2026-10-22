@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonradoff/lofp/internal/auth"
-	"github.com/jonradoff/lofp/internal/engine"
-	"github.com/jonradoff/lofp/internal/gamelog"
+	"github.com/metavert-io/lofp/internal/auth"
+	"github.com/metavert-io/lofp/internal/engine"
+	"github.com/metavert-io/lofp/internal/gamelog"
 	"golang.org/x/crypto/ssh"
 )
 

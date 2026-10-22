@@ -1,4 +1,4 @@
-module github.com/jonradoff/lofp
+module github.com/metavert-io/lofp
 
 go 1.25.5
 

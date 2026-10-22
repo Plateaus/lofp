@@ -66,7 +66,7 @@ More broadly, I think AI-powered code generation gives us a real shot at preserv
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/jonradoff/lofp.git
+git clone https://github.com/metavert-io/lofp.git
 cd lofp
 cp .env.example .env
 ```

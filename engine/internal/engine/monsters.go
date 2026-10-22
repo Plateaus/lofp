@@ -8,9 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metavert-io/lofp/internal/gameworld"
 	"go.mongodb.org/mongo-driver/v2/bson"
-
-	"github.com/jonradoff/lofp/internal/gameworld"
 )
 
 // MonsterInstance represents a spawned monster in the world.

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jonradoff/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/gameworld"
 )
 
 // generateTreasure creates loot items in a room.

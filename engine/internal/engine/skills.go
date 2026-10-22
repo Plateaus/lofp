@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonradoff/lofp/internal/gameworld"
+	"github.com/metavert-io/lofp/internal/gameworld"
 )
 
 // SkillCost defines the build point cost for a skill.
