@@ -67,6 +67,7 @@ func main() {
 		MoneyDefs:            result.MoneyDefs,
 		ForageDefs:           result.ForageDefs,
 		MineDefs:             result.MineDefs,
+		BreakMods:            result.BreakMods,
 		StartRoom:            result.StartRoom,
 		BumpRoom:             result.BumpRoom,
 	}
@@ -110,6 +111,8 @@ func main() {
 			Variables:   r.Variables,
 			CEvents:     r.CEvents,
 			ForageDefs:  r.ForageDefs,
+			MineDefs:    r.MineDefs,
+			BreakMods:   r.BreakMods,
 		}, nil
 	}
 

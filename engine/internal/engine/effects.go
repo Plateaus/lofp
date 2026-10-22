@@ -32,6 +32,8 @@ const (
 	FearEffect
 	SleepEffect
 	CharmEffect
+	ResistWeatherEffect
+	InvisibilityEffect
 )
 
 type EffectSource int

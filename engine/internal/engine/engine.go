@@ -167,9 +167,10 @@ type GameEngine struct {
 	forageDefs           []gameworld.ForageDef
 	seasonalForageDefs   map[string][]gameworld.ForageDef // per-season forage values
 	mineDefs             []gameworld.MineDef              //MINING definitions GEMS AND MINERALS
-	PVals                map[int]int                      // persistent global values
-	NamedVars            map[string]int                   // VARIABLE-defined global named variables (DANWATER, etc.)
-	namedVarNames        map[string]bool                  // set of valid named variable names
+	breakMods            []gameworld.BreakModDef
+	PVals                map[int]int     // persistent global values
+	NamedVars            map[string]int  // VARIABLE-defined global named variables (DANWATER, etc.)
+	namedVarNames        map[string]bool // set of valid named variable names
 	Events               *EventBus
 	Banner               string // active login banner; in-memory so it works even if MongoDB is down
 	lastAssistName       string // last player who used ASSIST (for @answer)
@@ -556,6 +557,9 @@ func NewGameEngine(db *mongo.Database, parsed *gameworld.ParsedData) *GameEngine
 
 	// Load mining definitions
 	e.mineDefs = parsed.MineDefs
+
+	// Load break modifiers
+	e.breakMods = parsed.BreakMods
 
 	// Initialize event bus for admin monitoring
 	e.Events = NewEventBus()
@@ -1558,7 +1562,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "BREW":
 		return e.doBrew(ctx, player, args)
 	case "ANALYZE":
-		return e.doAnalyze(ctx, player, args)
+		return e.doAnalyze(ctx, player, args, false)
 	case "WEAVE":
 		return e.doCraft(ctx, player, args) // weave uses same craft logic at LOOM
 	case "WORK":
@@ -1678,20 +1682,10 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return e.doCant(player, args)
 	// === COMBAT ===
 	case "ATTACK", "KILL", "SLAY", "SMITE", "HIT":
+
 		if result := e.runCommandPreverb(player, "KILL"); result != nil {
 			return result
 		}
-
-		if len(args) == 0 {
-			return &CommandResult{Messages: []string{"Attack what?"}}
-		}
-
-		/*
-			if player.CombatTarget == nil || !player.Joined {
-				return &CommandResult{
-					Messages: []string{"You are not engaged with anything."},
-				}
-			}  */
 
 		return e.doAttackMonster(ctx, player, strings.Join(args, " "))
 	case "FLEE":
@@ -4013,6 +4007,20 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 			)
 		}
 
+		// Show the combined BREAKMOD from all three adjectives
+		// plus the legacy VAL1 32000 bonus.
+		breakMod := e.itemBreakMod(&ii)
+
+		breakModText := fmt.Sprintf("%+d", breakMod)
+		if breakMod == 0 {
+			breakModText = "0"
+		}
+
+		result.Messages = append(
+			result.Messages,
+			fmt.Sprintf("Break modifier: %s", breakModText),
+		)
+
 		if strings.HasSuffix(itemDef.Type, "_WEAPON") {
 			if ii.State == "DAMAGED" {
 				result.Messages = append(result.Messages, "Condition: Damaged")
@@ -4563,6 +4571,11 @@ func (e *GameEngine) findMonsterInRoomEx(player *Player, target string, includeD
 	matchCount := 0
 
 	for i := range monsters {
+
+		// Invisible monsters cannot be directly targeted.
+		if monsters[i].HasStatEffect(InvisibilityEffect) {
+			continue
+		}
 
 		def := e.monsters[monsters[i].DefNumber]
 		if def == nil {
@@ -5213,6 +5226,18 @@ func (e *GameEngine) applyScriptResult(ctx context.Context, player *Player, orig
 	return false
 }
 
+func (e *GameEngine) breakInvisibility(player *Player) bool {
+	if player == nil || !player.Invisible {
+		return false
+	}
+
+	player.Invisible = false
+
+	player.RemoveStatEffect(InvisibilityEffect)
+
+	return true
+}
+
 func (e *GameEngine) checkPlayerCanMove(player *Player) *CommandResult {
 	if effect, ok := player.HasStatEffect(RestrainedEffect); ok {
 		switch effect.EffectID {
@@ -5820,6 +5845,16 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 					itemName,
 				),
 			}
+
+			result.RoomBroadcast = append(
+				result.RoomBroadcast,
+				fmt.Sprintf(
+					"%s %ss %s.",
+					player.FirstName,
+					verbLower,
+					itemName,
+				),
+			)
 		}
 
 		return result
@@ -5959,6 +5994,14 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 			Messages: []string{
 				fmt.Sprintf(
 					"You %s %s. Nothing happens.",
+					verbLower,
+					itemName,
+				),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s %ss %s.",
+					player.FirstName,
 					verbLower,
 					itemName,
 				),

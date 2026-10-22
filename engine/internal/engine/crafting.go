@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -12,9 +13,60 @@ import (
 	"github.com/jonradoff/lofp/internal/gameworld"
 )
 
-// ---- MINING ----
+type mineOreDef struct {
+	Archetype int
+	Adj       int
+	Grade     string
+	Value     int
+	Rarity    int
+}
 
+var mineOreTable = []mineOreDef{
+	// Grade C
+	{1369, 893, "C", 600, 0}, // graphite
+	{1369, 68, "C", 1000, 0}, // copper
+	{1369, 744, "C", 200, 0}, // tin
+	{1369, 383, "C", 800, 1}, // diamontine
+
+	// Grade B
+	{1369, 68, "B", 1200, 0},  // copper
+	{1369, 292, "B", 4000, 0}, // silver
+	{1369, 328, "B", 2000, 0}, // titanium
+	{1369, 109, "B", 5000, 5}, // elkyri
+	{1369, 918, "B", 800, 2},  // bekk-ite
+	{1369, 893, "B", 1000, 0}, // graphite
+	{1369, 109, "B", 7000, 8}, // elkyri
+	{1369, 256, "B", 5000, 8}, // randar
+
+	// Grade A
+	{1369, 147, "A", 800, 0},    // gold
+	{1369, 292, "A", 800, 0},    // silver
+	{1369, 563, "A", 1000, 0},   // platinum
+	{1369, 109, "A", 10000, 15}, // elkyri
+	{1369, 256, "A", 7500, 15},  // randar
+	{1369, 918, "A", 1000, 5},   // bekk-ite
+	{1369, 1130, "A", 1600, 10}, // albescent
+	{1369, 643, "A", 1600, 10},  // shadowsteel
+
+	// Special iron ore archetype
+	{1371, 169, "C", 400, 0}, // iron
+}
+
+// ---- MINING ----
+/*
 func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandResult {
+
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %d seconds...]", remaining),
+			},
+			PlayerState: player,
+		}
+	}
+
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
 		return &CommandResult{Messages: []string{"You can't mine here."}}
@@ -63,6 +115,10 @@ func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandRes
 		return &CommandResult{Messages: []string{"You have no training in Mining."}}
 	}
 
+	// A legitimate mining attempt takes 10 seconds,
+	// whether or not useful ore is found.
+	player.RoundTimeExpiry = time.Now().Add(10 * time.Second)
+
 	// Success chance: base 30% + mining*5 + STR/10
 	chance := 30 + miningSkill*5 + player.EffectiveStat(StatStrength)/10
 	if chance > 90 {
@@ -77,7 +133,10 @@ func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandRes
 	if rand.Intn(100) >= chance {
 		e.SavePlayer(ctx, player)
 		return &CommandResult{
-			Messages:      []string{"You swing at the rock face but find nothing useful."},
+			Messages: []string{
+				"You swing at the rock face but find nothing useful.",
+				"[Round: 10 sec]",
+			},
 			RoomBroadcast: []string{fmt.Sprintf("%s swings a mining tool at the rock.", player.FirstName)},
 		}
 	}
@@ -139,8 +198,12 @@ func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandRes
 			}
 		}
 	}
+
 	if oreDef == nil {
-		return &CommandResult{Messages: []string{"You chip away at the rock but find nothing."}}
+		return &CommandResult{Messages: []string{
+			"You chip away at the rock but find nothing.",
+			"[Round: 10 sec]",
+		}, PlayerState: player}
 	}
 
 	// Purity based on grade: A=50-100, B=30-70, C=10-40
@@ -160,6 +223,10 @@ func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandRes
 		Val3:      purity,
 	}
 	player.Inventory = append(player.Inventory, ore)
+
+	// Successful mining earns experience.
+	xpMsgs := e.awardExperience(player, 50)
+
 	e.SavePlayer(ctx, player)
 
 	qualityDesc := "poor"
@@ -171,12 +238,559 @@ func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandRes
 		qualityDesc = "fair"
 	}
 
-	displayName := e.formatItemName(oreDef, ore.Adj1, ore.Adj2, ore.Adj3)
-	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You chip away at the rock and extract some %s looking %s!", qualityDesc, displayName)},
-		RoomBroadcast: []string{fmt.Sprintf("%s mines some ore from the rock.", player.FirstName)},
-		PlayerState:   player,
+	displayName := e.formatItemName(
+		oreDef,
+		ore.Adj1,
+		ore.Adj2,
+		ore.Adj3,
+	)
+
+	messages := []string{
+		fmt.Sprintf(
+			"You chip away at the rock and extract some %s looking %s!",
+			qualityDesc,
+			displayName,
+		),
 	}
+
+	messages = append(messages, xpMsgs...)
+
+	messages = append(
+		messages,
+		"[Round: 10 sec]",
+	)
+
+	return &CommandResult{
+		Messages: messages,
+		RoomBroadcast: []string{
+			fmt.Sprintf(
+				"%s mines some ore from the rock.",
+				player.FirstName,
+			),
+		},
+		PlayerState: player,
+	}
+}
+*/
+
+func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandResult {
+
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %d seconds...]", remaining),
+			},
+			PlayerState: player,
+		}
+	}
+
+	room := e.rooms[player.RoomNumber]
+	if room == nil {
+		return &CommandResult{
+			Messages: []string{"You can't mine here."},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// DETERMINE MINE GRADE
+	//
+	// MINEA can produce A, B, or C.
+	// MINEB can produce B or C.
+	// MINEC can produce C only.
+	// ------------------------------------------------------------
+
+	mineGrade := ""
+
+	if containsModifier(room.Modifiers, "MINEA") {
+		mineGrade = "A"
+	} else if containsModifier(room.Modifiers, "MINEB") {
+		mineGrade = "B"
+	} else if containsModifier(room.Modifiers, "MINEC") {
+		mineGrade = "C"
+	}
+
+	if mineGrade == "" {
+		return &CommandResult{
+			Messages: []string{"There is nothing to mine here."},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// CHECK FOR MINING TOOL
+	// ------------------------------------------------------------
+
+	isMiningTool := func(def *gameworld.ItemDef) bool {
+		if def == nil {
+			return false
+		}
+
+		noun := strings.ToLower(e.nouns[def.NameID])
+
+		return noun == "pickaxe" ||
+			noun == "pick-axe" ||
+			noun == "hammer" ||
+			noun == "shovel" ||
+			def.Type == "MINETOOL"
+	}
+
+	hasTool := false
+
+	if player.Wielded != nil {
+		if isMiningTool(e.items[player.Wielded.Archetype]) {
+			hasTool = true
+		}
+	}
+
+	if !hasTool {
+		for _, ii := range player.Inventory {
+			if isMiningTool(e.items[ii.Archetype]) {
+				hasTool = true
+				break
+			}
+		}
+	}
+
+	if !hasTool {
+		return &CommandResult{
+			Messages: []string{
+				"You need a mining tool (pickaxe, hammer, or shovel) to mine.",
+			},
+		}
+	}
+
+	// ------------------------------------------------------------
+	// MINING SKILL
+	// ------------------------------------------------------------
+
+	miningSkill := player.Skills[35]
+
+	if miningSkill < 1 {
+		return &CommandResult{
+			Messages: []string{
+				"You have no training in Mining.",
+			},
+		}
+	}
+
+	// Every legitimate mining attempt takes 10 seconds.
+	player.RoundTimeExpiry = time.Now().Add(10 * time.Second)
+
+	// Success chance is kept in its own helper so combat,
+	// fatigue, tools, room difficulty, etc. can be added later.
+	chance := e.miningSuccessChance(player)
+
+	// Mining is tiring.
+	player.Fatigue -= 2
+	if player.Fatigue < 0 {
+		player.Fatigue = 0
+	}
+
+	// ------------------------------------------------------------
+	// MINING SUCCESS CHECK
+	// ------------------------------------------------------------
+
+	if rand.Intn(100) >= chance {
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				"You swing at the rock face but find nothing useful.",
+				"[Round: 10 sec]",
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s swings a mining tool at the rock.",
+					player.FirstName,
+				),
+			},
+			PlayerState: player,
+		}
+	}
+
+	// ------------------------------------------------------------
+	// SELECT A/B/C GRADE
+	//
+	// rollMineGrade() currently contains:
+	//
+	// MINEA: A 3%, B 22%, C 75%
+	// MINEB: B 20%, C 80%
+	// MINEC: C 100%
+	//
+	// Keeping this separate makes those numbers easy to tune.
+	// ------------------------------------------------------------
+
+	selectedGrade := rollMineGrade(mineGrade)
+
+	// ------------------------------------------------------------
+	// BUILD THE MINEDEF POOL
+	//
+	// Only MINEDEF entries belonging to the selected grade are
+	// eligible.
+	//
+	// Within that grade, copper value is used as reverse rarity:
+	//
+	//     weight = 1 / sqrt(value)
+	//
+	// High-value results are therefore less common.
+	//
+	// Duplicate MINEDEF entries remain separate entries.
+	// ------------------------------------------------------------
+
+	type mineChoice struct {
+		def    gameworld.MineDef
+		weight float64
+	}
+
+	var choices []mineChoice
+	totalWeight := 0.0
+
+	for _, md := range e.mineDefs {
+
+		if !strings.EqualFold(md.Grade, selectedGrade) {
+			continue
+		}
+
+		value := md.Value
+		if value <= 0 {
+			value = 1
+		}
+
+		weight := 1.0 / math.Sqrt(float64(value))
+
+		choices = append(
+			choices,
+			mineChoice{
+				def:    md,
+				weight: weight,
+			},
+		)
+
+		totalWeight += weight
+	}
+
+	if len(choices) == 0 || totalWeight <= 0 {
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				"You chip away at the rock but find nothing useful.",
+				"[Round: 10 sec]",
+			},
+			PlayerState: player,
+		}
+	}
+
+	// ------------------------------------------------------------
+	// SELECT A MINEDEF
+	// ------------------------------------------------------------
+
+	pick := rand.Float64() * totalWeight
+
+	chosen := choices[len(choices)-1].def
+
+	for _, choice := range choices {
+		pick -= choice.weight
+
+		if pick <= 0 {
+			chosen = choice.def
+			break
+		}
+	}
+
+	itemDef := e.items[chosen.ItemNum]
+
+	if itemDef == nil {
+		e.SavePlayer(ctx, player)
+
+		return &CommandResult{
+			Messages: []string{
+				"You chip away at the rock but find nothing useful.",
+				"[Round: 10 sec]",
+			},
+			PlayerState: player,
+		}
+	}
+
+	// ------------------------------------------------------------
+	// CREATE THE MINED ITEM
+	//
+	// ORE:
+	//   Adj1 = MINEDEF adjective
+	//   Val2 = MINEDEF Val2
+	//   Val3 = purity
+	//
+	// GEM:
+	//   createGemFromMineDef() handles:
+	//   - size
+	//   - quality
+	//   - adjusted value
+	//   - MINEDEF variant adjective
+	// ------------------------------------------------------------
+
+	var minedItem InventoryItem
+	purity := 0
+
+	if itemDef.Type == "ORE" {
+
+		// Ore Val3 is purity.
+		//
+		// Legacy documentation defines this as the percentage
+		// chance of successfully refining useful metal from it.
+		//
+		// We have not found the original purity-generation formula,
+		// so this is currently a 1-100 roll.
+		purity = rand.Intn(100) + 1
+
+		minedItem = InventoryItem{
+			Archetype: chosen.ItemNum,
+			Val2:      chosen.Val2,
+			Val3:      purity,
+		}
+
+		if chosen.AdjNum > 0 {
+			minedItem.Adj1 = chosen.AdjNum
+		}
+
+	} else {
+
+		// Non-ORE MINEDEF entries are gems.
+		// Use the exact same size/quality/value system used
+		// elsewhere for generated gems.
+		minedItem = e.createGemFromMineDef(chosen)
+	}
+
+	// ------------------------------------------------------------
+	// GIVE ITEM TO PLAYER
+	// ------------------------------------------------------------
+
+	player.Inventory = append(
+		player.Inventory,
+		minedItem,
+	)
+
+	// Successful mining earns experience.
+	xpMsgs := e.awardExperience(player, 50)
+
+	e.SavePlayer(ctx, player)
+
+	// ------------------------------------------------------------
+	// BUILD DISPLAY NAME
+	// ------------------------------------------------------------
+
+	displayName := e.formatItemName(
+		itemDef,
+		minedItem.Adj1,
+		minedItem.Adj2,
+		minedItem.Adj3,
+	)
+
+	var findMessage string
+
+	if itemDef.Type == "ORE" {
+
+		// Ore gets a human-readable purity description.
+		qualityDesc := "poor"
+
+		switch {
+		case purity > 70:
+			qualityDesc = "excellent"
+
+		case purity > 50:
+			qualityDesc = "good"
+
+		case purity > 30:
+			qualityDesc = "fair"
+		}
+
+		findMessage = fmt.Sprintf(
+			"You chip away at the rock and extract %s of %s quality!",
+			displayName,
+			qualityDesc,
+		)
+
+	} else {
+
+		// Gem size and quality are already part of its adjectives,
+		// e.g.:
+		//
+		// a large chipped onyx
+		// a tiny flawless alexandrite
+		// a huge faceted aquamarine
+		findMessage = fmt.Sprintf(
+			"You chip away at the rock and extract %s!",
+			displayName,
+		)
+	}
+
+	// ------------------------------------------------------------
+	// RESULT
+	// ------------------------------------------------------------
+
+	messages := []string{
+		findMessage,
+	}
+
+	messages = append(
+		messages,
+		xpMsgs...,
+	)
+
+	messages = append(
+		messages,
+		"[Round: 10 sec]",
+	)
+
+	return &CommandResult{
+		Messages: messages,
+
+		RoomBroadcast: []string{
+			fmt.Sprintf(
+				"%s mines something from the rock.",
+				player.FirstName,
+			),
+		},
+
+		PlayerState: player,
+	}
+}
+
+func (e *GameEngine) miningSuccessChance(player *Player) int {
+	if player == nil {
+		return 0
+	}
+
+	miningSkill := player.Skills[35]
+
+	// Current mining success formula.
+	chance := 30 +
+		miningSkill*5 +
+		player.EffectiveStat(StatStrength)/10
+
+	// Future modifiers go here.
+	//
+	// For example:
+	//
+	// if player.CombatTarget != nil {
+	//     chance -= 25
+	// }
+	//
+	// We can also add modifiers here later for:
+	// fatigue, tool quality, room difficulty, injuries, etc.
+
+	if chance < 5 {
+		chance = 5
+	}
+
+	if chance > 90 {
+		chance = 90
+	}
+
+	return chance
+}
+
+func rollMineGrade(mineGrade string) string {
+	roll := rand.Intn(100) + 1
+
+	switch mineGrade {
+
+	case "A":
+		// MINEA
+		//
+		// A:  3%
+		// B: 22%
+		// C: 75%
+		switch {
+		case roll <= 3:
+			return "A"
+
+		case roll <= 25:
+			return "B"
+
+		default:
+			return "C"
+		}
+
+	case "B":
+		// MINEB
+		//
+		// B: 20%
+		// C: 80%
+		if roll <= 20 {
+			return "B"
+		}
+
+		return "C"
+
+	default:
+		// MINEC
+		//
+		// C: 100%
+		return "C"
+	}
+}
+
+func (e *GameEngine) createGemFromMineDef(md gameworld.MineDef) InventoryItem {
+	// Size:
+	// tiny 15%, small 20%, normal 35%, large 20%, huge 10%
+	sizeAdj := 0
+
+	switch roll := rand.Intn(100); {
+	case roll < 15:
+		sizeAdj = 327 // tiny
+	case roll < 35:
+		sizeAdj = 294 // small
+	case roll < 70:
+		// normal
+	case roll < 90:
+		sizeAdj = 178 // large
+	default:
+		sizeAdj = 163 // huge
+	}
+
+	// Quality:
+	// damaged 8%, chipped 12%, normal 45%, polished 15%,
+	// faceted 10%, brilliant 7%, flawless 3%
+	qualityAdj := 0
+
+	switch roll := rand.Intn(100); {
+	case roll < 8:
+		qualityAdj = 83 // damaged
+	case roll < 20:
+		qualityAdj = 53 // chipped
+	case roll < 65:
+		// normal
+	case roll < 80:
+		qualityAdj = 241 // polished
+	case roll < 90:
+		qualityAdj = 118 // faceted
+	case roll < 97:
+		qualityAdj = 37 // brilliant
+	default:
+		qualityAdj = 129 // flawless
+	}
+
+	adjustedValue := gemValue(
+		md.Value,
+		sizeAdj,
+		qualityAdj,
+	)
+
+	item := InventoryItem{
+		Archetype: md.ItemNum,
+		Val1:      adjustedValue,
+		Val2:      md.Val2,
+		Adj1:      sizeAdj,
+		Adj2:      qualityAdj,
+	}
+
+	// MINEDEF variant: fire, black, blue, star, etc.
+	if md.AdjNum > 0 {
+		item.Adj3 = md.AdjNum
+	}
+
+	return item
 }
 
 // ---- SMELTING ----
@@ -184,82 +798,222 @@ func (e *GameEngine) doMineReal(ctx context.Context, player *Player) *CommandRes
 func (e *GameEngine) doSmelt(ctx context.Context, player *Player, args []string) *CommandResult {
 	room := e.rooms[player.RoomNumber]
 	if room == nil || !containsModifier(room.Modifiers, "FORGE") {
-		return &CommandResult{Messages: []string{"You need to be at a forge to smelt ore."}}
+		return &CommandResult{
+			Messages: []string{"You need to be at a forge to smelt ore."},
+		}
+	}
+
+	// Respect existing roundtime.
+	if player.RoundTimeExpiry.After(time.Now()) {
+		remaining := int(time.Until(player.RoundTimeExpiry).Seconds()) + 1
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %d seconds...]", remaining),
+			},
+			PlayerState: player,
+		}
 	}
 
 	smithSkill := player.Skills[8]
 	if smithSkill < 1 {
-		return &CommandResult{Messages: []string{"You have no training in Weaponsmithing."}}
+		return &CommandResult{
+			Messages: []string{"You have no training in Weaponsmithing."},
+		}
 	}
 
-	// Find ore in inventory
+	// Support an optional ordinal at the end:
+	//   SMELT ORE
+	//   SMELT ORE 2
+	//   SMELT IRON ORE
+	//   SMELT COPPER ORE 2
+	ordinal := 1
+
+	if len(args) > 1 {
+		if n, err := strconv.Atoi(args[len(args)-1]); err == nil && n > 0 {
+			ordinal = n
+			args = args[:len(args)-1]
+		}
+	}
+
+	// No target means simply SMELT ORE.
 	target := "ore"
 	if len(args) > 0 {
 		target = strings.ToLower(strings.Join(args, " "))
 	}
 
-	for i, ii := range player.Inventory {
+	matchCount := 0
+
+	for i := range player.Inventory {
+		ii := &player.Inventory[i]
+
 		def := e.items[ii.Archetype]
 		if def == nil || def.Type != "ORE" {
 			continue
 		}
-		name := strings.ToLower(e.getItemNounName(def))
-		if !strings.HasPrefix(name, target) && target != "ore" {
+
+		nounName := strings.ToLower(e.getItemNounName(def))
+
+		fullName := strings.ToLower(
+			e.formatItemName(def, ii.Adj1, ii.Adj2, ii.Adj3),
+		)
+
+		// Strip articles/quantity words so:
+		// "copper ore" matches "some copper ore".
+		searchName := fullName
+		searchName = strings.TrimPrefix(searchName, "a ")
+		searchName = strings.TrimPrefix(searchName, "an ")
+		searchName = strings.TrimPrefix(searchName, "the ")
+		searchName = strings.TrimPrefix(searchName, "some ")
+
+		// Match either the basic noun ("ore") or the complete
+		// formatted name ("iron ore", "copper ore", etc.).
+		if !strings.HasPrefix(nounName, target) &&
+			!strings.HasPrefix(searchName, target) {
 			continue
 		}
 
-		// Purity check: VAL3 = percentage chance of successful refinement
+		matchCount++
+		if matchCount != ordinal {
+			continue
+		}
+
+		const rtSec = 10
+
+		// A real smelting attempt takes 10 seconds,
+		// whether it succeeds or fails.
+		player.RoundTimeExpiry = time.Now().Add(
+			time.Duration(rtSec) * time.Second,
+		)
+		player.RoundTime = rtSec
+
+		// VAL3 is ore purity and therefore the base chance
+		// of successfully refining this particular piece of ore.
 		purity := ii.Val3
 		if purity <= 0 {
 			purity = 30
 		}
 
-		// Remove ore
-		player.Inventory = append(player.Inventory[:i], player.Inventory[i+1:]...)
+		// Save the properties we need before removing the ore
+		// from inventory.
+		outputArch := def.Parameter2
+		adj1 := ii.Adj1
+		val2 := ii.Val2
 
-		// Roll against purity + skill bonus
+		if outputArch <= 0 {
+			outputArch = 1370 // generic metal fallback
+		}
+
+		// The ore is consumed whether smelting succeeds or fails.
+		player.Inventory = append(
+			player.Inventory[:i],
+			player.Inventory[i+1:]...,
+		)
+
+		// Purity + Weaponsmithing determine success.
 		smeltChance := purity + smithSkill*2
+
 		if smeltChance > 95 {
 			smeltChance = 95
 		}
 
 		if rand.Intn(100) >= smeltChance {
 			e.SavePlayer(ctx, player)
+
 			return &CommandResult{
-				Messages:      []string{"You heat the ore in the forge, but it crumbles to useless slag."},
-				RoomBroadcast: []string{fmt.Sprintf("%s works at the forge.", player.FirstName)},
-				PlayerState:   player,
+				Messages: []string{
+					"You heat the ore in the forge, but it crumbles to useless slag.",
+					fmt.Sprintf("[Round: %d sec]", rtSec),
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"%s works at the forge.",
+						player.FirstName,
+					),
+				},
+				PlayerState: player,
 			}
 		}
 
-		// Success: create material item
-		outputArch := def.Parameter2
-		if outputArch <= 0 {
-			outputArch = 1370 // default to generic metal
-		}
+		// Successful refinement.
 		outputDef := e.items[outputArch]
 		if outputDef == nil {
 			e.SavePlayer(ctx, player)
-			return &CommandResult{Messages: []string{"The ore refines but produces nothing useful."}}
+
+			return &CommandResult{
+				Messages: []string{
+					"The ore refines but produces nothing useful.",
+					fmt.Sprintf("[Round: %d sec]", rtSec),
+				},
+				PlayerState: player,
+			}
 		}
 
 		material := InventoryItem{
 			Archetype: outputArch,
-			Adj1:      ii.Adj1, // preserve metal type (iron, copper, etc.)
-			Val2:      ii.Val2, // transfer material properties
+			Adj1:      adj1, // preserve metal type
+			Val2:      val2, // preserve material properties
 		}
-		player.Inventory = append(player.Inventory, material)
+
+		player.Inventory = append(
+			player.Inventory,
+			material,
+		)
+
+		// Successful smelting earns experience.
+		xpMsgs := e.awardExperience(player, 50)
+
 		e.SavePlayer(ctx, player)
 
-		matName := e.formatItemName(outputDef, material.Adj1, material.Adj2, material.Adj3)
+		matName := e.formatItemName(
+			outputDef,
+			material.Adj1,
+			material.Adj2,
+			material.Adj3,
+		)
+
+		// formatItemName already supplies "some" where appropriate.
+		messages := []string{
+			fmt.Sprintf(
+				"You smelt the ore in the forge and produce %s!",
+				matName,
+			),
+		}
+
+		messages = append(messages, xpMsgs...)
+
+		messages = append(
+			messages,
+			fmt.Sprintf("[Round: %d sec]", rtSec),
+		)
+
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("You smelt the ore in the forge and produce some %s!", matName)},
-			RoomBroadcast: []string{fmt.Sprintf("%s works at the forge, smelting ore.", player.FirstName)},
-			PlayerState:   player,
+			Messages: messages,
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"%s works at the forge, smelting ore.",
+					player.FirstName,
+				),
+			},
+			PlayerState: player,
 		}
 	}
 
-	return &CommandResult{Messages: []string{"You don't have any ore to smelt."}}
+	// We found matching ore, but not the requested occurrence.
+	if matchCount > 0 {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You don't have that many matching pieces of ore. (Found %d)",
+					matchCount,
+				),
+			},
+		}
+	}
+
+	return &CommandResult{
+		Messages: []string{"You don't have that ore to smelt."},
+	}
 }
 
 // ---- CRAFTING (FORGE/CRAFT) ----
@@ -1232,7 +1986,7 @@ func (e *GameEngine) doDye(ctx context.Context, player *Player, args []string) *
 
 // ---- ANALYZE (ore purity) ----
 
-func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []string) *CommandResult {
+func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []string, oreSpell bool) *CommandResult {
 	if len(args) == 0 {
 		return &CommandResult{Messages: []string{"Analyze what?"}}
 	}
@@ -1278,6 +2032,7 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 		searchName = strings.TrimPrefix(searchName, "a ")
 		searchName = strings.TrimPrefix(searchName, "an ")
 		searchName = strings.TrimPrefix(searchName, "the ")
+		searchName = strings.TrimPrefix(searchName, "some ")
 
 		// Match either the noun ("leg") or the compound item name
 		// ("spider leg", "arachen leg", etc.).
@@ -1291,13 +2046,22 @@ func (e *GameEngine) doAnalyze(ctx context.Context, player *Player, args []strin
 			continue
 		}
 
+		if oreSpell && def.Type != "ORE" {
+			return &CommandResult{
+				Messages: []string{"That is not ore."},
+			}
+		}
+
 		if def.Type == "ORE" {
-			miningSkill := player.Skills[35]
-			if miningSkill < 3 {
-				return &CommandResult{
-					Messages: []string{
-						"You don't have enough mining skill to analyze this ore. (Need Mining 3+)",
-					},
+			if !oreSpell {
+				miningSkill := player.Skills[35]
+
+				if miningSkill < 3 {
+					return &CommandResult{
+						Messages: []string{
+							"You don't have enough mining skill to analyze this ore. (Need Mining 3+)",
+						},
+					}
 				}
 			}
 

@@ -91,7 +91,7 @@ func init() {
 		{ID: 220, Name: "Dancing Blade", School: "Enchantment", Level: 1, ManaCost: 3, CastTime: 3, Effect: "damage", DmgMin: 1, DmgMax: 8, DmgType: "slashing", StatusMsg: "An animate blade leaps forth from %s's hand and slashes at %s with expert skill!"},
 		{ID: 221, Name: "Dancing Sword", School: "Enchantment", Level: 6, ManaCost: 8, CastTime: 3, Effect: "damage", DmgMin: 1, DmgMax: 13, DmgType: "slashing", StatusMsg: "An animate sword leaps forth from %s's hand and slashes at %s with expert skill!"},
 		{ID: 224, Name: "Fly", School: "Enchantment", Level: 11, ManaCost: 15, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
-		{ID: 225, Name: "Invisibility", School: "Enchantment", Level: 14, ManaCost: 18, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
+		{ID: 225, Name: "Invisibility", School: "Enchantment", Level: 14, ManaCost: 18, CastTime: 3, Effect: "buff", Duration: 35 * time.Minute, StatusType: InvisibilityEffect, StatusMsg: "%s fades from view."},
 		{ID: 228, Name: "Identify", School: "Enchantment", Level: 7, ManaCost: 5, CastTime: 3, Effect: "utility"},
 		{ID: 229, Name: "Wizard's Armor", School: "Enchantment", Level: 9, ManaCost: 12, CastTime: 3, Effect: "defense", DefBonus: 15, Duration: 45 * time.Minute},
 		{ID: 234, Name: "Spell Shield", School: "Enchantment", Level: 13, ManaCost: 15, CastTime: 3, Effect: "defense", DefBonus: 25, Duration: 45 * time.Minute},
@@ -139,6 +139,7 @@ func init() {
 		{ID: 500, Name: "Plant Snare", School: "Druidic", Level: 4, ManaCost: 6, CastTime: 3, Effect: "debuff", Duration: 2 * time.Minute, DefBonus: -25, StatusMsg: "Plant tendrils shoot up from the ground and ensnare %s!", StatusType: RestrainedEffect},
 		{ID: 504, Name: "Call Animal", School: "Druidic", Level: 1, ManaCost: 5, CastTime: 5, Effect: "summon"},
 		{ID: 505, Name: "Freedom", School: "Druidic", Level: 9, ManaCost: 12, CastTime: 3, Effect: "utility"},
+		{ID: 506, Name: "Resist Weather", School: "Druidic", Level: 3, ManaCost: 6, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute, Family: "weather", StatusType: ResistWeatherEffect, StatusMsg: "Wind circles you in a sudden spiral, carrying the scent of earth and rain before fading into stillness."},
 		{ID: 507, Name: "Heat Shield", School: "Druidic", Level: 7, ManaCost: 10, CastTime: 3, Effect: "buff", DefBonus: 50, Duration: 45 * time.Minute, Family: "heat shield", StatusType: ColdResistance, StatusMsg: "A translucent blue sphere surrounds you."},
 		{ID: 508, Name: "Cold Shield", School: "Druidic", Level: 6, ManaCost: 8, CastTime: 3, Effect: "buff", DefBonus: 50, Duration: 45 * time.Minute, Family: "cold shield", StatusType: HeatResistance, StatusMsg: "A translucent red sphere surrounds you."},
 		{ID: 511, Name: "Carapace", School: "Druidic", Level: 8, ManaCost: 10, CastTime: 3, Effect: "defense", DefBonus: 20, Duration: 45 * time.Minute},
@@ -606,43 +607,85 @@ func (e *GameEngine) tryInterruptMonsterSpell(inst *MonsterInstance, def *gamewo
 // doCastSpell handles CAST [target].
 func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []string) *CommandResult {
 	if player.Dead {
-		return &CommandResult{Messages: []string{"You can't cast spells while dead."}}
+		return &CommandResult{
+			Messages: []string{"You can't cast spells while dead."},
+		}
 	}
 
 	if player.Unconscious {
-		return &CommandResult{Messages: []string{"You can't cast spells while unconscous."}}
+		return &CommandResult{
+			Messages: []string{"You can't cast spells while unconscous."},
+		}
 	}
 
 	if player.Wielded != nil {
-		return &CommandResult{Messages: []string{"You'll have to unwield to do that."}}
+		return &CommandResult{
+			Messages: []string{"You'll have to unwield to do that."},
+		}
 	}
 
 	if player.Offhand != nil {
 		offhandDef := e.items[player.Offhand.Archetype]
 		if offhandDef == nil || offhandDef.Type != "SHIELD" {
-			return &CommandResult{Messages: []string{"You'll have to unwield to do that."}}
+			return &CommandResult{
+				Messages: []string{"You'll have to unwield to do that."},
+			}
 		}
 	}
 
-	// If no spell prepared, try to prepare+cast in one step
-	if player.PreparedSpell == 0 {
+	// Once CAST is accepted as an action, invisibility is broken.
+	// This happens even if no spell is prepared or the spell later fails.
+	var revealMsg string
+	if e.breakInvisibility(player) {
+		revealMsg = "You suddenly fade into view."
+	}
 
+	// Helper so every early return after this point preserves
+	// the invisibility reveal message.
+	withReveal := func(messages []string) []string {
+		if revealMsg == "" {
+			return messages
+		}
+
+		return append(
+			[]string{revealMsg},
+			messages...,
+		)
+	}
+
+	// If no spell is prepared, try to prepare+cast in one step.
+	if player.PreparedSpell == 0 {
 		if len(args) == 0 {
-			return &CommandResult{Messages: []string{"You have no spell prepared. Use PREPARE <spell> first."}}
+			return &CommandResult{
+				Messages: withReveal([]string{
+					"You have no spell prepared. Use PREPARE <spell> first.",
+				}),
+			}
 		}
 
 		// Try direct cast: "cast flame bolt <target>"
 		spellName := strings.Join(args, " ")
 		spell := FindSpellByName(spellName)
+
 		if spell == nil {
 			return &CommandResult{
-				Messages: []string{fmt.Sprintf("You don't know a spell called '%s'.", spellName)},
+				Messages: withReveal([]string{
+					fmt.Sprintf(
+						"You don't know a spell called '%s'.",
+						spellName,
+					),
+				}),
 			}
 		}
 
 		if !player.KnownSpells[spell.ID] && !player.IsGM {
 			return &CommandResult{
-				Messages: []string{fmt.Sprintf("You haven't learned %s.", spell.Name)},
+				Messages: withReveal([]string{
+					fmt.Sprintf(
+						"You haven't learned %s.",
+						spell.Name,
+					),
+				}),
 			}
 		}
 
@@ -652,7 +695,12 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	spell := FindSpellByID(player.PreparedSpell)
 	if spell == nil {
 		player.PreparedSpell = 0
-		return &CommandResult{Messages: []string{"Your spell fizzles."}}
+
+		return &CommandResult{
+			Messages: withReveal([]string{
+				"Your spell fizzles.",
+			}),
+		}
 	}
 
 	// Mana cost = spell level (from LEGENDS.DOC)
@@ -663,38 +711,42 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 
 	if player.Mana < manaCost {
 		player.PreparedSpell = 0
+
 		return &CommandResult{
-			Messages: []string{
+			Messages: withReveal([]string{
 				fmt.Sprintf(
 					"Not enough mana! (%s requires %d, you have %d)",
 					spell.Name,
 					manaCost,
 					player.Mana,
 				),
-			},
+			}),
 		}
 	}
 
-	// Check roundtime
+	// Check roundtime.
 	if player.RoundTimeExpiry.After(time.Now()) {
 		remaining := time.Until(player.RoundTimeExpiry).Seconds()
+
 		return &CommandResult{
-			Messages: []string{
+			Messages: withReveal([]string{
 				fmt.Sprintf(
 					"You are still preparing... %.0f seconds remaining.",
 					remaining+0.5,
 				),
-			},
+			}),
 		}
 	}
 
-	// Deduct mana
+	// Deduct mana and consume the prepared spell.
 	player.Mana -= manaCost
 	player.PreparedSpell = 0
 
-	// Spellcraft skill check
+	// Spellcraft skill check.
 	spellcraftSkill := player.Skills[23]
-	castChance := 25 + player.EffectiveStat(StatEmpathy)/10 + spellcraftSkill*5
+	castChance := 25 +
+		player.EffectiveStat(StatEmpathy)/10 +
+		spellcraftSkill*5
 
 	if castChance > 95 {
 		castChance = 95
@@ -706,17 +758,18 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 
 	castRoll := rand.Intn(100) + 1
 
+	// Extreme failure.
 	if castRoll == 100 && !player.IsGM {
 		player.RoundTimeExpiry = time.Now().Add(3 * time.Second)
 
 		return &CommandResult{
-			Messages: []string{
+			Messages: withReveal([]string{
 				fmt.Sprintf(
 					"[Success: %d%%, Roll %d] Extreme failure! The spell backfires!",
 					castChance,
 					castRoll,
 				),
-			},
+			}),
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"Magic begins to form around %s but then fizzles.",
@@ -728,17 +781,18 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 
 	spectacularSuccess := castRoll == 1
 
+	// Normal failure.
 	if castRoll > castChance && !player.IsGM {
 		player.RoundTimeExpiry = time.Now().Add(2 * time.Second)
 
 		return &CommandResult{
-			Messages: []string{
+			Messages: withReveal([]string{
 				fmt.Sprintf(
 					"[Success: %d%%, Roll %d] Failure.",
 					castChance,
 					castRoll,
 				),
-			},
+			}),
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"Magic begins to form around %s but then fizzles.",
@@ -748,7 +802,7 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		}
 	}
 
-	// Show success roll to caster
+	// Show success roll to caster.
 	successMsg := fmt.Sprintf(
 		"[Success: %d%%, Roll %d] Success!",
 		castChance,
@@ -807,7 +861,7 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		)
 
 	case "debuff":
-		return e.castDebuff(
+		result = e.castDebuff(
 			player,
 			spell,
 			args,
@@ -839,11 +893,14 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 		}
 	}
 
-	// Prepend success roll message.
+	// Prepend success roll.
 	result.Messages = append(
 		[]string{successMsg},
 		result.Messages...,
 	)
+
+	// If casting broke invisibility, that message comes first.
+	result.Messages = withReveal(result.Messages)
 
 	player.RoundTimeExpiry = time.Now().Add(
 		time.Duration(spell.CastTime) * time.Second,
@@ -1531,10 +1588,21 @@ func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []str
 		spell.Ticks,
 	)
 
+	// Apply any state associated with the status effect.
+	switch spell.StatusType {
+	case InvisibilityEffect:
+		target.Invisible = true
+	}
+
 	// Build the spell's status message.
 	statusMsg := spell.StatusMsg
+
 	if strings.Contains(statusMsg, "%d") {
 		statusMsg = fmt.Sprintf(statusMsg, spell.DefBonus)
+	}
+
+	if strings.Contains(statusMsg, "%s") {
+		statusMsg = fmt.Sprintf(statusMsg, target.FirstName)
 	}
 
 	result := &CommandResult{}
@@ -1579,7 +1647,10 @@ func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []str
 
 	// Effect message is useful whether cast normally or triggered by a script/item.
 	if statusMsg != "" {
-		result.Messages = append(result.Messages, statusMsg)
+		result.Messages = append(
+			result.Messages,
+			statusMsg,
+		)
 	}
 
 	return result
@@ -1601,6 +1672,12 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 
 		for _, inst := range e.monsterMgr.instances {
 			if inst.ID == player.CombatTarget.MonsterID && inst.Alive {
+
+				// An invisible monster cannot be auto-targeted.
+				if inst.HasStatEffect(InvisibilityEffect) {
+					break
+				}
+
 				def := e.monsters[inst.DefNumber]
 
 				if def != nil {
@@ -2650,6 +2727,15 @@ func (e *GameEngine) castUtilitySpell(ctx context.Context, player *Player, spell
 	case 114: // Mystic Key
 		result = e.castMysticKey(player, args)
 
+	case 407: // Analyze Ore
+		if len(args) == 0 {
+			return &CommandResult{
+				Messages: []string{"Analyze what?"},
+			}
+		}
+
+		return e.doAnalyze(ctx, player, args, true)
+
 	case 228: // Identify
 		if len(args) > 0 && strings.EqualFold(args[0], "on") {
 			args = args[1:]
@@ -2729,62 +2815,6 @@ func (e *GameEngine) castUtilitySpell(ctx context.Context, player *Player, spell
 	}
 
 	return result
-}
-
-func (e *GameEngine) buildCastResult(
-	player *Player,
-	target *Player,
-	spell *SpellDef,
-	selfMsg string,
-	targetMsg string,
-) *CommandResult {
-
-	if target == player {
-		return &CommandResult{
-			Messages: []string{
-				fmt.Sprintf(
-					"You gesture and cast %s on yourself. %s",
-					spell.Name,
-					selfMsg,
-				),
-			},
-			RoomBroadcast: []string{
-				fmt.Sprintf(
-					"%s gestures and casts %s.",
-					player.FirstName,
-					spell.Name,
-				),
-			},
-		}
-	}
-
-	return &CommandResult{
-		Messages: []string{
-			fmt.Sprintf(
-				"You gesture and cast %s on %s. %s",
-				spell.Name,
-				target.FirstName,
-				targetMsg,
-			),
-		},
-		RoomBroadcast: []string{
-			fmt.Sprintf(
-				"%s gestures and casts %s on %s.",
-				player.FirstName,
-				spell.Name,
-				target.FirstName,
-			),
-		},
-		TargetName: target.FirstName,
-		TargetMsg: []string{
-			fmt.Sprintf(
-				"%s casts %s on you. %s",
-				player.FirstName,
-				spell.Name,
-				selfMsg,
-			),
-		},
-	}
 }
 
 // spellDmgNoun returns a damage noun for the spell's damage type.

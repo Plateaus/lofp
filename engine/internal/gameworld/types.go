@@ -295,3 +295,8 @@ type MonsterList struct {
 	Probability int `bson:"probability" json:"probability"` // % chance per spawn slot
 	MaxCount    int `bson:"maxCount" json:"maxCount"`       // max number in room
 }
+
+type BreakModDef struct {
+	Adjective int
+	Modifier  int
+}

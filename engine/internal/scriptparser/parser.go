@@ -30,6 +30,7 @@ type ParseResult struct {
 	ForageDefs           []gameworld.ForageDef
 	SeasonalForageDefs   map[string][]gameworld.ForageDef
 	MineDefs             []gameworld.MineDef
+	BreakMods            []gameworld.BreakModDef
 	StartRoom            int
 	BumpRoom             int
 }
@@ -212,18 +213,6 @@ func parseScriptFile(path string, result *ParseResult) error {
 		len(lines),
 	)
 
-	// Temporary: dump the entire file as Scanner actually read it.
-	/*
-		if strings.EqualFold(filename, "AUTOUT.SCR") {
-			for i, line := range lines {
-				fmt.Printf(
-					"AUTOUT RAW %04d: %q\n",
-					i+1,
-					line,
-				)
-			}
-		}
-	*/
 	p := &fileParser{
 		lines:    lines,
 		pos:      0,
@@ -268,22 +257,6 @@ func (p *fileParser) parse() {
 		fields := strings.Fields(line)
 		cmd := strings.ToUpper(fields[0])
 
-		/*  testing forage loads
-		if strings.HasPrefix(strings.ToUpper(line), "MLIST 103 ") {
-			fmt.Printf("RAW MLIST 103 REACHED: pos=%d line=%q\n", p.pos, line)
-		}
-
-
-		if strings.Contains(strings.ToUpper(line), "FORAGEDEF") {
-			fmt.Printf(
-				"FORAGE RAW: file=%s pos=%d line=%q fields=%v\n",
-				p.filename,
-				p.pos,
-				line,
-				fields,
-			)
-		}
-		*/
 		switch cmd {
 		case "NUMBER":
 			p.parseRoom(fields)
@@ -394,6 +367,32 @@ func (p *fileParser) parse() {
 				p.result.MineDefs = append(p.result.MineDefs, gameworld.MineDef{
 					ItemNum: itemNum, AdjNum: adjNum, Grade: grade, Value: value, Val2: v2,
 				})
+			}
+			p.pos++
+		case "BREAKMOD":
+			if len(fields) >= 3 {
+				adjNum, _ := strconv.Atoi(fields[1])
+				modifier, _ := strconv.Atoi(fields[2])
+
+				found := false
+
+				for i := range p.result.BreakMods {
+					if p.result.BreakMods[i].Adjective == adjNum {
+						p.result.BreakMods[i].Modifier = modifier
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					p.result.BreakMods = append(
+						p.result.BreakMods,
+						gameworld.BreakModDef{
+							Adjective: adjNum,
+							Modifier:  modifier,
+						},
+					)
+				}
 			}
 			p.pos++
 		default:

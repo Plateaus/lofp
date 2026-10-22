@@ -934,6 +934,12 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 		inst, def = e.findMonsterInRoom(player, target)
 	}
 
+	if inst != nil && inst.HasStatEffect(InvisibilityEffect) {
+		return &CommandResult{
+			Messages: []string{"Attack what?"},
+		}
+	}
+
 	if inst == nil {
 		// Check if they're trying to attack a player.
 		if e.sessions != nil {
@@ -1365,12 +1371,18 @@ func (e *GameEngine) doAttackMonster(ctx context.Context, player *Player, target
 	}
 
 	// Attacking always reveals you.
-	if player.Hidden || player.Invisible {
+	if player.Hidden {
 		player.Hidden = false
-		player.Invisible = false
 
 		result.Messages = append(
 			[]string{"You reveal yourself!"},
+			result.Messages...,
+		)
+	}
+
+	if e.breakInvisibility(player) {
+		result.Messages = append(
+			[]string{"You suddenly fade into view."},
 			result.Messages...,
 		)
 	}
@@ -1400,6 +1412,10 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 	// ------------------------------------------------------------
 
 	wMod := e.weatherMod(player.RoomNumber)
+
+	if _, ok := player.HasStatEffect(ResistWeatherEffect); ok {
+		wMod = 0
+	}
 
 	fatPenalty := 0
 
@@ -1468,8 +1484,7 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 	var thirdVerb string
 	var dmgNoun string
 
-	clawGrowth :=
-		player.EffectiveStat(ClawGrowth)
+	clawGrowth := player.EffectiveStat(ClawGrowth)
 
 	if weaponDef == nil &&
 		(player.WolfForm || clawGrowth > 0) {
@@ -1510,10 +1525,16 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 			weaponDef.Weight*3 +
 				weaponDef.Parameter1*2
 
-		clashRoll :=
-			rand.Intn(100) +
-				rand.Intn(100) +
-				2
+		// Apply legacy BREAKMOD from all weapon adjectives.
+		if weapon != nil {
+			breakMod := e.itemBreakMod(weapon)
+
+			if breakMod != 0 {
+				weaponStr = weaponStr * (100 + breakMod) / 100
+			}
+		}
+
+		clashRoll := rand.Intn(100) + rand.Intn(100) + 2
 
 		msgs = append(
 			msgs,
@@ -1629,10 +1650,7 @@ func (e *GameEngine) resolvePlayerWeaponAttack(player *Player, inst *MonsterInst
 			)
 
 		if openEndedBonus > 0 {
-			dmg =
-				dmg *
-					(100 + openEndedBonus) /
-					100
+			dmg = dmg * (100 + openEndedBonus) / 100
 		}
 
 		dmg =
@@ -1968,6 +1986,40 @@ func (e *GameEngine) findCurrentCombatOpponent(player *Player) (*MonsterInstance
 	return nil, nil
 }
 
+func (e *GameEngine) itemBreakMod(item *InventoryItem) int {
+	if item == nil {
+		return 0
+	}
+
+	mod := 0
+
+	adjs := []int{
+		item.Adj1,
+		item.Adj2,
+		item.Adj3,
+	}
+
+	for _, adj := range adjs {
+		if adj <= 0 {
+			continue
+		}
+
+		for _, bm := range e.breakMods {
+			if bm.Adjective == adj {
+				mod += bm.Modifier
+				break
+			}
+		}
+	}
+
+	// Legacy special case.
+	if item.Val1 == 32000 {
+		mod += 30
+	}
+
+	return mod
+}
+
 // doBackstab handles a backstab attack from hiding — bonus damage.
 // Requires puncture weapon (daggers, rapiers).
 func (e *GameEngine) doBackstab(ctx context.Context, player *Player, target string) *CommandResult {
@@ -1983,8 +2035,17 @@ func (e *GameEngine) doBackstab(ctx context.Context, player *Player, target stri
 	// Backstab: attack from hidden with damage multiplier
 	player.BackstabNext = true
 	player.Hidden = false
-	player.Invisible = false
+	//player.Invisible = false
+
 	result := e.doAttackMonster(ctx, player, target)
+
+	if e.breakInvisibility(player) {
+		result.Messages = append(
+			[]string{"You suddenly fade into view."},
+			result.Messages...,
+		)
+	}
+
 	player.BackstabNext = false
 	result.Messages = append([]string{"You leap from the shadows!"}, result.Messages...)
 	result.RoomBroadcast = append([]string{fmt.Sprintf("%s leaps from the shadows!", player.FirstName)}, result.RoomBroadcast...)
@@ -2122,9 +2183,20 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 	article := articleFor(name, def.Unique)
 	capArt := capArticle(article)
 
+	// Attacking reveals an invisible monster.
+	if e.breakMonsterInvisibility(inst) {
+		roomMsgs = append(
+			roomMsgs,
+			fmt.Sprintf(
+				"%s%s suddenly fades into view.",
+				capArt,
+				name,
+			),
+		)
+	}
+
 	// A Murg in berserk stance remains conscious through 0 to -9 BP.
-	frenziedMurg := player.Race == RaceMurg &&
-		player.Stance == StanceBerserk
+	frenziedMurg := player.Race == RaceMurg && player.Stance == StanceBerserk
 
 	// ------------------------------------------------------------
 	// Special attack.
@@ -2696,6 +2768,22 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 	return playerMsgs, roomMsgs
 }
 
+func (e *GameEngine) breakMonsterInvisibility(inst *MonsterInstance) bool {
+	if inst == nil {
+		return false
+	}
+
+	hasEffect := inst.HasStatEffect(InvisibilityEffect)
+
+	if !hasEffect {
+		return false
+	}
+
+	inst.RemoveStatEffect(InvisibilityEffect)
+
+	return true
+}
+
 // ---- Death ----
 
 func (e *GameEngine) handlePlayerDeath(player *Player, killerName string) []string {
@@ -2778,6 +2866,8 @@ func (e *GameEngine) doDepart(player *Player) *CommandResult {
 	player.Stunned = false
 	player.Poisoned = false
 	player.Diseased = false
+	player.Invisible = false
+	player.Hidden = false
 	// Death clears all temporary status/stat effects.
 	player.ActiveStatEffects = nil
 
@@ -2865,22 +2955,15 @@ func (e *GameEngine) damageMonster(player *Player, monsterID int, dmg int, stunn
 			// A monster preparing a spell has a 50% chance
 			// of having that spell disrupted by damage.
 			if inst.PreparedSpell > 0 {
+				def := e.monsters[inst.DefNumber]
 
-				// NONDISRUPTABLE monsters cannot have their
-				// spells disrupted.
-				//
-				// Uncomment once NONDISRUPTABLE is wired
-				// into MonsterDef.
-				//
-				// if !def.NonDisruptable {
-
-				if rand.Intn(2) == 0 {
-					inst.PreparedSpell = 0
-					inst.SpellReadyAt = time.Time{}
-					result.DisruptedSpell = true
+				if def == nil || !def.NonDisruptable {
+					if rand.Intn(2) == 0 {
+						inst.PreparedSpell = 0
+						inst.SpellReadyAt = time.Time{}
+						result.DisruptedSpell = true
+					}
 				}
-
-				// }
 			}
 		}
 
@@ -3985,6 +4068,25 @@ func (e *GameEngine) monsterCombatTick(inst *MonsterInstance, def *gameworld.Mon
 }
 
 func (e *GameEngine) monsterFlee(inst *MonsterInstance, def *gameworld.MonsterDef) {
+
+	if inst.HasStatEffect(RestrainedEffect) {
+		name := FormatMonsterName(def, e.monAdjs)
+		article := articleFor(name, def.Unique)
+
+		e.localRoomBroadcast(
+			inst.RoomNumber,
+			[]string{
+				fmt.Sprintf(
+					"%s%s struggles against its restraints but cannot flee!",
+					capArticle(article),
+					name,
+				),
+			},
+		)
+
+		return
+	}
+
 	room := e.rooms[inst.RoomNumber]
 	if room == nil {
 		return

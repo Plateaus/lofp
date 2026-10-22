@@ -705,34 +705,56 @@ func (e *GameEngine) MonsterLookLines(roomNum int) []string {
 	if e.monsterMgr == nil {
 		return nil
 	}
+
 	monsters := e.monsterMgr.AllMonstersInRoom(roomNum)
 	if len(monsters) == 0 {
 		return nil
 	}
+
 	var names []string
+
 	for _, inst := range monsters {
+
+		// Invisible monsters are not shown in LOOK.
+		if inst.HasStatEffect(InvisibilityEffect) {
+			continue
+		}
+
 		def := e.monsters[inst.DefNumber]
 		if def == nil {
 			continue
 		}
+
 		name := FormatMonsterName(def, e.monAdjs)
+
 		if !inst.Alive {
 			name += " (dead)"
 		}
+
 		article := articleFor(name, def.Unique)
 		names = append(names, article+name)
 	}
+
 	if len(names) == 0 {
 		return nil
 	}
-	// Join with commas and "and": "a priest, a trader and a merchant"
+
+	// Join with commas and "and":
+	// "a priest, a trader and a merchant"
 	var joined string
+
 	if len(names) == 1 {
 		joined = names[0]
 	} else {
-		joined = strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+		joined = strings.Join(
+			names[:len(names)-1],
+			", ",
+		) + " and " + names[len(names)-1]
 	}
-	return []string{"You also see " + joined + "."}
+
+	return []string{
+		"You also see " + joined + ".",
+	}
 }
 
 // directionNames maps exit keys to direction words for monster movement text.
@@ -1236,18 +1258,19 @@ func (e *GameEngine) chooseMonsterSpell(inst *MonsterInstance, def *gameworld.Mo
 		}
 
 		// Monster cannot cast above its configured cast level.
-		if def.CastLevel > 0 && spell.Level > def.CastLevel {
-			continue
-		}
+		//if def.CastLevel > 0 && spell.Level > def.CastLevel {
+		//	continue
+		//	}
 
 		// Must currently have enough mana.
 		if inst.Mana < spell.ManaCost {
 			continue
 		}
 
-		// For now, only cast offensive damage spells.
-		// We can add monster versions of Fear, Charm, buffs, etc. next.
-		if spell.Effect != "damage" && spell.Effect != "debuff" {
+		// Monsters can cast damage, debuff, and self-buff spells.
+		if spell.Effect != "damage" &&
+			spell.Effect != "debuff" &&
+			spell.Effect != "buff" {
 			continue
 		}
 
@@ -1280,7 +1303,12 @@ func (e *GameEngine) beginMonsterSpell(inst *MonsterInstance, def *gameworld.Mon
 	return fmt.Sprintf("%s incants a spell.", monsterName)
 }
 
-func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef, player *Player, spell *SpellDef) ([]string, []string) {
+func (e *GameEngine) releaseMonsterSpell(
+	inst *MonsterInstance,
+	def *gameworld.MonsterDef,
+	player *Player,
+	spell *SpellDef,
+) ([]string, []string) {
 
 	if inst == nil || def == nil || player == nil || spell == nil {
 		return nil, nil
@@ -1307,27 +1335,48 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 	// Mana is spent on release, even if the casting roll fails.
 	inst.Mana -= spell.ManaCost
 
-	roomMsgs = append(
-		roomMsgs,
-		fmt.Sprintf(
-			"%s gestures at %s.",
-			monsterName,
-			player.FirstName,
-		),
-	)
+	// ------------------------------------------------------------
+	// DETERMINE TARGET / CAST CHANCE
+	// ------------------------------------------------------------
 
-	// Monster spellcasting is opposed by the target's innate
-	// level-based magic resistance.
-	//
-	// SPELLSKILL is already stored on the 5%-per-level scale.
-	//
-	// Equal skill/level:
-	//   SPELLSKILL 75 vs level 15
-	//   50 + 75 - (15 * 5) = 50%
-	//
-	// All spell chances are capped at 5% minimum and 95% maximum.
+	selfCast := spell.Effect == "buff"
 
-	castChance := 50 + def.SpellSkill - (player.Level * 5)
+	var castChance int
+
+	if selfCast {
+		// Buff spells are cast by the monster on itself.
+		roomMsgs = append(
+			roomMsgs,
+			fmt.Sprintf(
+				"%s gestures.",
+				monsterName,
+			),
+		)
+
+		// Self-cast buffs are not opposed by the player's
+		// innate magic resistance.
+		castChance = 50 + def.SpellSkill
+	} else {
+		// Offensive/targeted spell.
+		roomMsgs = append(
+			roomMsgs,
+			fmt.Sprintf(
+				"%s gestures at %s.",
+				monsterName,
+				player.FirstName,
+			),
+		)
+
+		// Monster spellcasting is opposed by the target's innate
+		// level-based magic resistance.
+		//
+		// SPELLSKILL is already stored on the 5%-per-level scale.
+		//
+		// Equal skill/level:
+		//   SPELLSKILL 75 vs level 15
+		//   50 + 75 - (15 * 5) = 50%
+		castChance = 50 + def.SpellSkill - (player.Level * 5)
+	}
 
 	if castChance < 5 {
 		castChance = 5
@@ -1343,10 +1392,67 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		failMsg := def.TextOverrides["TEXQ"]
 
 		if failMsg == "" {
-			failMsg = fmt.Sprintf("%s's spell fizzles.", monsterName)
+			failMsg = fmt.Sprintf(
+				"%s's spell fizzles.",
+				monsterName,
+			)
 		}
 
 		roomMsgs = append(roomMsgs, failMsg)
+		return playerMsgs, roomMsgs
+	}
+
+	// ------------------------------------------------------------
+	// BUFF SPELL
+	// ------------------------------------------------------------
+
+	if spell.Effect == "buff" {
+		switch spell.StatusType {
+
+		case InvisibilityEffect:
+			// Do not stack Invisibility.
+
+			if inst.HasStatEffect(InvisibilityEffect) {
+				//	roomMsgs = append(roomMsgs, "Nothing happens.")
+				return playerMsgs, roomMsgs
+			}
+
+			inst.ApplyStatEffect(
+				spell.ID,
+				EffectSourceSpell,
+				InvisibilityEffect,
+				spell.DefBonus,
+				spell.Duration,
+				spell.Ticks,
+			)
+
+			releaseMsg := def.TextOverrides["TEXL"]
+			if releaseMsg == "" {
+				releaseMsg = fmt.Sprintf(
+					"%s fades from view.",
+					monsterName,
+				)
+			}
+
+			roomMsgs = append(roomMsgs, releaseMsg)
+
+			return playerMsgs, roomMsgs
+		}
+
+		// Generic fallback for monster buff spells that do not
+		// yet have special behavior.
+		releaseMsg := def.TextOverrides["TEXL"]
+
+		if releaseMsg == "" {
+			releaseMsg = fmt.Sprintf(
+				"%s casts %s on itself.",
+				monsterName,
+				spell.Name,
+			)
+		}
+
+		roomMsgs = append(roomMsgs, releaseMsg)
+
 		return playerMsgs, roomMsgs
 	}
 
@@ -1374,7 +1480,10 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 
 			releaseMsg := def.TextOverrides["TEXL"]
 			if releaseMsg == "" {
-				releaseMsg = fmt.Sprintf("%s casts Web.", monsterName)
+				releaseMsg = fmt.Sprintf(
+					"%s casts Web.",
+					monsterName,
+				)
 			}
 
 			roomMsgs = append(roomMsgs, releaseMsg)
@@ -1403,7 +1512,10 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 
 			releaseMsg := def.TextOverrides["TEXL"]
 			if releaseMsg == "" {
-				releaseMsg = fmt.Sprintf("%s casts Plant Snare.", monsterName)
+				releaseMsg = fmt.Sprintf(
+					"%s casts Plant Snare.",
+					monsterName,
+				)
 			}
 
 			roomMsgs = append(roomMsgs, releaseMsg)
@@ -1432,7 +1544,10 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 
 			releaseMsg := def.TextOverrides["TEXL"]
 			if releaseMsg == "" {
-				releaseMsg = fmt.Sprintf("%s casts Fear.", monsterName)
+				releaseMsg = fmt.Sprintf(
+					"%s casts Fear.",
+					monsterName,
+				)
 			}
 
 			roomMsgs = append(roomMsgs, releaseMsg)
@@ -1443,6 +1558,7 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 			)
 
 			return playerMsgs, roomMsgs
+
 		case 201: // Charm
 			if _, ok := player.HasStatEffect(CharmEffect); ok {
 				roomMsgs = append(roomMsgs, "Nothing happens.")
@@ -1469,13 +1585,17 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 			} else {
 				roomMsgs = append(
 					roomMsgs,
-					fmt.Sprintf("%s gets a friendly look.", player.FirstName),
+					fmt.Sprintf(
+						"%s gets a friendly look.",
+						player.FirstName,
+					),
 				)
 			}
 
 			return playerMsgs, roomMsgs
 		}
 	}
+
 	// ------------------------------------------------------------
 	// DAMAGE SPELL
 	// ------------------------------------------------------------
@@ -1495,13 +1615,18 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		dmg = spell.DmgMin
 
 		if spell.DmgMax > spell.DmgMin {
-			dmg += rand.Intn(spell.DmgMax - spell.DmgMin + 1)
+			dmg += rand.Intn(
+				spell.DmgMax - spell.DmgMin + 1,
+			)
 		}
 	}
 
 	damageType := strings.ToUpper(spell.DmgType)
 
-	// Elemental resistance.
+	// ------------------------------------------------------------
+	// ELEMENTAL RESISTANCE
+	// ------------------------------------------------------------
+
 	switch damageType {
 
 	case "HEAT", "FIRE", "BURN":
@@ -1510,6 +1635,7 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		if resistance < 0 {
 			resistance = 0
 		}
+
 		if resistance > 100 {
 			resistance = 100
 		}
@@ -1522,6 +1648,7 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		if resistance < 0 {
 			resistance = 0
 		}
+
 		if resistance > 100 {
 			resistance = 100
 		}
@@ -1533,6 +1660,10 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 
 	player.BodyPoints -= dmg
 
+	// ------------------------------------------------------------
+	// DAMAGE BREAKS CHARM
+	// ------------------------------------------------------------
+
 	if dmg > 0 {
 		if player.RemoveStatEffect(CharmEffect) {
 			playerMsgs = append(
@@ -1542,10 +1673,17 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		}
 	}
 
+	// ------------------------------------------------------------
+	// SPELL INTERRUPTION
+	// ------------------------------------------------------------
+
 	disruptedSpell := e.tryInterruptPlayerSpell(player)
 
 	if disruptedSpell {
-		playerMsgs = append(playerMsgs, "Your spell is disrupted!")
+		playerMsgs = append(
+			playerMsgs,
+			"Your spell is disrupted!",
+		)
 	}
 
 	// The initial knockout cannot take the player below 0.
@@ -1588,6 +1726,10 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		),
 	)
 
+	// ------------------------------------------------------------
+	// DAMAGE SPELL RELEASE MESSAGE
+	// ------------------------------------------------------------
+
 	if spell.StatusMsg != "" {
 		roomMsgs = append(
 			roomMsgs,
@@ -1609,6 +1751,10 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 		)
 	}
 
+	// ------------------------------------------------------------
+	// PLAYER DEATH
+	// ------------------------------------------------------------
+
 	if player.BodyPoints <= 0 {
 		if e.isArenaRoom(player.RoomNumber) {
 			player.BodyPoints = 1
@@ -1618,8 +1764,15 @@ func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.M
 				"The arena's enchantment prevents your death!",
 			)
 		} else {
-			deathMsgs := e.handlePlayerDeath(player, name)
-			playerMsgs = append(playerMsgs, deathMsgs...)
+			deathMsgs := e.handlePlayerDeath(
+				player,
+				name,
+			)
+
+			playerMsgs = append(
+				playerMsgs,
+				deathMsgs...,
+			)
 
 			roomMsgs = append(
 				roomMsgs,
