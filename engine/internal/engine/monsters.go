@@ -1302,12 +1302,7 @@ func (e *GameEngine) beginMonsterSpell(inst *MonsterInstance, def *gameworld.Mon
 	return fmt.Sprintf("%s incants a spell.", monsterName)
 }
 
-func (e *GameEngine) releaseMonsterSpell(
-	inst *MonsterInstance,
-	def *gameworld.MonsterDef,
-	player *Player,
-	spell *SpellDef,
-) ([]string, []string) {
+func (e *GameEngine) releaseMonsterSpell(inst *MonsterInstance, def *gameworld.MonsterDef, player *Player, spell *SpellDef) ([]string, []string) {
 
 	if inst == nil || def == nil || player == nil || spell == nil {
 		return nil, nil
@@ -1470,7 +1465,7 @@ func (e *GameEngine) releaseMonsterSpell(
 
 			player.ApplyStatEffect(
 				spell.ID,
-				EffectSourceSpell,
+				EffectRestrained,
 				RestrainedEffect,
 				spell.DefBonus,
 				spell.Duration,
@@ -1922,6 +1917,20 @@ func (m *MonsterInstance) RemoveStatEffect(stat StatID) bool {
 
 	m.ActiveStatEffects = active
 	return removed
+}
+
+func (m *MonsterInstance) RemoveActiveStatEffect(effectID int, source EffectSource) bool {
+	for i, effect := range m.ActiveStatEffects {
+		if effect.EffectID == effectID && effect.Source == source {
+			m.ActiveStatEffects = append(
+				m.ActiveStatEffects[:i],
+				m.ActiveStatEffects[i+1:]...,
+			)
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *MonsterInstance) HasStatEffect(stat StatID) bool {

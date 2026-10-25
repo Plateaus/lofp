@@ -37,6 +37,13 @@ type ScriptContext struct {
 	EventDelay         time.Duration
 	Suspended          bool
 	RoomEvent          bool
+
+	RemoteRoomMsgs []ScriptRoomMessage
+}
+
+type ScriptRoomMessage struct {
+	RoomNumber int
+	Text       string
 }
 
 // RunEntryScripts executes all IFENTRY script blocks for a room.
@@ -96,7 +103,8 @@ func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, ver
 		Engine:             e,
 		ItemRef:            ri,
 		ItemDef:            def,
-		PlayerEventEnabled: ri != nil && ri.Ref == -1,
+		PlayerEventEnabled: true,
+		//PlayerEventEnabled: ri != nil && ri.Ref == -1,  bug in player events when not -1?
 	}
 
 	verb = strings.ToUpper(verb)
@@ -236,6 +244,8 @@ func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, ver
 			}
 		}
 	}
+
+	sc.flushRemoteRoomMessages()
 
 	return sc
 }
@@ -744,10 +754,7 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 	}
 }
 
-func (sc *ScriptContext) schedulePlayerEvent(
-	delay time.Duration,
-	statements []gameworld.ScriptStatement,
-) {
+func (sc *ScriptContext) schedulePlayerEvent(delay time.Duration, statements []gameworld.ScriptStatement) {
 	if len(statements) == 0 {
 		return
 	}
@@ -880,24 +887,83 @@ func (sc *ScriptContext) doEcho(args []string) {
 		sc.Messages = append(sc.Messages, text)
 
 	case "ALL", "GROUP":
-		// Everyone in the currently affected room.
-		//
-		// Give the triggering player their direct copy only if they are
-		// actually in that room. This matters when AFFECT has switched
-		// the script context to another room.
+		if sc.Room == nil {
+			return
+		}
+
+		// If the triggering player is physically in the room currently
+		// being affected, give them their direct copy.
 		if sc.Player != nil &&
-			sc.Room != nil &&
 			sc.Player.RoomNumber == sc.Room.Number {
 
 			sc.Messages = append(sc.Messages, text)
 		}
 
-		sc.RoomMsgs = append(sc.RoomMsgs, text)
+		// If this is the player's current room, preserve the existing
+		// RoomBroadcast behavior.
+		if sc.Player != nil &&
+			sc.Player.RoomNumber == sc.Room.Number {
+
+			sc.RoomMsgs = append(sc.RoomMsgs, text)
+			return
+		}
+
+		// AFFECT has switched the script to another room.
+		// Preserve that destination instead of losing it in RoomMsgs.
+		sc.RemoteRoomMsgs = append(
+			sc.RemoteRoomMsgs,
+			ScriptRoomMessage{
+				RoomNumber: sc.Room.Number,
+				Text:       text,
+			},
+		)
 
 	case "OTHERS":
-		// Everyone else in the currently affected room.
-		sc.RoomMsgs = append(sc.RoomMsgs, text)
+		if sc.Room == nil {
+			return
+		}
+
+		// Normal same-room broadcast.
+		if sc.Player != nil &&
+			sc.Player.RoomNumber == sc.Room.Number {
+
+			sc.RoomMsgs = append(sc.RoomMsgs, text)
+			return
+		}
+
+		// Remote room selected by AFFECT.
+		sc.RemoteRoomMsgs = append(
+			sc.RemoteRoomMsgs,
+			ScriptRoomMessage{
+				RoomNumber: sc.Room.Number,
+				Text:       text,
+			},
+		)
 	}
+}
+
+func (sc *ScriptContext) flushRemoteRoomMessages() {
+	if sc == nil ||
+		sc.Engine == nil ||
+		sc.Engine.roomBroadcast == nil ||
+		len(sc.RemoteRoomMsgs) == 0 {
+
+		return
+	}
+
+	for _, msg := range sc.RemoteRoomMsgs {
+		if msg.RoomNumber <= 0 || msg.Text == "" {
+			continue
+		}
+
+		sc.Engine.roomBroadcast(
+			msg.RoomNumber,
+			"",
+			[]string{msg.Text},
+		)
+	}
+
+	sc.RemoteRoomMsgs = nil
 }
 
 func (sc *ScriptContext) doDamage(args []string) {

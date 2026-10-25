@@ -1931,25 +1931,56 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		return &CommandResult{Messages: []string{"[Aelfen familiar coming soon.]"}} // TODO: call woodland creature
 	case "TRANSFORM":
 		if player.Race != RaceWolfling {
-			return &CommandResult{Messages: []string{"Only wolflings can transform."}}
+			return &CommandResult{
+				Messages: []string{"Only wolflings can transform."},
+			}
 		}
+
 		player.RoundTimeExpiry = time.Now().Add(7 * time.Second)
+
+		// Transforming breaks any physical/magical restraint.
+		player.RemoveStatEffect(RestrainedEffect)
+
 		if player.WolfForm {
 			// Wolf → human
 			player.WolfForm = false
+
 			e.SavePlayer(ctx, player)
+
 			return &CommandResult{
-				Messages:      []string{"You howl in pain as your body undergoes a metamorphosis and resumes humanoid form.", "[Round: 7 sec]"},
-				RoomBroadcast: []string{fmt.Sprintf("A wolf shudders and transforms, resuming the shape of %s. Where the wolf stood, %s rises in humanoid form.", player.FirstName, player.Pronoun())},
+				Messages: []string{
+					"You howl in pain as your body undergoes a metamorphosis and resumes humanoid form.",
+					"[Round: 7 sec]",
+				},
+				RoomBroadcast: []string{
+					fmt.Sprintf(
+						"A wolf shudders and transforms, resuming the shape of %s. Where the wolf stood, %s rises in humanoid form.",
+						player.FirstName,
+						player.Pronoun(),
+					),
+				},
 			}
 		}
+
 		// Human → wolf
 		player.WolfForm = true
+
 		e.SavePlayer(ctx, player)
+
 		return &CommandResult{
-			Messages:      []string{"You groan in pain as your body undergoes a metamorphosis and assumes the form of a wolf.", "[Round: 7 sec]"},
-			RoomBroadcast: []string{fmt.Sprintf("Without warning, %s howls and collapses to the ground, shaking. Undergoing a terrible transformation, %s changes shape into that of a wolf!", player.FirstName, player.Pronoun())},
+			Messages: []string{
+				"You groan in pain as your body undergoes a metamorphosis and assumes the form of a wolf.",
+				"[Round: 7 sec]",
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf(
+					"Without warning, %s howls and collapses to the ground, shaking. Undergoing a terrible transformation, %s changes shape into that of a wolf!",
+					player.FirstName,
+					player.Pronoun(),
+				),
+			},
 		}
+
 	case "MOLD":
 		return e.doMold(ctx, player, args)
 	case "DISGUISE":
@@ -9963,6 +9994,19 @@ func (e *GameEngine) doOpen(player *Player, args []string) *CommandResult {
 				skip--
 				continue
 			}
+
+			// Run any IFPREVERB OPEN script attached to this room item.
+			sc := e.RunPreverbScripts(player, room, "OPEN", &room.Items[i], itemDef, &room.Items[i])
+
+			if sc != nil && sc.Blocked {
+				return &CommandResult{
+					Messages:      sc.Messages,
+					RoomBroadcast: sc.RoomMsgs,
+					GMBroadcast:   sc.GMMsgs,
+					PlayerState:   player,
+				}
+			}
+
 			if !containsFlag(itemDef.Flags, "OPENABLE") && !isPortal(itemDef.Type) {
 				return &CommandResult{Messages: []string{"You can't open that."}}
 			}
@@ -10134,10 +10178,38 @@ func (e *GameEngine) doClose(player *Player, args []string) *CommandResult {
 				skip--
 				continue
 			}
+
+			// Give room/item scripts a chance to handle CLOSE first.
+			sc := e.RunPreverbScripts(
+				player,
+				room,
+				"CLOSE",
+				&room.Items[i],
+				itemDef,
+			)
+
+			// CLEARVERB means the script handled the action.
+			if sc.Blocked {
+				return &CommandResult{
+					Messages:      sc.Messages,
+					RoomBroadcast: sc.RoomMsgs,
+					GMBroadcast:   sc.GMMsgs,
+					PlayerState:   player,
+				}
+			}
+
 			room.Items[i].State = "CLOSED"
-			e.notifyRoomChange(RoomChange{RoomNumber: player.RoomNumber, Type: "item_state", ItemRef: ri.Ref, NewState: "CLOSED"})
+			e.notifyRoomChange(RoomChange{
+				RoomNumber: player.RoomNumber,
+				Type:       "item_state",
+				ItemRef:    ri.Ref,
+				NewState:   "CLOSED",
+			})
+
 			fullName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
-			return &CommandResult{Messages: []string{fmt.Sprintf("You close %s.", fullName)}}
+			return &CommandResult{
+				Messages: []string{fmt.Sprintf("You close %s.", fullName)},
+			}
 		}
 	}
 	// Check inventory containers
@@ -11773,6 +11845,13 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 				var effectResult *CommandResult
 
 				switch spell.Effect {
+				case "damage":
+					effectResult = e.castDamageSpell(
+						player,
+						spell,
+						[]string{player.FirstName},
+						false,
+					)
 
 				case "heal":
 					effectResult = e.castHealSpell(

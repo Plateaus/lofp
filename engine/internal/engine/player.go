@@ -484,6 +484,20 @@ func (p *Player) RemoveStatEffect(stat StatID) bool {
 	return removed
 }
 
+func (p *Player) RemoveActiveStatEffect(effectID int, source EffectSource) bool {
+	for i, effect := range p.ActiveStatEffects {
+		if effect.EffectID == effectID && effect.Source == source {
+			p.ActiveStatEffects = append(
+				p.ActiveStatEffects[:i],
+				p.ActiveStatEffects[i+1:]...,
+			)
+			return true
+		}
+	}
+
+	return false
+}
+
 func (p *Player) HasItem(archetype int, adj int) bool {
 	for _, ii := range p.Inventory {
 		if ii.Archetype == archetype && (adj < 0 || ii.Adj1 == adj) {

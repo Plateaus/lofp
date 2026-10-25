@@ -132,7 +132,7 @@ func init() {
 		{ID: 406, Name: "Dispel Invisibility", School: "General", Level: 8, ManaCost: 10, CastTime: 3, Effect: "utility"},
 		{ID: 407, Name: "Analyze Ore", School: "General", Level: 3, ManaCost: 4, CastTime: 3, Effect: "utility"},
 		{ID: 303, Name: "Cure Poison", School: "General", Level: 11, ManaCost: 12, CastTime: 3, Effect: "heal", StatusType: RemovePoison, StatusMsg: "A blue light flashes around %d."},
-		{ID: 303, Name: "Cure Disease", School: "General", Level: 12, ManaCost: 16, CastTime: 3, Effect: "heal", StatusType: RemoveDisease, StatusMsg: "A purple light flashes around %d."},
+		{ID: 319, Name: "Cure Disease", School: "General", Level: 12, ManaCost: 16, CastTime: 3, Effect: "heal", StatusType: RemoveDisease, StatusMsg: "A purple light flashes around %d."},
 	}
 	// Druidic (500-538)
 	druid := []SpellDef{
@@ -2735,6 +2735,332 @@ func (e *GameEngine) castUtilitySpell(ctx context.Context, player *Player, spell
 		}
 
 		return e.doAnalyze(ctx, player, args, true)
+	case 405: // See Hidden
+		result.Messages = []string{
+			"You narrow your eyes and gaze about the area.",
+		}
+
+		// ------------------------------------------------------------
+		// PLAYERS
+		//
+		// Hidden players are identified.
+		// Invisible players are detected only as "something".
+		// Nothing is actually revealed or removed.
+		// ------------------------------------------------------------
+
+		if e.sessions != nil {
+			for _, target := range e.sessions.OnlinePlayers() {
+				if target == nil {
+					continue
+				}
+
+				// Don't detect yourself.
+				if target == player {
+					continue
+				}
+
+				if target.RoomNumber != player.RoomNumber {
+					continue
+				}
+
+				// Invisibility takes precedence over hiding.
+				if _, ok := player.HasStatEffect(InvisibilityEffect); ok {
+					result.Messages = append(result.Messages, "You see something.")
+					continue
+				}
+
+				if target.Hidden {
+					result.Messages = append(
+						result.Messages,
+						fmt.Sprintf(
+							"You see %s.",
+							target.FirstName,
+						),
+					)
+				}
+			}
+		}
+
+		e.monsterMgr.mu.RLock()
+
+		for _, inst := range e.monsterMgr.instances {
+			if !inst.Alive {
+				continue
+			}
+
+			if inst.RoomNumber != player.RoomNumber {
+				continue
+			}
+
+			if inst.HasStatEffect(InvisibilityEffect) {
+				result.Messages = append(
+					result.Messages,
+					"You see something.",
+				)
+				continue
+			}
+
+			if inst.HasStatEffect(InvisibilityEffect) {
+				def := e.monsters[inst.DefNumber]
+				if def == nil {
+					continue
+				}
+
+				name := FormatMonsterName(def, e.monAdjs)
+				article := articleFor(name, def.Unique)
+
+				result.Messages = append(
+					result.Messages,
+					fmt.Sprintf(
+						"You see %s%s.",
+						article,
+						name,
+					),
+				)
+			}
+		}
+
+		e.monsterMgr.mu.RUnlock()
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			fmt.Sprintf(
+				"%s narrows their eyes and gazes carefully about the area.",
+				player.FirstName,
+			),
+		)
+	case 401: // Dispel Lesser Magic
+
+		// ------------------------------------------------------------
+		// NO TARGET = SELF
+		// ------------------------------------------------------------
+
+		if len(args) == 0 {
+			removed, ok := e.dispelRandomPlayerSpellEffect(player, spell)
+
+			if !ok {
+				result.Messages = []string{
+					"Nothing happens.",
+				}
+				break
+			}
+
+			result.Messages = []string{
+				fmt.Sprintf(
+					"A deep red light twinkles around %s.",
+					player.FirstName,
+				),
+			}
+
+			if removedSpell := FindSpellByID(removed.EffectID); removedSpell != nil {
+				result.Messages = append(
+					result.Messages,
+					fmt.Sprintf(
+						"The effects of %s are dispelled.",
+						removedSpell.Name,
+					),
+				)
+			}
+
+			break
+		}
+
+		targetName := strings.Join(args, " ")
+
+		// ------------------------------------------------------------
+		// PLAYER TARGET
+		// ------------------------------------------------------------
+
+		if e.sessions != nil {
+			for _, target := range e.sessions.OnlinePlayers() {
+				if target == nil {
+					continue
+				}
+
+				if target.RoomNumber != player.RoomNumber {
+					continue
+				}
+
+				if !strings.EqualFold(target.FirstName, targetName) {
+					continue
+				}
+
+				removed, ok := e.dispelRandomPlayerSpellEffect(target, spell)
+
+				if !ok {
+					result.Messages = []string{
+						"Nothing happens.",
+					}
+					break
+				}
+
+				result.Messages = []string{
+					fmt.Sprintf(
+						"A deep red light twinkles around %s.",
+						target.FirstName,
+					),
+				}
+
+				if removedSpell := FindSpellByID(removed.EffectID); removedSpell != nil {
+					result.Messages = append(
+						result.Messages,
+						fmt.Sprintf(
+							"The effects of %s are dispelled from %s.",
+							removedSpell.Name,
+							target.FirstName,
+						),
+					)
+				}
+
+				break
+			}
+
+			if len(result.Messages) > 0 {
+				break
+			}
+		}
+
+		// ------------------------------------------------------------
+		// MONSTER TARGET
+		// ------------------------------------------------------------
+
+		foundMonster := false
+
+		if e.monsterMgr != nil {
+			e.monsterMgr.mu.Lock()
+
+			for i := range e.monsterMgr.instances {
+				inst := &e.monsterMgr.instances[i]
+
+				if !inst.Alive {
+					continue
+				}
+
+				if inst.RoomNumber != player.RoomNumber {
+					continue
+				}
+
+				def := e.monsters[inst.DefNumber]
+				if def == nil {
+					continue
+				}
+
+				name := FormatMonsterName(def, e.monAdjs)
+
+				if !strings.EqualFold(name, targetName) &&
+					!strings.EqualFold(def.Name, targetName) {
+					continue
+				}
+
+				foundMonster = true
+
+				removed, ok := e.dispelRandomMonsterSpellEffect(inst, spell)
+
+				if !ok {
+					result.Messages = []string{
+						"Nothing happens.",
+					}
+					break
+				}
+
+				article := articleFor(name, def.Unique)
+
+				result.Messages = []string{
+					fmt.Sprintf(
+						"A deep red light twinkles around %s%s.",
+						article,
+						name,
+					),
+				}
+
+				if removedSpell := FindSpellByID(removed.EffectID); removedSpell != nil {
+					result.Messages = append(
+						result.Messages,
+						fmt.Sprintf(
+							"The effects of %s are dispelled from %s%s.",
+							removedSpell.Name,
+							article,
+							name,
+						),
+					)
+				}
+
+				break
+			}
+
+			e.monsterMgr.mu.Unlock()
+		}
+
+		if foundMonster {
+			break
+		}
+
+		// ------------------------------------------------------------
+		// NOTHING MATCHED
+		// ------------------------------------------------------------
+
+		result.Messages = []string{
+			"What are you referring to? Please be more specific.",
+		}
+
+	case 406: // Dispel Invisibility
+		result.Messages = []string{
+			"You gesture, sending a wave of magic through the area.",
+		}
+
+		dispelled := false
+
+		// Players
+		if e.sessions != nil {
+			for _, target := range e.sessions.OnlinePlayers() {
+				if target == nil || target.RoomNumber != player.RoomNumber {
+					continue
+				}
+
+				if e.breakInvisibility(target) {
+					result.Messages = append(
+						result.Messages,
+						fmt.Sprintf("%s suddenly appears!", target.FirstName),
+					)
+
+					dispelled = true
+				}
+			}
+		}
+
+		// Monsters
+		e.monsterMgr.mu.Lock()
+
+		for i := range e.monsterMgr.instances {
+			inst := &e.monsterMgr.instances[i]
+
+			if !inst.Alive || inst.RoomNumber != player.RoomNumber {
+				continue
+			}
+
+			if e.breakMonsterInvisibility(inst) {
+				def := e.monsters[inst.DefNumber]
+				if def != nil {
+					name := FormatMonsterName(def, e.monAdjs)
+
+					result.Messages = append(
+						result.Messages,
+						fmt.Sprintf("%s suddenly appears!", name),
+					)
+				}
+
+				dispelled = true
+			}
+		}
+
+		e.monsterMgr.mu.Unlock()
+
+		if !dispelled {
+			result.Messages = append(
+				result.Messages,
+				"Nothing happens.",
+			)
+		}
 
 	case 228: // Identify
 		if len(args) > 0 && strings.EqualFold(args[0], "on") {
@@ -2928,4 +3254,88 @@ func (e *GameEngine) identifyItem(player *Player, item *InventoryItem) []string 
 		}
 	}
 	return messages
+}
+
+func (e *GameEngine) dispelRandomPlayerSpellEffect(target *Player, dispelSpell *SpellDef) (*StatEffect, bool) {
+	if target == nil || dispelSpell == nil {
+		return nil, false
+	}
+
+	var eligible []StatEffect
+	now := time.Now()
+
+	for _, effect := range target.ActiveStatEffects {
+		if effect.Source != EffectSourceSpell {
+			continue
+		}
+
+		if !effect.Permanent && !effect.ExpiresAt.After(now) {
+			continue
+		}
+
+		effectSpell := FindSpellByID(effect.EffectID)
+		if effectSpell == nil {
+			continue
+		}
+
+		if effectSpell.Level > dispelSpell.Level {
+			continue
+		}
+
+		eligible = append(eligible, effect)
+	}
+
+	if len(eligible) == 0 {
+		return nil, false
+	}
+
+	chosen := eligible[rand.Intn(len(eligible))]
+
+	if !target.RemoveActiveStatEffect(chosen.EffectID, chosen.Source) {
+		return nil, false
+	}
+
+	return &chosen, true
+}
+
+func (e *GameEngine) dispelRandomMonsterSpellEffect(target *MonsterInstance, dispelSpell *SpellDef) (*StatEffect, bool) {
+	if target == nil || dispelSpell == nil {
+		return nil, false
+	}
+
+	var eligible []StatEffect
+	now := time.Now()
+
+	for _, effect := range target.ActiveStatEffects {
+		if effect.Source != EffectSourceSpell {
+			continue
+		}
+
+		if !effect.Permanent && !effect.ExpiresAt.After(now) {
+			continue
+		}
+
+		effectSpell := FindSpellByID(effect.EffectID)
+		if effectSpell == nil {
+			continue
+		}
+
+		if effectSpell.Level > dispelSpell.Level {
+			continue
+		}
+
+		eligible = append(eligible, effect)
+	}
+
+	if len(eligible) == 0 {
+		return nil, false
+	}
+
+	chosen := eligible[rand.Intn(len(eligible))]
+
+	if !target.RemoveActiveStatEffect(chosen.EffectID, chosen.Source) {
+		return nil, false
+	}
+
+	return &chosen, true
 }
