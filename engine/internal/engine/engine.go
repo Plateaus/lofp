@@ -920,7 +920,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	}
 
 	if dir, ok := dirMap[verb]; ok {
-		// Check for IFPREVERB scripts on the direction using canonical verb name
+		// Check for IFPREVERB scripts on the direction using canonical verb name.
 		room := e.rooms[player.RoomNumber]
 
 		if room != nil {
@@ -929,6 +929,10 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 				Room:   room,
 				Engine: e,
 			}
+
+			// Preserve the room where this script started.
+			// Script movement may change player.RoomNumber.
+			sourceRoom := player.RoomNumber
 
 			for _, block := range room.Scripts {
 				if block.Type == "IFPREVERB" && len(block.Args) >= 2 {
@@ -940,16 +944,32 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 				}
 			}
 
-			// MOVEGROUP: move all players in this room to destination
+			// --------------------------------------------------------
+			// MOVEGROUP
+			// --------------------------------------------------------
 			if sc.MoveGroupTo > 0 {
 				e.moveGroupToRoom(
 					ctx,
-					player.RoomNumber,
+					sourceRoom,
 					sc.MoveGroupTo,
 				)
 			}
 
-			if sc.Blocked || sc.MoveTo > 0 {
+			// --------------------------------------------------------
+			// MOVEALL
+			// --------------------------------------------------------
+			if sc.MoveAllTo > 0 {
+				e.moveGroupToRoom(
+					ctx,
+					sourceRoom,
+					sc.MoveAllTo,
+				)
+			}
+
+			// --------------------------------------------------------
+			// SCRIPT REPLACED/BLOCKED NORMAL MOVEMENT
+			// --------------------------------------------------------
+			if sc.Blocked || sc.MoveTo > 0 || sc.MoveGroupTo > 0 || sc.MoveAllTo > 0 {
 				result := &CommandResult{}
 
 				result.Messages = append(
@@ -962,6 +982,11 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 					sc.RoomMsgs...,
 				)
 
+				result.GMBroadcast = append(
+					result.GMBroadcast,
+					sc.GMMsgs...,
+				)
+
 				// --------------------------------------------------------
 				// SCRIPT MOVE
 				// --------------------------------------------------------
@@ -970,8 +995,10 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 
 					if dest != nil {
 						oldRoom := player.RoomNumber
+
 						player.ResetRoomVars()
 						player.RoomNumber = sc.MoveTo
+
 						e.SavePlayer(ctx, player)
 
 						// Bring commanded followers with the player.
@@ -1019,6 +1046,29 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 					}
 				}
 
+				// MOVEGROUP/MOVEALL already performed the actual room move
+				// above. If this player was included, show their new room.
+				if sc.MoveTo == 0 &&
+					(sc.MoveGroupTo > 0 || sc.MoveAllTo > 0) &&
+					player.RoomNumber != sourceRoom {
+
+					dest := e.rooms[player.RoomNumber]
+					if dest != nil {
+						lookResult := e.doLook(player)
+
+						result.Messages = append(
+							result.Messages,
+							lookResult.Messages...,
+						)
+
+						result.RoomName = lookResult.RoomName
+						result.RoomDesc = lookResult.RoomDesc
+						result.Exits = lookResult.Exits
+						result.Items = lookResult.Items
+						result.OldRoom = sourceRoom
+					}
+				}
+
 				if len(result.Messages) == 0 {
 					result.Messages = []string{
 						"You can't go that way.",
@@ -1055,11 +1105,17 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	verb = resolveVerb(verb)
 
 	switch verb {
-	case "LOOK", "EXAMINE", "INSPECT":
+	case "LOOK":
 		if len(args) == 0 {
 			return e.doLookFull(player)
 		}
-		return e.doLookAt(player, args)
+		return e.doLookAt(player, args, "LOOK")
+
+	case "EXAMINE", "INSPECT":
+		if len(args) == 0 {
+			return e.doLookFull(player)
+		}
+		return e.doLookAt(player, args, "EXAMINE")
 	case "GO":
 		return e.doGo(ctx, player, args)
 	case "CLIMB":
@@ -3093,6 +3149,10 @@ func (e *GameEngine) applyEntryScripts(ctx context.Context, player *Player, room
 	if sc.MoveGroupTo > 0 {
 		e.moveGroupToRoom(ctx, room.Number, sc.MoveGroupTo)
 	}
+
+	if sc.MoveAllTo > 0 {
+		e.moveGroupToRoom(ctx, room.Number, sc.MoveAllTo)
+	}
 	e.SavePlayer(ctx, player)
 
 	// Spawn monsters for this room if needed (demand-based)
@@ -3504,7 +3564,7 @@ var lookDirMap = map[string]string{
 	"o": "O", "out": "O",
 }
 
-func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
+func (e *GameEngine) doLookAt(player *Player, args []string, preverb string) *CommandResult {
 	if len(args) == 0 {
 		return e.doLook(player)
 	}
@@ -3882,7 +3942,7 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 		sc := e.RunPreverbScripts(
 			player,
 			room,
-			"EXAMINE",
+			preverb,
 			&room.Items[i],
 			itemDef,
 		)
@@ -4008,7 +4068,7 @@ func (e *GameEngine) doLookAt(player *Player, args []string) *CommandResult {
 		sc := e.RunPreverbScripts(
 			player,
 			room,
-			"EXAMINE",
+			preverb,
 			&tempRI,
 			itemDef,
 		)
@@ -5154,10 +5214,17 @@ func (e *GameEngine) doGo(ctx context.Context, player *Player, args []string) *C
 	}
 }
 
-func (e *GameEngine) applyScriptResult(ctx context.Context, player *Player, originalRoom int, sc *ScriptContext, result *CommandResult) bool {
+func (e *GameEngine) applyScriptResult(
+	ctx context.Context,
+	player *Player,
+	originalRoom int,
+	sc *ScriptContext,
+	result *CommandResult,
+) bool {
 
+	// --------------------------------------------------------
 	// MOVEGROUP requested by the script.
-	// moveGroupToRoom handles movement and sends LOOK to moved players.
+	// --------------------------------------------------------
 	if sc.MoveGroupTo > 0 {
 		e.moveGroupToRoom(
 			ctx,
@@ -5182,15 +5249,46 @@ func (e *GameEngine) applyScriptResult(ctx context.Context, player *Player, orig
 		}
 
 		return true
-
 	}
 
+	// --------------------------------------------------------
+	// MOVEALL requested by the script.
+	// --------------------------------------------------------
+	if sc.MoveAllTo > 0 {
+		e.moveGroupToRoom(
+			ctx,
+			originalRoom,
+			sc.MoveAllTo,
+		)
+
+		dest := e.rooms[player.RoomNumber]
+		if dest != nil {
+			lookResult := e.doLook(player)
+
+			result.Messages = append(
+				result.Messages,
+				lookResult.Messages...,
+			)
+
+			result.RoomName = lookResult.RoomName
+			result.RoomDesc = lookResult.RoomDesc
+			result.Exits = lookResult.Exits
+			result.Items = lookResult.Items
+			result.OldRoom = originalRoom
+		}
+
+		return true
+	}
+
+	// --------------------------------------------------------
 	// MOVE requested by the script.
+	// --------------------------------------------------------
 	if sc.MoveTo > 0 {
 		dest := e.rooms[sc.MoveTo]
 		if dest == nil {
 			return true
 		}
+
 		player.ResetRoomVars()
 		player.RoomNumber = sc.MoveTo
 		e.SavePlayer(ctx, player)
@@ -5218,7 +5316,9 @@ func (e *GameEngine) applyScriptResult(ctx context.Context, player *Player, orig
 		return true
 	}
 
+	// --------------------------------------------------------
 	// Some script actions may perform movement directly.
+	// --------------------------------------------------------
 	if player.RoomNumber != originalRoom {
 		dest := e.rooms[player.RoomNumber]
 
@@ -5249,7 +5349,8 @@ func (e *GameEngine) applyScriptResult(ctx context.Context, player *Player, orig
 		return true
 	}
 
-	// CLEARVERB with no movement means the script blocked GO.
+	// CLEARVERB with no movement means the script blocked
+	// the normal command.
 	if sc.Blocked {
 		return true
 	}
@@ -5349,111 +5450,225 @@ func (e *GameEngine) movePlayerToRoom(ctx context.Context, player *Player, roomN
 	e.applyEntryScripts(ctx, player, room, result)
 }
 
-func (e *GameEngine) doGoPortal(ctx context.Context, player *Player, room *gameworld.Room, ri *gameworld.RoomItem, itemDef *gameworld.ItemDef) *CommandResult {
-	// Check if portal is closed
+func (e *GameEngine) doGoPortal(
+	ctx context.Context,
+	player *Player,
+	room *gameworld.Room,
+	ri *gameworld.RoomItem,
+	itemDef *gameworld.ItemDef,
+) *CommandResult {
+
+	// Check if portal is closed.
 	state := strings.ToUpper(ri.State)
 	if state == "CLOSED" || state == "LOCKED" {
 		portalName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
-		return &CommandResult{Messages: []string{fmt.Sprintf("The %s is closed.", e.getItemNounName(itemDef))}, RoomBroadcast: []string{fmt.Sprintf("%s bumps into %s.", player.FirstName, portalName)}}
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("The %s is closed.", e.getItemNounName(itemDef)),
+			},
+			RoomBroadcast: []string{
+				fmt.Sprintf("%s bumps into %s.", player.FirstName, portalName),
+			},
+		}
 	}
 
 	if result := e.checkPlayerCanMove(player); result != nil {
 		return result
 	}
 
-	// Run IFPREVERB GO scripts (can CLEARVERB to block)
-	sc := e.RunPreverbScripts(player, room, "GO", ri, itemDef)
-	result := &CommandResult{}
-	if len(sc.Messages) > 0 {
-		result.Messages = append(result.Messages, sc.Messages...)
-	}
-	if len(sc.RoomMsgs) > 0 {
-		result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
-	}
-	if len(sc.GMMsgs) > 0 {
-		result.GMBroadcast = append(result.GMBroadcast, sc.GMMsgs...)
-	}
-	// Scripted MOVEGROUP needs to be handled before normal portal movement.
-	// applyScriptResult performs the group move, LOOK, persistence, etc.
-	if sc.MoveGroupTo > 0 {
-		if e.applyScriptResult(
-			ctx,
-			player,
-			player.RoomNumber,
-			sc,
-			result,
-		) {
-			return result
-		}
+	// --------------------------------------------------------
+	// IFPREVERB GO
+	// --------------------------------------------------------
+	originalRoom := player.RoomNumber
+
+	sc := e.RunPreverbScripts(
+		player,
+		room,
+		"GO",
+		ri,
+		itemDef,
+	)
+
+	result := &CommandResult{
+		Messages:      append([]string{}, sc.Messages...),
+		RoomBroadcast: append([]string{}, sc.RoomMsgs...),
+		GMBroadcast:   append([]string{}, sc.GMMsgs...),
 	}
 
-	// CLEARVERB blocks normal portal behavior unless the script performed MOVE.
+	// MOVEGROUP / MOVEALL are complete scripted movement operations.
+	// Let applyScriptResult perform the movement, LOOK, persistence, etc.
+	if sc.MoveGroupTo > 0 || sc.MoveAllTo > 0 {
+		e.applyScriptResult(
+			ctx,
+			player,
+			originalRoom,
+			sc,
+			result,
+		)
+
+		return result
+	}
+
+	// CLEARVERB blocks normal portal behavior unless the script supplied
+	// its own MOVE destination.
 	if sc.Blocked && sc.MoveTo == 0 {
 		if len(result.Messages) == 0 {
 			result.Messages = []string{"You can't go that way."}
 		}
+
 		return result
 	}
 
-	// Script MOVE overrides destination
+	// --------------------------------------------------------
+	// Determine destination.
+	//
+	// Normal portal movement uses ITEMVAL2.
+	// Script MOVE overrides that destination.
+	// --------------------------------------------------------
 	destNum := ri.Val2
+
 	if sc.MoveTo > 0 {
 		destNum = sc.MoveTo
 	}
 
 	if destNum <= 0 {
-		result.Messages = append(result.Messages, "That doesn't seem to lead anywhere.")
+		result.Messages = append(
+			result.Messages,
+			"That doesn't seem to lead anywhere.",
+		)
 		return result
 	}
+
 	dest := e.rooms[destNum]
 	if dest == nil {
-		result.Messages = append(result.Messages, "That doesn't seem to lead anywhere.")
+		result.Messages = append(
+			result.Messages,
+			"That doesn't seem to lead anywhere.",
+		)
 		return result
 	}
 
 	oldRoom := player.RoomNumber
-	portalName := e.formatItemName(itemDef, ri.Adj1, ri.Adj2, ri.Adj3)
+	portalName := e.formatItemName(
+		itemDef,
+		ri.Adj1,
+		ri.Adj2,
+		ri.Adj3,
+	)
+
 	player.ResetRoomVars()
 	player.RoomNumber = destNum
 	e.SavePlayer(ctx, player)
 
-	// Group movement: if leader has followers, move them through the portal too
-	if player.IsGroupLeader && len(player.GroupMembers) > 0 && e.sessions != nil {
+	// --------------------------------------------------------
+	// Normal group movement.
+	//
+	// If the player is a group leader, move their followers
+	// through the portal with them.
+	// --------------------------------------------------------
+	if player.IsGroupLeader &&
+		len(player.GroupMembers) > 0 &&
+		e.sessions != nil {
+
 		for _, memberName := range player.GroupMembers {
 			for _, p := range e.sessions.OnlinePlayers() {
-				if p.FirstName == memberName && p.RoomNumber == oldRoom && !p.Dead {
+				if p.FirstName == memberName &&
+					p.RoomNumber == oldRoom &&
+					!p.Dead {
+
 					p.RoomNumber = destNum
 					p.Submitting = false
+
 					e.disengageCombat(p)
 					e.SavePlayer(ctx, p)
+
 					if e.sendToPlayer != nil {
 						followLook := e.doLook(p)
-						e.sendToPlayer(p.FirstName, followLook.Messages)
+
+						e.sendToPlayer(
+							p.FirstName,
+							followLook.Messages,
+						)
 					}
-					e.applyEntryScripts(ctx, p, dest, &CommandResult{})
+
+					e.applyEntryScripts(
+						ctx,
+						p,
+						dest,
+						&CommandResult{},
+					)
+
 					break
 				}
 			}
 		}
-		result.OldRoomMsg = append(result.OldRoomMsg, fmt.Sprintf("%s's group goes through %s.", player.FirstName, portalName))
-		result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s's group arrives.", player.FirstName))
+
+		result.OldRoomMsg = append(
+			result.OldRoomMsg,
+			fmt.Sprintf(
+				"%s's group goes through %s.",
+				player.FirstName,
+				portalName,
+			),
+		)
+
+		result.RoomBroadcast = append(
+			result.RoomBroadcast,
+			fmt.Sprintf(
+				"%s's group arrives.",
+				player.FirstName,
+			),
+		)
 	}
 
-	// Commanded creatures following the player move through the portal too
-	e.moveCommandedFollowers(player, oldRoom, destNum)
+	// Commanded creatures following the player move through the portal too.
+	e.moveCommandedFollowers(
+		player,
+		oldRoom,
+		destNum,
+	)
 
+	// --------------------------------------------------------
+	// Present destination to the moving player.
+	// --------------------------------------------------------
 	lookResult := e.doLook(player)
-	result.Messages = append(result.Messages, lookResult.Messages...)
+
+	result.Messages = append(
+		result.Messages,
+		lookResult.Messages...,
+	)
+
 	result.RoomName = lookResult.RoomName
 	result.RoomDesc = lookResult.RoomDesc
 	result.Exits = lookResult.Exits
 	result.Items = lookResult.Items
-	result.OldRoom = oldRoom
-	result.OldRoomMsg = []string{fmt.Sprintf("%s goes through %s.", player.FirstName, portalName)}
-	result.RoomBroadcast = append(result.RoomBroadcast, fmt.Sprintf("%s arrives.", player.FirstName))
 
-	// Run IFENTRY scripts at destination
-	e.applyEntryScripts(ctx, player, dest, result)
+	result.OldRoom = oldRoom
+
+	result.OldRoomMsg = []string{
+		fmt.Sprintf(
+			"%s goes through %s.",
+			player.FirstName,
+			portalName,
+		),
+	}
+
+	result.RoomBroadcast = append(
+		result.RoomBroadcast,
+		fmt.Sprintf(
+			"%s arrives.",
+			player.FirstName,
+		),
+	)
+
+	// Run IFENTRY scripts at destination.
+	e.applyEntryScripts(
+		ctx,
+		player,
+		dest,
+		result,
+	)
 
 	return result
 }
@@ -5783,6 +5998,7 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 		}
 
 		result := &CommandResult{}
+		originalRoom := player.RoomNumber
 
 		// Preverb scripts
 		sc := e.RunPreverbScripts(
@@ -5797,6 +6013,29 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 		result.RoomBroadcast = append(result.RoomBroadcast, sc.RoomMsgs...)
 		result.GMBroadcast = append(result.GMBroadcast, sc.GMMsgs...)
 
+		// If IFPREVERB handled the command, including MOVEALL,
+		// process it now and don't continue into IFVERB.
+		if sc.Blocked ||
+			sc.MoveTo > 0 ||
+			sc.MoveGroupTo > 0 ||
+			sc.MoveAllTo > 0 ||
+			player.RoomNumber != originalRoom {
+
+			e.applyScriptResult(
+				ctx,
+				player,
+				originalRoom,
+				sc,
+				result,
+			)
+
+			if len(result.Messages) == 0 {
+				result.Messages = []string{"You can't do that."}
+			}
+
+			return result
+		}
+
 		// Verb scripts
 		sc2 := e.RunVerbScripts(
 			player,
@@ -5810,55 +6049,26 @@ func (e *GameEngine) doItemInteraction(ctx context.Context, player *Player, verb
 		result.RoomBroadcast = append(result.RoomBroadcast, sc2.RoomMsgs...)
 		result.GMBroadcast = append(result.GMBroadcast, sc2.GMMsgs...)
 
-		if (sc.Blocked || sc2.Blocked) &&
-			sc.MoveTo == 0 &&
-			sc2.MoveTo == 0 {
+		// IFVERB can also CLEARVERB or perform scripted movement.
+		if sc2.Blocked ||
+			sc2.MoveTo > 0 ||
+			sc2.MoveGroupTo > 0 ||
+			sc2.MoveAllTo > 0 ||
+			player.RoomNumber != originalRoom {
+
+			e.applyScriptResult(
+				ctx,
+				player,
+				originalRoom,
+				sc2,
+				result,
+			)
 
 			if len(result.Messages) == 0 {
 				result.Messages = []string{"You can't do that."}
 			}
 
 			return result
-		}
-
-		moveTo := sc.MoveTo
-		if sc2.MoveTo > 0 {
-			moveTo = sc2.MoveTo
-		}
-
-		if moveTo > 0 {
-			dest := e.rooms[moveTo]
-			if dest != nil {
-				oldRoom := player.RoomNumber
-				player.ResetRoomVars()
-				player.RoomNumber = moveTo
-
-				e.SavePlayer(ctx, player)
-
-				lookResult := e.doLook(player)
-
-				result.Messages = append(
-					result.Messages,
-					lookResult.Messages...,
-				)
-
-				result.RoomName = lookResult.RoomName
-				result.RoomDesc = lookResult.RoomDesc
-				result.Exits = lookResult.Exits
-				result.Items = lookResult.Items
-
-				result.OldRoom = oldRoom
-				result.OldRoomMsg = []string{
-					fmt.Sprintf("%s leaves.", player.FirstName),
-				}
-
-				result.RoomBroadcast = append(
-					result.RoomBroadcast,
-					fmt.Sprintf("%s arrives.", player.FirstName),
-				)
-
-				e.applyEntryScripts(ctx, player, dest, result)
-			}
 		}
 
 		if len(result.Messages) == 0 {
@@ -10508,24 +10718,29 @@ func (e *GameEngine) doHold(player *Player, found *Player) *CommandResult {
 	}
 }
 
-// removeFromGroup silently removes a player from their leader's group.
-// moveGroupToRoom moves all online players in srcRoom to destRoom (for MOVEGROUP script command).
+// moveGroupToRoom moves all online players in srcRoom to destRoom
+// (for MOVEGROUP / MOVEALL script commands).
 func (e *GameEngine) moveGroupToRoom(ctx context.Context, srcRoom, destRoom int) {
 	dest := e.rooms[destRoom]
 	if dest == nil || e.sessions == nil {
 		return
 	}
+
 	for _, p := range e.sessions.OnlinePlayers() {
-		if p.RoomNumber == srcRoom && !p.Dead {
-			p.RoomNumber = destRoom
-			p.Submitting = false
-			e.disengageCombat(p)
-			e.SavePlayer(ctx, p)
-			//	if e.sendToPlayer != nil {
-			//		lookResult := e.doLook(p)
-			//		e.sendToPlayer(p.FirstName, lookResult.Messages)
-			//	}
-			e.applyEntryScripts(ctx, p, dest, &CommandResult{})
+		if p.RoomNumber != srcRoom || p.Dead {
+			continue
+		}
+
+		p.RoomNumber = destRoom
+		p.Submitting = false
+		e.disengageCombat(p)
+		e.SavePlayer(ctx, p)
+
+		entryResult := &CommandResult{}
+		e.applyEntryScripts(ctx, p, dest, entryResult)
+
+		if e.sendToPlayer != nil && len(entryResult.Messages) > 0 {
+			e.sendToPlayer(p.FirstName, entryResult.Messages)
 		}
 	}
 }
@@ -12514,7 +12729,11 @@ func (e *GameEngine) doRoomRecall(player *Player) *CommandResult {
 	return &CommandResult{Messages: []string{"Nothing comes to mind about this place."}}
 }
 
-func (e *GameEngine) doRoomScriptVerb(ctx context.Context, player *Player, verb string) *CommandResult {
+func (e *GameEngine) doRoomScriptVerb(
+	ctx context.Context,
+	player *Player,
+	verb string,
+) *CommandResult {
 
 	room := e.rooms[player.RoomNumber]
 	if room == nil {
@@ -12538,7 +12757,8 @@ func (e *GameEngine) doRoomScriptVerb(ctx context.Context, player *Player, verb 
 		len(sc.GMMsgs) == 0 &&
 		!sc.Blocked &&
 		sc.MoveTo == 0 &&
-		sc.MoveGroupTo == 0 {
+		sc.MoveGroupTo == 0 &&
+		sc.MoveAllTo == 0 {
 
 		return nil
 	}
@@ -12549,41 +12769,17 @@ func (e *GameEngine) doRoomScriptVerb(ctx context.Context, player *Player, verb 
 		GMBroadcast:   append([]string{}, sc.GMMsgs...),
 	}
 
-	// The script requested MOVE <room>.
-	if sc.MoveTo > 0 {
-		dest := e.rooms[sc.MoveTo]
+	originalRoom := player.RoomNumber
 
-		if dest != nil {
-			oldRoom := player.RoomNumber
-			player.ResetRoomVars()
-			player.RoomNumber = sc.MoveTo
-			e.SavePlayer(ctx, player)
-
-			lookResult := e.doLook(player)
-
-			result.Messages = append(
-				result.Messages,
-				lookResult.Messages...,
-			)
-
-			result.RoomName = lookResult.RoomName
-			result.RoomDesc = lookResult.RoomDesc
-			result.Exits = lookResult.Exits
-			result.Items = lookResult.Items
-			result.OldRoom = oldRoom
-
-			e.applyEntryScripts(ctx, player, dest, result)
-		}
-	}
-
-	// The script requested MOVEGROUP <room>.
-	if sc.MoveGroupTo > 0 {
-		e.moveGroupToRoom(
-			ctx,
-			player.RoomNumber,
-			sc.MoveGroupTo,
-		)
-	}
+	// Handle MOVE, MOVEGROUP, MOVEALL, CLEARVERB,
+	// and any movement performed directly by the script.
+	e.applyScriptResult(
+		ctx,
+		player,
+		originalRoom,
+		sc,
+		result,
+	)
 
 	e.SavePlayer(ctx, player)
 

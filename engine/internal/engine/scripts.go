@@ -22,6 +22,7 @@ type ScriptContext struct {
 	Blocked     bool     // CLEARVERB: block the triggering action
 	MoveTo      int      // MOVE: destination room (0 = no move)
 	MoveGroupTo int      // MOVEGROUP: move all players in room to destination
+	MoveAllTo   int      // MOVEALL: move all players in room to destination
 
 	StrVars  map[int]string  // %0-%9 from STRCVT
 	OrigRoom *gameworld.Room // saved room for AFFECT
@@ -49,15 +50,18 @@ type ScriptRoomMessage struct {
 // RunEntryScripts executes all IFENTRY script blocks for a room.
 func (e *GameEngine) RunEntryScripts(player *Player, room *gameworld.Room) *ScriptContext {
 	sc := &ScriptContext{
-		Player: player,
-		Room:   room,
-		Engine: e,
+		Player:             player,
+		Room:               room,
+		Engine:             e,
+		PlayerEventEnabled: true,
 	}
+
 	for _, block := range room.Scripts {
 		if block.Type == "IFENTRY" {
 			sc.execBlock(block)
 		}
 	}
+
 	return sc
 }
 
@@ -93,9 +97,14 @@ func isTouchVerb(verb string) bool {
 	}
 }
 
-// RunPreverbScripts executes IFPREVERB blocks for a specific verb and item ref.
-// Returns the script context. Check sc.Blocked to see if the action should be cancelled.
-func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, verb string, ri *gameworld.RoomItem, def *gameworld.ItemDef, ri2 ...*gameworld.RoomItem) *ScriptContext {
+func (e *GameEngine) RunPreverbScripts(
+	player *Player,
+	room *gameworld.Room,
+	verb string,
+	ri *gameworld.RoomItem,
+	def *gameworld.ItemDef,
+	ri2 ...*gameworld.RoomItem,
+) *ScriptContext {
 
 	sc := &ScriptContext{
 		Player:             player,
@@ -104,143 +113,106 @@ func (e *GameEngine) RunPreverbScripts(player *Player, room *gameworld.Room, ver
 		ItemRef:            ri,
 		ItemDef:            def,
 		PlayerEventEnabled: true,
-		//PlayerEventEnabled: ri != nil && ri.Ref == -1,  bug in player events when not -1?
 	}
 
 	verb = strings.ToUpper(verb)
 
-	// -1 means bare/no-target room preverb.
 	refStr := "-1"
 	if ri != nil {
 		refStr = fmt.Sprintf("%d", ri.Ref)
 	}
-	// ------------------------------------------------------------
-	// IFTOUCH
-	// ------------------------------------------------------------
 
-	if ri != nil && isTouchVerb(verb) && room != nil {
-		for _, block := range room.Scripts {
-			if block.Type == "IFTOUCH" && len(block.Args) >= 1 {
-				if block.Args[0] == refStr || block.Args[0] == "-1" {
-					sc.execBlock(block)
-				}
-			}
-		}
-	}
-
-	// ------------------------------------------------------------
-	// ROOM IFPREVERB
-	// ------------------------------------------------------------
-
+	//
+	// ROOM SCRIPTS
+	//
 	if room != nil {
 		for _, block := range room.Scripts {
-			if block.Type == "IFPREVERB" && len(block.Args) >= 2 {
-				if strings.ToUpper(block.Args[0]) == verb &&
-					(block.Args[1] == refStr || block.Args[1] == "-1") {
 
-					sc.execBlock(block)
-				}
+			// TOUCH-style event.
+			if ri != nil && isTouchVerb(verb) {
+				sc.execEventTree(
+					block,
+					"IFTOUCH",
+					verb,
+					refStr,
+				)
 			}
+
+			// Normal preverb.
+			sc.execEventTree(
+				block,
+				"IFPREVERB",
+				verb,
+				refStr,
+			)
 		}
 	}
 
-	// ------------------------------------------------------------
-	// ITEM ARCHETYPE IFPREVERB
-	// ------------------------------------------------------------
-
+	//
+	// ITEM ARCHETYPE SCRIPTS
+	//
 	if def != nil {
 		for _, block := range def.Scripts {
-			if block.Type == "IFPREVERB" && len(block.Args) >= 1 {
-				if strings.ToUpper(block.Args[0]) == verb {
-					if len(block.Args) < 2 || block.Args[1] == "-1" {
-						sc.execBlock(block)
-					}
-				}
+
+			// TOUCH-style event.
+			if ri != nil && isTouchVerb(verb) {
+				sc.execEventTree(
+					block,
+					"IFTOUCH",
+					verb,
+					refStr,
+				)
 			}
+
+			// Normal preverb.
+			sc.execEventTree(
+				block,
+				"IFPREVERB",
+				verb,
+				refStr,
+			)
 		}
 	}
 
-	// ------------------------------------------------------------
-	// TRAIT IFPREVERB
-	// Last attached trait defining this verb wins.
-	// ------------------------------------------------------------
-
-	// Archetype traits first, then instance traits.
-	// Last trait defining this verb wins.
-	if def != nil {
-		var traitBlock *gameworld.ScriptBlock
-
-		traitNames := append([]string{}, def.Traits...)
-
-		if ri != nil {
-			traitNames = append(traitNames, ri.Traits...)
-		}
-
-		for _, traitName := range traitNames {
-			trait := e.traits[strings.ToUpper(traitName)]
-			if trait == nil {
-				continue
-			}
-
-			for i := range trait.Scripts {
-				block := &trait.Scripts[i]
-
-				if block.Type != "IFPREVERB" {
-					continue
-				}
-
-				if len(block.Args) < 1 {
-					continue
-				}
-
-				if strings.ToUpper(block.Args[0]) != verb {
-					continue
-				}
-
-				if len(block.Args) >= 2 && block.Args[1] != "-1" {
-					continue
-				}
-
-				traitBlock = block
-			}
-		}
-
-		if traitBlock != nil {
-			sc.execBlock(*traitBlock)
-		}
-	}
-
-	// ------------------------------------------------------------
-	// IFPREVERB2
-	// ------------------------------------------------------------
-
+	//
+	// SECOND-OBJECT PREVERBS
+	//
+	// Used by two-object commands such as:
+	//
+	//   PUT <object1> IN <object2>
+	//
+	// ri  = object #1 (the item being acted upon)
+	// ri2 = object #2 (the destination/secondary object)
+	//
 	if len(ri2) > 0 && ri2[0] != nil {
-		secondItem := ri2[0]
-		secondRefStr := fmt.Sprintf("%d", secondItem.Ref)
 
+		second := ri2[0]
+		secondRefStr := fmt.Sprintf("%d", second.Ref)
+
+		// Room scripts may contain IFPREVERB2 blocks.
 		if room != nil {
 			for _, block := range room.Scripts {
-				if block.Type == "IFPREVERB2" && len(block.Args) >= 2 {
-					if strings.ToUpper(block.Args[0]) == verb &&
-						block.Args[1] == secondRefStr {
-
-						sc.execBlock(block)
-					}
-				}
+				sc.execEventTree(
+					block,
+					"IFPREVERB2",
+					verb,
+					secondRefStr,
+				)
 			}
 		}
 
-		secondDef := e.items[secondItem.Archetype]
+		// The second object's archetype may also contain
+		// IFPREVERB2 blocks.
+		secondDef := e.items[second.Archetype]
 
 		if secondDef != nil {
 			for _, block := range secondDef.Scripts {
-				if block.Type == "IFPREVERB2" && len(block.Args) >= 1 {
-					if strings.ToUpper(block.Args[0]) == verb {
-						if len(block.Args) < 2 || block.Args[1] == "-1" {
-							sc.execBlock(block)
-						}
-					}
-				}
+				sc.execEventTree(
+					block,
+					"IFPREVERB2",
+					verb,
+					secondRefStr,
+				)
 			}
 		}
 	}
@@ -635,6 +607,237 @@ func (sc *ScriptContext) scheduleEvent(delay time.Duration, statements []gamewor
 	}()
 }
 
+// scriptTreeContainsEvent reports whether this block contains the event
+// we're currently dispatching. It does not execute anything.
+func scriptTreeContainsEvent(block gameworld.ScriptBlock, eventType string, verb string, refStr string) bool {
+	eventType = strings.ToUpper(eventType)
+	verb = strings.ToUpper(verb)
+
+	if strings.ToUpper(block.Type) == eventType {
+		switch eventType {
+		case "IFPREVERB", "IFPREVERB2", "IFVERB":
+			if len(block.Args) < 1 {
+				return false
+			}
+
+			if strings.ToUpper(block.Args[0]) != verb {
+				return false
+			}
+
+			// Item archetype scripts normally use -1.
+			// Room scripts may use a specific room-item ref.
+			if len(block.Args) >= 2 &&
+				block.Args[1] != "-1" &&
+				block.Args[1] != refStr {
+				return false
+			}
+
+			return true
+
+		case "IFTOUCH":
+			if len(block.Args) < 1 {
+				return false
+			}
+
+			return block.Args[0] == "-1" ||
+				block.Args[0] == refStr
+		}
+	}
+
+	for _, child := range block.Children {
+		if scriptTreeContainsEvent(child, eventType, verb, refStr) {
+			return true
+		}
+	}
+
+	for _, child := range block.ElseChildren {
+		if scriptTreeContainsEvent(child, eventType, verb, refStr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (sc *ScriptContext) execEventTree(block gameworld.ScriptBlock, eventType string, verb string, refStr string) {
+	// Nothing for this event exists anywhere below here.
+	if !scriptTreeContainsEvent(block, eventType, verb, refStr) {
+		return
+	}
+
+	blockType := strings.ToUpper(block.Type)
+
+	// If we've reached an event block, only execute it if it is
+	// the event we're actually dispatching.
+	switch blockType {
+	case "IFPREVERB", "IFVERB", "IFPREVERB2":
+		if blockType != eventType || len(block.Args) < 1 {
+			return
+		}
+
+		if !strings.EqualFold(block.Args[0], verb) {
+			return
+		}
+
+		if len(block.Args) >= 2 &&
+			block.Args[1] != "-1" &&
+			block.Args[1] != refStr {
+			return
+		}
+
+		sc.execBlock(block)
+		return
+
+	case "IFTOUCH":
+		if eventType != "IFTOUCH" || len(block.Args) < 1 {
+			return
+		}
+
+		if block.Args[0] != "-1" && block.Args[0] != refStr {
+			return
+		}
+
+		sc.execBlock(block)
+		return
+	}
+
+	// This is a wrapper condition. Evaluate it, but recursively dispatch
+	// only the branch that can contain our current event.
+	switch blockType {
+	case "IFVAR":
+		result := sc.evalIfVar(block.Args)
+
+		if sc.Player.GMTrace {
+			sc.Messages = append(
+				sc.Messages,
+				fmt.Sprintf(
+					"[TRACE]   IFVAR %s → %v",
+					strings.Join(block.Args, " "),
+					result,
+				),
+			)
+		}
+
+		if result {
+			sc.execEventStatements(
+				block.Actions,
+				block.Children,
+				eventType,
+				verb,
+				refStr,
+			)
+		} else {
+			sc.execEventStatements(
+				block.ElseActions,
+				block.ElseChildren,
+				eventType,
+				verb,
+				refStr,
+			)
+		}
+
+	case "IFITEM":
+		if sc.evalIfItem(block.Args) {
+			sc.execEventStatements(
+				block.Actions,
+				block.Children,
+				eventType,
+				verb,
+				refStr,
+			)
+		} else {
+			sc.execEventStatements(
+				block.ElseActions,
+				block.ElseChildren,
+				eventType,
+				verb,
+				refStr,
+			)
+		}
+
+	case "IFNOITEM":
+		if !sc.evalIfItem(block.Args) {
+			sc.execEventStatements(
+				block.Actions,
+				block.Children,
+				eventType,
+				verb,
+				refStr,
+			)
+		} else {
+			sc.execEventStatements(
+				block.ElseActions,
+				block.ElseChildren,
+				eventType,
+				verb,
+				refStr,
+			)
+		}
+
+	case "IFCARRY":
+		if sc.evalIfCarry(block.Args) {
+			sc.execEventStatements(
+				block.Actions,
+				block.Children,
+				eventType,
+				verb,
+				refStr,
+			)
+		} else {
+			sc.execEventStatements(
+				block.ElseActions,
+				block.ElseChildren,
+				eventType,
+				verb,
+				refStr,
+			)
+		}
+
+	case "IFIN":
+		if sc.evalIfIn(block.Args) {
+			sc.execEventStatements(
+				block.Actions,
+				block.Children,
+				eventType,
+				verb,
+				refStr,
+			)
+		} else {
+			sc.execEventStatements(
+				block.ElseActions,
+				block.ElseChildren,
+				eventType,
+				verb,
+				refStr,
+			)
+		}
+
+	default:
+		// Unknown/non-conditional wrapper: don't execute its actions.
+		// Just continue looking through its children.
+		for _, child := range block.Children {
+			sc.execEventTree(child, eventType, verb, refStr)
+		}
+
+		for _, child := range block.ElseChildren {
+			sc.execEventTree(child, eventType, verb, refStr)
+		}
+	}
+}
+
+func (sc *ScriptContext) execEventStatements(actions []gameworld.ScriptAction, children []gameworld.ScriptBlock, eventType string, verb string, refStr string) {
+	// These actions belong to the conditional wrapper itself, so they
+	// execute when that branch is selected.
+	for _, action := range actions {
+		sc.execAction(action)
+	}
+
+	// But nested event blocks are filtered to the event we're dispatching.
+	for _, child := range children {
+		sc.execEventTree(child, eventType, verb, refStr)
+	}
+}
+
 // execAction executes a single script action.
 func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 	switch action.Command {
@@ -654,6 +857,8 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 		sc.doMove(action.Args)
 	case "MOVEGROUP":
 		sc.doMoveGroup(action.Args)
+	case "MOVEALL":
+		sc.doMoveAll(action.Args)
 	case "SHOWROOM":
 		sc.doShowRoom(action.Args)
 	case "PLREVENT":
@@ -690,6 +895,8 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 		sc.doRandom(action.Args)
 	case "DAMAGEPLR":
 		sc.doDamagePlr(action.Args)
+	case "DAMAGEALL":
+		sc.doDamageAll(action.Args)
 	case "HEALPLR":
 		sc.doHealPlr(action.Args)
 	case "STRCVT":
@@ -754,7 +961,10 @@ func (sc *ScriptContext) execAction(action gameworld.ScriptAction) {
 	}
 }
 
-func (sc *ScriptContext) schedulePlayerEvent(delay time.Duration, statements []gameworld.ScriptStatement) {
+func (sc *ScriptContext) schedulePlayerEvent(
+	delay time.Duration,
+	statements []gameworld.ScriptStatement,
+) {
 	if len(statements) == 0 {
 		return
 	}
@@ -768,6 +978,12 @@ func (sc *ScriptContext) schedulePlayerEvent(delay time.Duration, statements []g
 	next.GMMsgs = nil
 	next.Suspended = false
 	next.PlayerEventDelay = 0
+
+	// Movement requests from the original part of the script have
+	// already been handled. The continuation starts clean.
+	next.MoveTo = 0
+	next.MoveGroupTo = 0
+	next.MoveAllTo = 0
 
 	if sc.ItemRef != nil {
 		itemCopy := *sc.ItemRef
@@ -785,41 +1001,94 @@ func (sc *ScriptContext) schedulePlayerEvent(delay time.Duration, statements []g
 
 		<-timer.C
 
+		// Remember where the player was when the continuation actually ran.
+		// This is the source room for delayed movement.
+		originalRoom := 0
+		if next.Player != nil {
+			originalRoom = next.Player.RoomNumber
+		}
+
 		next.execStatements(continuation)
 
 		// Persist ITEMVAL changes back to the actual player item.
 		next.persistPlayerEventItem()
 
-		if next.Engine != nil && next.Player != nil {
-			next.Engine.SavePlayer(
-				context.Background(),
-				next.Player,
+		if next.Engine == nil || next.Player == nil {
+			return
+		}
+
+		bg := context.Background()
+
+		// --------------------------------------------------------
+		// Delayed MOVE
+		// --------------------------------------------------------
+		if next.MoveTo > 0 {
+			if next.Engine.rooms[next.MoveTo] != nil {
+				next.Player.ResetRoomVars()
+				next.Player.RoomNumber = next.MoveTo
+
+				next.Engine.disengageCombat(next.Player)
+
+				next.Engine.SavePlayer(
+					bg,
+					next.Player,
+				)
+			}
+		}
+
+		// --------------------------------------------------------
+		// Delayed MOVEGROUP
+		// --------------------------------------------------------
+		if next.MoveGroupTo > 0 {
+			next.Engine.moveGroupToRoom(
+				bg,
+				originalRoom,
+				next.MoveGroupTo,
 			)
+		}
 
-			if len(next.Messages) > 0 &&
-				next.Engine.sendToPlayer != nil {
+		// --------------------------------------------------------
+		// Delayed MOVEALL
+		// --------------------------------------------------------
+		if next.MoveAllTo > 0 {
+			next.Engine.moveGroupToRoom(
+				bg,
+				originalRoom,
+				next.MoveAllTo,
+			)
+		}
 
-				next.Engine.sendToPlayer(
-					next.Player.FirstName,
-					next.Messages,
-				)
-			}
+		next.Engine.SavePlayer(
+			bg,
+			next.Player,
+		)
 
-			if len(next.RoomMsgs) > 0 &&
-				next.Engine.roomBroadcast != nil &&
-				next.Room != nil {
+		// --------------------------------------------------------
+		// Send delayed player messages.
+		// --------------------------------------------------------
+		if len(next.Messages) > 0 &&
+			next.Engine.sendToPlayer != nil {
 
-				excludeName := ""
-				if next.Player != nil {
-					excludeName = next.Player.FirstName
-				}
+			next.Engine.sendToPlayer(
+				next.Player.FirstName,
+				next.Messages,
+			)
+		}
 
-				next.Engine.roomBroadcast(
-					next.Room.Number,
-					excludeName,
-					next.RoomMsgs,
-				)
-			}
+		// --------------------------------------------------------
+		// Send delayed room messages.
+		// --------------------------------------------------------
+		if len(next.RoomMsgs) > 0 &&
+			next.Engine.roomBroadcast != nil &&
+			next.Room != nil {
+
+			excludeName := next.Player.FirstName
+
+			next.Engine.roomBroadcast(
+				next.Room.Number,
+				excludeName,
+				next.RoomMsgs,
+			)
 		}
 	}()
 }
@@ -1177,6 +1446,24 @@ func (sc *ScriptContext) doMoveGroup(args []string) {
 		//	sc.Player.RoomNumber = dest
 
 	}
+}
+
+// doMoveAll handles MOVEALL <room> — moves all players in the room.
+func (sc *ScriptContext) doMoveAll(args []string) {
+	if len(args) == 0 {
+		return
+	}
+
+	dest := sc.resolveNumericArg(args[0])
+	if dest <= 0 {
+		return
+	}
+
+	if sc.Engine.rooms[dest] == nil {
+		return
+	}
+
+	sc.MoveAllTo = dest
 }
 
 // doShowRoom handles SHOWROOM <room> or SHOWROOM ITEMVAL2, etc.
@@ -2198,6 +2485,58 @@ func (sc *ScriptContext) doDamagePlr(args []string) {
 	if idx < len(args) {
 		text := strings.Join(args[idx:], " ")
 		sc.Messages = append(sc.Messages, sc.expandScriptText(text))
+	}
+}
+
+// doDamageAll handles DAMAGEALL using the same damage logic as DAMAGEPLR,
+// but applies it to every living player in the current room.
+func (sc *ScriptContext) doDamageAll(args []string) {
+	if len(args) < 1 {
+		return
+	}
+
+	if sc.Engine == nil || sc.Player == nil || sc.Engine.sessions == nil {
+		return
+	}
+
+	roomNumber := sc.Player.RoomNumber
+
+	for _, p := range sc.Engine.sessions.OnlinePlayers() {
+		if p == nil || p.Dead || p.RoomNumber != roomNumber {
+			continue
+		}
+
+		// Use a copy of the current script context so DAMAGEPLR can
+		// operate normally against this player.
+		damageCtx := *sc
+		damageCtx.Player = p
+
+		// Don't inherit messages intended for the original player.
+		damageCtx.Messages = nil
+		damageCtx.RoomMsgs = nil
+		damageCtx.GMMsgs = nil
+
+		damageCtx.doDamagePlr(args)
+
+		// The player who triggered the script uses the normal script
+		// message path.
+		if p == sc.Player {
+			sc.Messages = append(
+				sc.Messages,
+				damageCtx.Messages...,
+			)
+			continue
+		}
+
+		// Other players need their DAMAGEALL message delivered directly.
+		if len(damageCtx.Messages) > 0 &&
+			sc.Engine.sendToPlayer != nil {
+
+			sc.Engine.sendToPlayer(
+				p.FirstName,
+				damageCtx.Messages,
+			)
+		}
 	}
 }
 

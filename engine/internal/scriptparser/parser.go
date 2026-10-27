@@ -207,11 +207,11 @@ func parseScriptFile(path string, result *ParseResult) error {
 		)
 	}
 
-	fmt.Printf(
+	/*fmt.Printf(
 		"\n===== PARSING %s: %d lines =====\n",
 		filename,
 		len(lines),
-	)
+	)*/
 
 	p := &fileParser{
 		lines:    lines,
@@ -772,6 +772,21 @@ func (p *fileParser) parseItem(fields []string) {
 			}
 		}
 		p.pos++
+	}
+
+	if item.Number == 692 {
+		fmt.Printf(
+			"DEBUG ITEM 692: nameID=%d type=%s flags=%v scripts=%d source=%s\n",
+			item.NameID,
+			item.Type,
+			item.Flags,
+			len(item.Scripts),
+			item.SourceFile,
+		)
+
+		for i, script := range item.Scripts {
+			fmt.Printf("  SCRIPT %d: %+v\n", i, script)
+		}
 	}
 
 	p.result.Items = append(p.result.Items, item)
