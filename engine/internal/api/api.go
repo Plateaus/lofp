@@ -776,27 +776,42 @@ func (s *Server) handleGameWS(w http.ResponseWriter, r *http.Request) {
 				session.lastCmdTime = now
 			}
 			session.cmdCount++
-			if session.cmdCount > 4 {
+			if session.cmdCount > 10 {
 				s.sendResult(session, &engine.CommandResult{
 					Messages: []string{"[Slow down! Too many commands.]"},
 				})
 				continue
 			}
-			// Rate limit 2: max 10 commands per 10 seconds (sustained)
+
+			// Rate limit 2: max 30 commands per 10 seconds (sustained)
 			cutoff := now.Add(-10 * time.Second)
+
 			var recentCmds []time.Time
 			for _, t := range session.cmdTimes {
 				if t.After(cutoff) {
 					recentCmds = append(recentCmds, t)
 				}
 			}
+
 			session.cmdTimes = append(recentCmds, now)
-			if len(session.cmdTimes) > 10 {
+
+			if len(session.cmdTimes) > 30 {
 				s.sendResult(session, &engine.CommandResult{
-					Messages: []string{"[Slow down! Too many commands.]"},
+					Messages: []string{
+						"[Slow down! Too many commands. Please wait a few seconds.]",
+					},
 				})
 				continue
 			}
+
+			if len(session.cmdTimes) == 25 {
+				s.sendResult(session, &engine.CommandResult{
+					Messages: []string{
+						"[You're sending commands very quickly. Slow down or you'll be temporarily throttled.]",
+					},
+				})
+			}
+
 			var cmd CommandMsg
 			json.Unmarshal(msg.Data, &cmd)
 			ctx := context.Background()
@@ -833,7 +848,7 @@ func (s *Server) handleGameWS(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				session.chatTimes = recent
-				if len(session.chatTimes) >= 5 {
+				if len(session.chatTimes) >= 10 {
 					s.sendResult(session, &engine.CommandResult{
 						Messages: []string{"[You are sending messages too quickly. Please wait.]"},
 					})

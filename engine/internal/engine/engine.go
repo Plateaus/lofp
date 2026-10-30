@@ -857,7 +857,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		if player.SpeechAdverb != "" {
 			result := &CommandResult{
 				Messages:      []string{fmt.Sprintf("You %s, \"%s\"", player.SpeechAdverb, msg)},
-				RoomBroadcast: []string{fmt.Sprintf("%s %ss, \"%s\"", player.FirstName, player.SpeechAdverb, msg)},
+				RoomBroadcast: []string{fmt.Sprintf("%s %ss, \"%s\"", e.playerDisplayName(player), player.SpeechAdverb, msg)},
 			}
 			// Run IFSAY scripts
 			room := e.rooms[player.RoomNumber]
@@ -874,7 +874,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		}
 		result := &CommandResult{
 			Messages:      []string{fmt.Sprintf("You %s, \"%s\"", verb, msg)},
-			RoomBroadcast: []string{fmt.Sprintf("%s %s, \"%s\"", player.FirstName, thirdVerb, msg)},
+			RoomBroadcast: []string{fmt.Sprintf("%s %s, \"%s\"", e.playerDisplayName(player), thirdVerb, msg)},
 		}
 		// Run IFSAY scripts
 		room := e.rooms[player.RoomNumber]
@@ -1185,25 +1185,25 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 			return &CommandResult{Messages: []string{"You are already sitting."}}
 		}
 		player.Position = 1
-		return e.doPositionWithScripts(ctx, player, verb, "You sit down.", fmt.Sprintf("%s sits down.", player.FirstName))
+		return e.doPositionWithScripts(ctx, player, verb, "You sit down.", fmt.Sprintf("%s sits down.", e.playerDisplayName(player)))
 	case "STAND":
 		if player.Position == 0 {
 			return &CommandResult{Messages: []string{"You are already standing."}}
 		}
 		player.Position = 0
-		return e.doPositionWithScripts(ctx, player, verb, "You stand up.", fmt.Sprintf("%s stands up.", player.FirstName))
+		return e.doPositionWithScripts(ctx, player, verb, "You stand up.", fmt.Sprintf("%s stands up.", e.playerDisplayName(player)))
 	case "KNEEL":
 		if player.Position == 3 {
 			return &CommandResult{Messages: []string{"You are already kneeling."}}
 		}
 		player.Position = 3
-		return e.doPositionWithScripts(ctx, player, verb, "You kneel down.", fmt.Sprintf("%s kneels down.", player.FirstName))
+		return e.doPositionWithScripts(ctx, player, verb, "You kneel down.", fmt.Sprintf("%s kneels down.", e.playerDisplayName(player)))
 	case "LAY":
 		if player.Position == 2 {
 			return &CommandResult{Messages: []string{"You are already lying down."}}
 		}
 		player.Position = 2
-		return e.doPositionWithScripts(ctx, player, verb, "You lie down.", fmt.Sprintf("%s lies down.", player.FirstName))
+		return e.doPositionWithScripts(ctx, player, verb, "You lie down.", fmt.Sprintf("%s lies down.", e.playerDisplayName(player)))
 	case "PRAY":
 		return e.doPray(player)
 	case "BRIEF":
@@ -1814,7 +1814,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 					fmt.Sprintf("You advance toward %s%s.", article, name),
 				},
 				RoomBroadcast: []string{
-					fmt.Sprintf("%s advances toward %s%s.", player.FirstName, article, name),
+					fmt.Sprintf("%s advances toward %s%s.", e.playerDisplayName(player), article, name),
 				},
 			}
 		}
@@ -1833,7 +1833,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 					fmt.Sprintf("You advance toward %s.", found.FirstName),
 				},
 				RoomBroadcast: []string{
-					fmt.Sprintf("%s advances toward %s.", player.FirstName, found.FirstName),
+					fmt.Sprintf("%s advances toward %s.", e.playerDisplayName(player), found.FirstName),
 				},
 			}
 		}
@@ -2048,7 +2048,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		player.Submitting = true
 		return &CommandResult{
 			Messages:      []string{"You submit, accepting whatever may come."},
-			RoomBroadcast: []string{fmt.Sprintf("%s submits.", player.FirstName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s submits.", e.playerDisplayName(player))},
 		}
 	case "UNSUBMIT":
 		if !player.Submitting {
@@ -2057,7 +2057,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 		player.Submitting = false
 		return &CommandResult{
 			Messages:      []string{"You stop submitting."},
-			RoomBroadcast: []string{fmt.Sprintf("%s stops submitting.", player.FirstName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s stops submitting.", e.playerDisplayName(player))},
 		}
 	case "ARREST":
 		return &CommandResult{Messages: []string{"[Arrest coming soon.]"}} // TODO: lawkeeper arrest
@@ -4580,33 +4580,62 @@ func (e *GameEngine) scrollLookMsg(archetype int, val3 int) string {
 	return fmt.Sprintf("The scroll contains spell #%d.", val3)
 }
 
-// findPlayerInRoom finds an online player in the same room by name (first name match).
+// findPlayerInRoom finds an online player in the same room by their
+// currently visible name/form. Supports ordinal targets such as "wolf 2".
 func (e *GameEngine) findPlayerInRoom(self *Player, target string) *Player {
 	if e.sessions == nil {
 		return nil
 	}
 
-	//normalize target because were using lowercase
+	// Normalize target and pull off any ordinal:
+	// "wolf"   -> target="wolf", skip=0
+	// "wolf 2" -> target="wolf", skip=1
 	target = strings.ToLower(strings.TrimSpace(target))
+	target, skip := parseOrdinal(target)
 
 	for _, p := range e.sessions.OnlinePlayers() {
 		if p.RoomNumber != self.RoomNumber {
 			continue
 		}
+
+		// Skip self; commands that allow self-targeting handle that separately.
 		if p.FirstName == self.FirstName && p.LastName == self.LastName {
-			continue // skip self, handled separately
+			continue
 		}
+
+		// Players who cannot currently be seen cannot be targeted normally.
 		if p.Hidden || p.Invisible || p.GMInvis {
 			continue
 		}
-		if strings.HasPrefix(strings.ToLower(p.FirstName), target) {
-			return p
+
+		matches := false
+
+		// A transformed Wolfling appears as a wolf. Normal room targeting
+		// should therefore use "wolf", not reveal the player's real name.
+		if p.WolfForm {
+			matches = strings.HasPrefix("wolf", target)
+		} else {
+			firstName := strings.ToLower(p.FirstName)
+			fullName := strings.ToLower(p.FirstName + " " + p.LastName)
+
+			matches =
+				strings.HasPrefix(firstName, target) ||
+					strings.HasPrefix(fullName, target)
 		}
-		fullName := strings.ToLower(p.FirstName + " " + p.LastName)
-		if strings.HasPrefix(fullName, target) {
-			return p
+
+		if !matches {
+			continue
 		}
+
+		// Ordinal targeting: skip earlier matching players.
+		if skip > 0 {
+			skip--
+			continue
+		}
+
+		return p
 	}
+
 	return nil
 }
 
@@ -8810,6 +8839,10 @@ func (e *GameEngine) doStatus(player *Player) *CommandResult {
 		fmt.Sprintf("Load: %d lbs", loadWeight),
 	)
 
+	if player.WolfForm {
+		msgs = append(msgs, "You are currently in wolf form.")
+	}
+
 	// Active temporary effects
 	now := time.Now()
 	activeEffectCount := 0
@@ -8968,6 +9001,19 @@ func formatEffectDuration(duration time.Duration) string {
 
 	return fmt.Sprintf("%ds", int(duration/time.Second))
 }
+
+func (e *GameEngine) playerDisplayName(p *Player) string {
+	if p == nil {
+		return ""
+	}
+
+	if p.WolfForm {
+		return "a wolf"
+	}
+
+	return p.FirstName
+}
+
 func (e *GameEngine) doHealth(player *Player) *CommandResult {
 	healthPct := float64(player.BodyPoints) / float64(player.MaxBodyPoints) * 100
 	var healthDesc string
@@ -10267,9 +10313,17 @@ func (e *GameEngine) doOpen(player *Player, args []string) *CommandResult {
 				}
 			}
 
+			trapMsgs := e.checkInventoryTrap(player, &player.Inventory[i])
+
 			player.Inventory[i].State = "OPEN"
 			fullName := e.formatItemName(itemDef, ii.Adj1, ii.Adj2, ii.Adj3)
-			return &CommandResult{Messages: []string{fmt.Sprintf("You open %s.", fullName)}}
+			msgs := []string{fmt.Sprintf("You open %s.", fullName)}
+
+			msgs = append(msgs, trapMsgs...)
+
+			return &CommandResult{
+				Messages: msgs,
+			}
 		}
 	}
 	return &CommandResult{Messages: []string{"You don't see that here."}}
@@ -10288,11 +10342,11 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 1: // Needle, minor poison
 		msgs = append(msgs, "A needle springs out and pricks your finger!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMinor, time.Duration(PoisonMinor)*time.Minute, 0)
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonMinor, time.Duration(PoisonMinor)*time.Minute, 0)
 	case trapType == 2: // Gas, minor poison
 		msgs = append(msgs, "A cloud of noxious gas billows out!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonNerveGas, time.Duration(PoisonNerveGas)*time.Minute, 0)
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonNerveGas, time.Duration(PoisonNerveGas)*time.Minute, 0)
 	case trapType == 3: // Acid
 		dmg := 10 + rand.Intn(15)
 		player.BodyPoints -= dmg
@@ -10310,11 +10364,11 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 5: // Needle, moderate poison
 		msgs = append(msgs, "A poison-coated needle jabs into your hand!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
 	case trapType == 7: // Needle, major poison
 		msgs = append(msgs, "A large needle drives deep into your finger, delivering a potent venom!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonMajor, time.Duration(PoisonMajor)*time.Minute, 0)
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonMajor, time.Duration(PoisonMajor)*time.Minute, 0)
 	case trapType == 8: // Explosive
 		dmg := 30 + rand.Intn(30)
 		player.BodyPoints -= dmg
@@ -10332,7 +10386,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 	case trapType == 12: // Gas, moderate poison
 		msgs = append(msgs, "A thick cloud of poisonous gas engulfs you!")
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
 	case trapType == 13: // Black needle, lethal
 		dmg := 40 + rand.Intn(30)
 		player.BodyPoints -= dmg
@@ -10341,7 +10395,7 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 		}
 		msgs = append(msgs, fmt.Sprintf("A black needle strikes you, delivering a lethal toxin! [%d Damage]", dmg))
 		player.Poisoned = true
-		player.ApplyStatEffect(ri.Val4, EffectSourcePoison, StatBodyPoint, PoisonLethal, time.Duration(PoisonLethal)*time.Minute, 0)
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonLethal, time.Duration(PoisonLethal)*time.Minute, 0)
 	case trapType >= 1000: // Glyph traps (spell-based)
 		spellDmg := 20 + rand.Intn(40)
 		player.BodyPoints -= spellDmg
@@ -10357,7 +10411,98 @@ func (e *GameEngine) checkTrap(player *Player, ri *gameworld.RoomItem) []string 
 		case glyphType <= 6:
 			msgs = append(msgs, fmt.Sprintf("A Thunder Glyph explodes with crackling energy! [%d Damage]", spellDmg))
 		case glyphType <= 8:
-			msgs = append(msgs, fmt.Sprintf("An Imprisonment Rune flares! You feel rooted to the spot!"))
+			msgs = append(msgs, "An Imprisonment Rune flares! You feel rooted to the spot!")
+			player.Immobilized = true
+		default:
+			msgs = append(msgs, fmt.Sprintf("A Symbol of Death erupts! [%d Damage]", spellDmg))
+		}
+	}
+	return msgs
+}
+
+// checkTrap checks if an item has a trap (VAL4) and triggers it. Returns messages.
+func (e *GameEngine) checkInventoryTrap(player *Player, ii *InventoryItem) []string {
+	if ii.Val4 == 0 {
+		return nil
+	}
+	trapType := ii.Val4
+	ii.Val4 = 0 // trap is consumed
+
+	var msgs []string
+	switch {
+	case trapType == 1: // Needle, minor poison
+		msgs = append(msgs, "A needle springs out and pricks your finger!")
+		player.Poisoned = true
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonMinor, time.Duration(PoisonMinor)*time.Minute, 0)
+	case trapType == 2: // Gas, minor poison
+		msgs = append(msgs, "A cloud of noxious gas billows out!")
+		player.Poisoned = true
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonNerveGas, time.Duration(PoisonNerveGas)*time.Minute, 0)
+	case trapType == 3: // Acid
+		dmg := 10 + rand.Intn(15)
+		player.BodyPoints -= dmg
+		if player.BodyPoints < 0 {
+			player.BodyPoints = 0
+		}
+		msgs = append(msgs, fmt.Sprintf("Acid sprays out! [%d Damage]", dmg))
+	case trapType == 4: // Blades
+		dmg := 15 + rand.Intn(20)
+		player.BodyPoints -= dmg
+		if player.BodyPoints < 0 {
+			player.BodyPoints = 0
+		}
+		msgs = append(msgs, fmt.Sprintf("Hidden blades slash at you! [%d Damage]", dmg))
+	case trapType == 5: // Needle, moderate poison
+		msgs = append(msgs, "A poison-coated needle jabs into your hand!")
+		player.Poisoned = true
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
+	case trapType == 7: // Needle, major poison
+		msgs = append(msgs, "A large needle drives deep into your finger, delivering a potent venom!")
+		player.Poisoned = true
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonMajor, time.Duration(PoisonMajor)*time.Minute, 0)
+	case trapType == 8: // Explosive
+		dmg := 30 + rand.Intn(30)
+		player.BodyPoints -= dmg
+		if player.BodyPoints < 0 {
+			player.BodyPoints = 0
+		}
+		msgs = append(msgs, fmt.Sprintf("The container explodes! [%d Damage]", dmg))
+	case trapType == 9: // Acid, moderate
+		dmg := 20 + rand.Intn(25)
+		player.BodyPoints -= dmg
+		if player.BodyPoints < 0 {
+			player.BodyPoints = 0
+		}
+		msgs = append(msgs, fmt.Sprintf("A gout of acid sprays out! [%d Damage]", dmg))
+	case trapType == 12: // Gas, moderate poison
+		msgs = append(msgs, "A thick cloud of poisonous gas engulfs you!")
+		player.Poisoned = true
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonModerate, time.Duration(PoisonModerate)*time.Minute, 0)
+	case trapType == 13: // Black needle, lethal
+		dmg := 40 + rand.Intn(30)
+		player.BodyPoints -= dmg
+		if player.BodyPoints < 0 {
+			player.BodyPoints = 0
+		}
+		msgs = append(msgs, fmt.Sprintf("A black needle strikes you, delivering a lethal toxin! [%d Damage]", dmg))
+		player.Poisoned = true
+		player.ApplyStatEffect(trapType, EffectSourcePoison, StatBodyPoint, PoisonLethal, time.Duration(PoisonLethal)*time.Minute, 0)
+	case trapType >= 1000: // Glyph traps (spell-based)
+		spellDmg := 20 + rand.Intn(40)
+		player.BodyPoints -= spellDmg
+		if player.BodyPoints < 0 {
+			player.BodyPoints = 0
+		}
+		glyphType := (trapType / 1000) % 10
+		switch {
+		case glyphType <= 2:
+			msgs = append(msgs, fmt.Sprintf("An Inferno Glyph erupts in a blast of flame! [%d Damage]", spellDmg))
+		case glyphType <= 4:
+			msgs = append(msgs, fmt.Sprintf("An Ice Glyph detonates in a burst of freezing cold! [%d Damage]", spellDmg))
+		case glyphType <= 6:
+			msgs = append(msgs, fmt.Sprintf("A Thunder Glyph explodes with crackling energy! [%d Damage]", spellDmg))
+		case glyphType <= 8:
+			msgs = append(msgs, "An Imprisonment Rune flares! You feel rooted to the spot!")
 			player.Immobilized = true
 		default:
 			msgs = append(msgs, fmt.Sprintf("A Symbol of Death erupts! [%d Damage]", spellDmg))
@@ -10470,11 +10615,14 @@ func (e *GameEngine) doWhisper(player *Player, args []string, rawInput string) *
 		return &CommandResult{Messages: []string{"Whisper what?"}}
 	}
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You whisper to %s.", found.FirstName)},
-		RoomBroadcast: []string{fmt.Sprintf("%s whispers to %s.", player.FirstName, found.FirstName)},
-		TargetName:    found.FirstName, // exclude target from room broadcast — they get WhisperMsg instead
+		Messages:      []string{fmt.Sprintf("You whisper to %s.", e.playerDisplayName(found))},
+		RoomBroadcast: []string{fmt.Sprintf("%s whispers to %s.", e.playerDisplayName(player), e.playerDisplayName(found))},
+
+		// INTERNAL ROUTING — KEEP REAL NAME
+		TargetName:    found.FirstName,
 		WhisperTarget: found.FirstName,
-		WhisperMsg:    fmt.Sprintf("%s whispers to you, \"%s\"", player.FirstName, text),
+
+		WhisperMsg: fmt.Sprintf("%s whispers to you, \"%s\"", e.playerDisplayName(player), text),
 	}
 }
 
@@ -10501,7 +10649,7 @@ func (e *GameEngine) doYell(player *Player, args []string, rawInput string) *Com
 
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You %syell, \"%s\"", adverb, text)},
-		RoomBroadcast: []string{fmt.Sprintf("%s %syells, \"%s\"", player.FirstName, adverb, text)},
+		RoomBroadcast: []string{fmt.Sprintf("%s %syells, \"%s\"", e.playerDisplayName(player), adverb, text)},
 	}
 }
 
@@ -10531,7 +10679,7 @@ func (e *GameEngine) doPray(player *Player) *CommandResult {
 	}
 	return &CommandResult{
 		Messages:      []string{"You pray."},
-		RoomBroadcast: []string{fmt.Sprintf("%s bows %s head and prays.", player.FirstName, pronoun)},
+		RoomBroadcast: []string{fmt.Sprintf("%s bows %s head and prays.", e.playerDisplayName(player), pronoun)},
 	}
 }
 
@@ -10580,11 +10728,11 @@ func (e *GameEngine) doGuard(player *Player, args []string) *CommandResult {
 		if player.GuardTarget == "" {
 			return &CommandResult{Messages: []string{"You are not guarding anyone."}}
 		}
-		old := player.GuardTarget
+		old := e.findPlayerInRoom(player, player.GuardTarget)
 		player.GuardTarget = ""
 		return &CommandResult{
 			Messages:      []string{"You stop guarding."},
-			RoomBroadcast: []string{fmt.Sprintf("%s stops guarding %s.", player.FirstName, old)},
+			RoomBroadcast: []string{fmt.Sprintf("%s stops guarding %s.", e.playerDisplayName(player), e.playerDisplayName(old))},
 		}
 	}
 	target := strings.ToLower(strings.Join(args, " "))
@@ -10594,9 +10742,8 @@ func (e *GameEngine) doGuard(player *Player, args []string) *CommandResult {
 	}
 	player.GuardTarget = found.FirstName
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You are now guarding %s.", found.FirstName)},
-		RoomBroadcast: []string{fmt.Sprintf("%s is now guarding %s.", player.FirstName, found.FirstName)},
-	}
+		Messages:      []string{fmt.Sprintf("You are now guarding %s.", e.playerDisplayName(found))},
+		RoomBroadcast: []string{fmt.Sprintf("%s is now guarding %s.", e.playerDisplayName(player), e.playerDisplayName(found))}}
 }
 
 // doChant handles the CHANT command — scroll activation.
@@ -10653,7 +10800,7 @@ func (e *GameEngine) doChant(ctx context.Context, player *Player, args []string)
 				"[Round: 3 sec]",
 			},
 			RoomBroadcast: []string{
-				fmt.Sprintf("%s chants from %s which crumbles into dust.", player.FirstName, fullName),
+				fmt.Sprintf("%s chants from %s which crumbles into dust.", e.playerDisplayName(player), fullName),
 			},
 		}
 	}
@@ -10671,7 +10818,8 @@ func (e *GameEngine) doFollow(player *Player, args []string) *CommandResult {
 		return &CommandResult{Messages: []string{"They are not here."}}
 	}
 	if player.Following != "" {
-		return &CommandResult{Messages: []string{fmt.Sprintf("You are already following %s.", player.Following)}}
+		following := e.findPlayerInRoom(player, player.Following)
+		return &CommandResult{Messages: []string{fmt.Sprintf("You are already following %s.", e.playerDisplayName(following))}}
 	}
 	if found.Following == player.FirstName {
 		return &CommandResult{Messages: []string{"You can't follow someone who is following you."}}
@@ -10690,15 +10838,15 @@ func (e *GameEngine) doFollow(player *Player, args []string) *CommandResult {
 		found.GroupMembers = append(found.GroupMembers, player.FirstName)
 	}
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You are now following %s.", found.FirstName)},
-		RoomBroadcast: []string{fmt.Sprintf("%s is now following %s.", player.FirstName, found.FirstName)},
+		Messages:      []string{fmt.Sprintf("You are now following %s.", e.playerDisplayName(found))},
+		RoomBroadcast: []string{fmt.Sprintf("%s is now following %s.", e.playerDisplayName(player), e.playerDisplayName(found))},
 	}
 }
 
 // doHold handles the HOLD command (group) — leader adds a member.
 func (e *GameEngine) doHold(player *Player, found *Player) *CommandResult {
 	if found.Following != "" {
-		return &CommandResult{Messages: []string{fmt.Sprintf("%s is already following someone.", found.FirstName)}}
+		return &CommandResult{Messages: []string{fmt.Sprintf("%s is already following someone.", e.playerDisplayName(found))}}
 	}
 	found.Following = player.FirstName
 	player.IsGroupLeader = true
@@ -10713,8 +10861,8 @@ func (e *GameEngine) doHold(player *Player, found *Player) *CommandResult {
 		player.GroupMembers = append(player.GroupMembers, found.FirstName)
 	}
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("%s takes %s by the hand.", player.FirstName, found.FirstName)},
-		RoomBroadcast: []string{fmt.Sprintf("%s takes %s by the hand.", player.FirstName, found.FirstName)},
+		Messages:      []string{fmt.Sprintf("%s takes %s by the hand.", e.playerDisplayName(player), e.playerDisplayName(found))},
+		RoomBroadcast: []string{fmt.Sprintf("%s takes %s by the hand.", e.playerDisplayName(player), e.playerDisplayName(found))},
 	}
 }
 
@@ -10774,11 +10922,12 @@ func (e *GameEngine) doLeave(player *Player) *CommandResult {
 	if player.Following == "" {
 		return &CommandResult{Messages: []string{"You are not following anyone."}}
 	}
-	leaderName := player.Following
+	//leaderName := player.Following
+	leaderName := e.findPlayerInRoom(player, player.Following)
 	e.removeFromGroup(player)
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You stop following %s.", leaderName)},
-		RoomBroadcast: []string{fmt.Sprintf("%s stops following %s.", player.FirstName, leaderName)},
+		Messages:      []string{fmt.Sprintf("You stop following %s.", e.playerDisplayName(leaderName))},
+		RoomBroadcast: []string{fmt.Sprintf("%s stops following %s.", e.playerDisplayName(player), e.playerDisplayName(leaderName))},
 	}
 }
 
@@ -10841,7 +10990,7 @@ func (e *GameEngine) doBreakFree(ctx context.Context, player *Player) *CommandRe
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s struggles against the restraints but fails to break free.",
-					player.FirstName,
+					e.playerDisplayName(player),
 				),
 			},
 		}
@@ -10873,7 +11022,7 @@ func (e *GameEngine) doBreakFree(ctx context.Context, player *Player) *CommandRe
 		RoomBroadcast: []string{
 			fmt.Sprintf(
 				"%s breaks free from the restraints!",
-				player.FirstName,
+				e.playerDisplayName(player),
 			),
 		},
 	}
@@ -10891,7 +11040,7 @@ func (e *GameEngine) doDisband(player *Player) *CommandResult {
 				if p.FirstName == memberName {
 					p.Following = ""
 					if e.sendToPlayer != nil {
-						e.sendToPlayer(p.FirstName, []string{fmt.Sprintf("%s disbands the group.", player.FirstName)})
+						e.sendToPlayer(p.FirstName, []string{fmt.Sprintf("%s disbands the group.", e.playerDisplayName(player))})
 					}
 					break
 				}
@@ -10902,7 +11051,7 @@ func (e *GameEngine) doDisband(player *Player) *CommandResult {
 	player.IsGroupLeader = false
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You disband your group.")},
-		RoomBroadcast: []string{fmt.Sprintf("%s disbands their group.", player.FirstName)},
+		RoomBroadcast: []string{fmt.Sprintf("%s disbands their group.", e.playerDisplayName(player))},
 	}
 }
 
@@ -11042,7 +11191,7 @@ func (e *GameEngine) doGive(ctx context.Context, player *Player, args []string) 
 			fmt.Sprintf(
 				"You give %s to %s.",
 				fullName,
-				target.FirstName,
+				e.playerDisplayName(target),
 			),
 		)
 
@@ -11050,18 +11199,18 @@ func (e *GameEngine) doGive(ctx context.Context, player *Player, args []string) 
 			result.RoomBroadcast,
 			fmt.Sprintf(
 				"%s gives %s to %s.",
-				player.FirstName,
+				e.playerDisplayName(player),
 				fullName,
-				target.FirstName,
+				e.playerDisplayName(target),
 			),
 		)
 
-		result.TargetName = target.FirstName
+		result.TargetName = e.playerDisplayName(target)
 		result.TargetMsg = append(
 			result.TargetMsg,
 			fmt.Sprintf(
 				"%s gives you %s.",
-				player.FirstName,
+				e.playerDisplayName(player),
 				fullName,
 			),
 		)
@@ -11179,10 +11328,10 @@ func (e *GameEngine) doGiveMoney(ctx context.Context, giver, receiver *Player, a
 				e.SavePlayer(ctx, giver)
 				e.SavePlayer(ctx, receiver)
 				return &CommandResult{
-					Messages:      []string{fmt.Sprintf("You give %s to %s.", currencyDisplay, receiver.FirstName)},
-					RoomBroadcast: []string{fmt.Sprintf("%s gives some coins to %s.", giver.FirstName, receiver.FirstName)},
-					TargetName:    receiver.FirstName,
-					TargetMsg:     []string{fmt.Sprintf("%s gives you %s.", giver.FirstName, currencyDisplay)},
+					Messages:      []string{fmt.Sprintf("You give %s to %s.", currencyDisplay, e.playerDisplayName(receiver))},
+					RoomBroadcast: []string{fmt.Sprintf("%s gives some coins to %s.", e.playerDisplayName(giver), e.playerDisplayName(receiver))},
+					TargetName:    e.playerDisplayName(receiver),
+					TargetMsg:     []string{fmt.Sprintf("%s gives you %s.", e.playerDisplayName(giver), currencyDisplay)},
 				}
 			}
 		}
@@ -11192,10 +11341,10 @@ func (e *GameEngine) doGiveMoney(ctx context.Context, giver, receiver *Player, a
 	e.SavePlayer(ctx, giver)
 	e.SavePlayer(ctx, receiver)
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You give %s to %s.", currencyDisplay, receiver.FirstName)},
-		RoomBroadcast: []string{fmt.Sprintf("%s gives some coins to %s.", giver.FirstName, receiver.FirstName)},
-		TargetName:    receiver.FirstName,
-		TargetMsg:     []string{fmt.Sprintf("%s gives you %s.", giver.FirstName, currencyDisplay)},
+		Messages:      []string{fmt.Sprintf("You give %s to %s.", currencyDisplay, e.playerDisplayName(receiver))},
+		RoomBroadcast: []string{fmt.Sprintf("%s gives some coins to %s.", e.playerDisplayName(giver), e.playerDisplayName(receiver))},
+		TargetName:    e.playerDisplayName(receiver),
+		TargetMsg:     []string{fmt.Sprintf("%s gives you %s.", e.playerDisplayName(giver), currencyDisplay)},
 	}
 }
 
@@ -11383,7 +11532,7 @@ func (e *GameEngine) doEat(ctx context.Context, player *Player, args []string) *
 
 		roomMessages = append(
 			roomMessages,
-			fmt.Sprintf("%s eats %s.", player.FirstName, fullName),
+			fmt.Sprintf("%s eats %s.", e.playerDisplayName(player), fullName),
 		)
 
 		e.SavePlayer(ctx, player)
@@ -11510,7 +11659,7 @@ func (e *GameEngine) doBuy(ctx context.Context, player *Player, args []string) *
 		displayName := e.formatItemName(itemDef, item.Adj1, item.Adj2, item.Adj3)
 		return &CommandResult{
 			Messages:      []string{fmt.Sprintf("You hand over your money and retrieve your %s.", displayName)},
-			RoomBroadcast: []string{fmt.Sprintf("%s purchases the %s.", player.FirstName, displayName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s purchases the %s.", e.playerDisplayName(player), displayName)},
 		}
 	}
 
@@ -12109,11 +12258,7 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 				Messages: msgs,
 
 				RoomBroadcast: []string{
-					fmt.Sprintf(
-						"%s takes a drink of a %s.",
-						player.FirstName,
-						potionName,
-					),
+					fmt.Sprintf("%s takes a drink of a %s.", e.playerDisplayName(player), potionName),
 				},
 
 				PlayerState: player,
@@ -12218,7 +12363,7 @@ func (e *GameEngine) doDrink(ctx context.Context, player *Player, args []string)
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s drinks from %s.",
-					player.FirstName,
+					e.playerDisplayName(player),
 					displayName,
 				),
 			},
@@ -12315,7 +12460,7 @@ func (e *GameEngine) doLight(
 					fmt.Sprintf("You light %s.", originalName),
 				},
 				RoomBroadcast: []string{
-					fmt.Sprintf("%s lights %s.", player.FirstName, originalName),
+					fmt.Sprintf("%s lights %s.", e.playerDisplayName(player), originalName),
 				},
 			}
 		}
@@ -12357,7 +12502,7 @@ func (e *GameEngine) doLight(
 				fmt.Sprintf("You extinguish %s.", displayName),
 			},
 			RoomBroadcast: []string{
-				fmt.Sprintf("%s extinguishes %s.", player.FirstName, displayName),
+				fmt.Sprintf("%s extinguishes %s.", e.playerDisplayName(player), displayName),
 			},
 		}
 	}
@@ -12432,7 +12577,7 @@ func (e *GameEngine) doLight(
 						fmt.Sprintf("You light %s.", displayName),
 					},
 					RoomBroadcast: []string{
-						fmt.Sprintf("%s lights %s.", player.FirstName, displayName),
+						fmt.Sprintf("%s lights %s.", e.playerDisplayName(player), displayName),
 					},
 				}
 			}
@@ -12478,7 +12623,7 @@ func (e *GameEngine) doLight(
 					fmt.Sprintf("You extinguish %s.", displayName),
 				},
 				RoomBroadcast: []string{
-					fmt.Sprintf("%s extinguishes %s.", player.FirstName, displayName),
+					fmt.Sprintf("%s extinguishes %s.", e.playerDisplayName(player), displayName),
 				},
 			}
 		}
@@ -13251,14 +13396,14 @@ func (e *GameEngine) doHide(ctx context.Context, player *Player) *CommandResult 
 	if rand.Intn(100) >= hideChance {
 		return &CommandResult{
 			Messages:      []string{"You fail to find a suitable hiding place."},
-			RoomBroadcast: []string{fmt.Sprintf("%s looks around nervously.", player.FirstName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s looks around nervously.", e.playerDisplayName(player))},
 		}
 	}
 	player.Hidden = true
 	e.SavePlayer(ctx, player)
 	return &CommandResult{
 		Messages:      []string{"You slip into hiding."},
-		RoomBroadcast: []string{fmt.Sprintf("%s fades into the shadows.", player.FirstName)},
+		RoomBroadcast: []string{fmt.Sprintf("%s fades into the shadows.", e.playerDisplayName(player))},
 	}
 }
 
@@ -13310,7 +13455,7 @@ func (e *GameEngine) doFly(ctx context.Context, player *Player) *CommandResult {
 	e.SavePlayer(ctx, player)
 	return &CommandResult{
 		Messages:      []string{"You take to the air!"},
-		RoomBroadcast: []string{fmt.Sprintf("%s takes flight!", player.FirstName)},
+		RoomBroadcast: []string{fmt.Sprintf("%s takes flight!", e.playerDisplayName(player))},
 	}
 }
 
@@ -13474,7 +13619,7 @@ func (e *GameEngine) doCant(player *Player, args []string) *CommandResult {
 	text := strings.Join(args, " ")
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You cant, \"%s\"", text)},
-		RoomBroadcast: []string{fmt.Sprintf("%s mutters something under their breath.", player.FirstName)},
+		RoomBroadcast: []string{fmt.Sprintf("%s mutters something under their breath.", e.playerDisplayName(player))},
 		CantMsg:       text,
 		CantSender:    player.FirstName,
 	}
@@ -14767,7 +14912,7 @@ func (e *GameEngine) doLoadWeapon(ctx context.Context, player *Player, args []st
 		wepDisplayName := e.formatItemName(weaponDef, player.Wielded.Adj1, player.Wielded.Adj2, player.Wielded.Adj3)
 		return &CommandResult{
 			Messages:      []string{fmt.Sprintf("You load your %s with %s.", wepDisplayName, ammoDisplayName)},
-			RoomBroadcast: []string{fmt.Sprintf("%s loads %s %s.", player.FirstName, player.Possessive(), wepDisplayName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s loads %s %s.", e.playerDisplayName(player), player.Possessive(), wepDisplayName)},
 		}
 	}
 
@@ -15012,7 +15157,7 @@ func (e *GameEngine) doMold(ctx context.Context, player *Player, args []string) 
 				RoomBroadcast: []string{
 					fmt.Sprintf(
 						"%s attempts to mold a gemstone, but it crumbles apart.",
-						player.FirstName,
+						e.playerDisplayName(player),
 					),
 				},
 				PlayerState: player,
@@ -15035,7 +15180,7 @@ func (e *GameEngine) doMold(ctx context.Context, player *Player, args []string) 
 				RoomBroadcast: []string{
 					fmt.Sprintf(
 						"%s carefully works on a gemstone.",
-						player.FirstName,
+						e.playerDisplayName(player),
 					),
 				},
 				PlayerState: player,
@@ -15102,7 +15247,7 @@ func (e *GameEngine) doMold(ctx context.Context, player *Player, args []string) 
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s carefully molds a gemstone.",
-					player.FirstName,
+					e.playerDisplayName(player),
 				),
 			},
 			PlayerState: player,
@@ -15352,7 +15497,7 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 				RoomBroadcast: []string{
 					fmt.Sprintf(
 						"%s attempts to skin %s%s.",
-						player.FirstName,
+						e.playerDisplayName(player),
 						articleFor(displayName, def.Unique),
 						displayName,
 					),
@@ -15467,7 +15612,7 @@ func (e *GameEngine) doSkin(ctx context.Context, player *Player, args []string) 
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s skins %s%s.",
-					player.FirstName,
+					e.playerDisplayName(player),
 					articleFor(displayName, def.Unique),
 					displayName,
 				),
@@ -15524,7 +15669,7 @@ func (e *GameEngine) doTeach(ctx context.Context, player *Player, args []string)
 	player.TeachingLevel = teacherLevel
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You are now teaching %s (skill #%d, up to level %d).", name, skillNum, teacherLevel)},
-		RoomBroadcast: []string{fmt.Sprintf("%s begins teaching %s.", player.FirstName, name)},
+		RoomBroadcast: []string{fmt.Sprintf("%s begins teaching %s.", e.playerDisplayName(player), name)},
 	}
 }
 
@@ -15611,7 +15756,7 @@ func (e *GameEngine) doFill(ctx context.Context, player *Player, args []string) 
 	displayName := e.formatItemNameNoArticle(fillDef, fillItem.Adj1, fillItem.Adj2, fillItem.Adj3)
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You fill the %s with some %s.", displayName, drinkType)},
-		RoomBroadcast: []string{fmt.Sprintf("%s fills a %s with some %s.", player.FirstName, displayName, drinkType)},
+		RoomBroadcast: []string{fmt.Sprintf("%s fills a %s with some %s.", e.playerDisplayName(player), displayName, drinkType)},
 	}
 }
 
@@ -15671,7 +15816,7 @@ func (e *GameEngine) doDisarm(ctx context.Context, player *Player, args []string
 			e.notifyRoomChange(RoomChange{RoomNumber: player.RoomNumber, Type: "item_update", ItemRef: ri.Ref, Item: &room.Items[i]})
 			return &CommandResult{
 				Messages:      []string{fmt.Sprintf("[Success: %d%%, Roll: %d] Success!", successChance, roll), "You carefully disarm the trap."},
-				RoomBroadcast: []string{fmt.Sprintf("%s carefully disarms a trap.", player.FirstName)},
+				RoomBroadcast: []string{fmt.Sprintf("%s carefully disarms a trap.", e.playerDisplayName(player))},
 			}
 		}
 
@@ -15743,7 +15888,7 @@ func (e *GameEngine) doTurnPage(ctx context.Context, player *Player, args []stri
 			e.notifyRoomChange(RoomChange{RoomNumber: player.RoomNumber, Type: "item_update", ItemRef: ri.Ref, Item: &room.Items[i]})
 			return &CommandResult{
 				Messages:      []string{"You carefully turn the page."},
-				RoomBroadcast: []string{fmt.Sprintf("%s turns a page.", player.FirstName)},
+				RoomBroadcast: []string{fmt.Sprintf("%s turns a page.", e.playerDisplayName(player))},
 			}
 		}
 	}
@@ -15782,7 +15927,7 @@ func (e *GameEngine) doTurnPage(ctx context.Context, player *Player, args []stri
 		e.SavePlayer(ctx, player)
 		return &CommandResult{
 			Messages:      []string{"You carefully turn the page."},
-			RoomBroadcast: []string{fmt.Sprintf("%s turns a page.", player.FirstName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s turns a page.", e.playerDisplayName(player))},
 		}
 	}
 
@@ -15847,7 +15992,7 @@ func (e *GameEngine) awardExperience(player *Player, amount int) []string {
 				[]string{
 					fmt.Sprintf(
 						"%s has advanced to level %d!",
-						player.FirstName,
+						e.playerDisplayName(player),
 						player.Level,
 					),
 				},

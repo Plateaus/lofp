@@ -20,7 +20,7 @@ NUMBER 110
 NAME Grymwood, Matriarch Tree
 MONSTER_GROUP 10
 CALL 33
-*DESCRIPTION_START SUMMER
+*DESCRIPTION_START 
 Suddenly the undergrowth clears and you find yourself at the base of an enormous tree. Its red, brown, fibrous trunk is easily as wide as a house. It grows straight up and out of sight above the canopy. Mighty branches sprout regularly from its sides. Gnarled roots dig into the ground like giant fingers. The ground is carpeted with a crunchy coating of fallen, needle-like leaves. There appears to be a small opening at the base of the trunk.
 *DESCRIPTION_END
 EXIT S 111

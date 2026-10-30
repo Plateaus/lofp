@@ -2367,7 +2367,7 @@ func (e *GameEngine) doBrew(ctx context.Context, player *Player, args []string) 
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s adds an ingredient to a bubbling brew.",
-					player.FirstName,
+					e.playerDisplayName(player),
 				),
 			},
 			PlayerState: player,
@@ -2399,7 +2399,7 @@ func (e *GameEngine) doBrew(ctx context.Context, player *Player, args []string) 
 						"A foul odor rises from the brew. The combination produces nothing useful.",
 					},
 					RoomBroadcast: []string{
-						fmt.Sprintf("%s's brew emits a foul odor.", player.FirstName),
+						fmt.Sprintf("%s's brew emits a foul odor.", e.playerDisplayName(player)),
 					},
 					PlayerState: player,
 				}
@@ -2429,7 +2429,7 @@ func (e *GameEngine) doBrew(ctx context.Context, player *Player, args []string) 
 				"A foul odor rises from the brew. The combination produces nothing useful.",
 			},
 			RoomBroadcast: []string{
-				fmt.Sprintf("%s's brew emits a foul odor.", player.FirstName),
+				fmt.Sprintf("%s's brew emits a foul odor.", e.playerDisplayName(player)),
 			},
 			PlayerState: player,
 		}
@@ -2509,7 +2509,7 @@ func (e *GameEngine) doBrew(ctx context.Context, player *Player, args []string) 
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s completes a potion that shimmers with magical energy!",
-					player.FirstName,
+					e.playerDisplayName(player),
 				),
 			},
 			PlayerState: player,
@@ -2527,7 +2527,7 @@ func (e *GameEngine) doBrew(ctx context.Context, player *Player, args []string) 
 			"A foul odor rises from the brew. The combination produces nothing useful.",
 		},
 		RoomBroadcast: []string{
-			fmt.Sprintf("%s's brew emits a foul odor.", player.FirstName),
+			fmt.Sprintf("%s's brew emits a foul odor.", e.playerDisplayName(player)),
 		},
 		PlayerState: player,
 	}

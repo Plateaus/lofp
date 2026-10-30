@@ -159,7 +159,7 @@ func (e *GameEngine) doPreparePsi(player *Player, args []string) *CommandResult 
 		}
 		return &CommandResult{
 			Messages:      []string{fmt.Sprintf("You release your concentration on %s.", disc.Name)},
-			RoomBroadcast: []string{fmt.Sprintf("%s relaxes %s concentration.", player.FirstName, player.Possessive())},
+			RoomBroadcast: []string{fmt.Sprintf("%s relaxes %s concentration.", e.playerDisplayName(player), player.Possessive())},
 		}
 	}
 
@@ -207,7 +207,7 @@ func (e *GameEngine) doPreparePsi(player *Player, args []string) *CommandResult 
 		}
 		result := &CommandResult{
 			Messages:      []string{msg},
-			RoomBroadcast: []string{fmt.Sprintf("%s concentrates intently.", player.FirstName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s concentrates intently.", e.playerDisplayName(player))},
 		}
 		if disc.RoundSec > 0 {
 			player.RoundTimeExpiry = time.Now().Add(time.Duration(disc.RoundSec) * time.Second)
@@ -224,7 +224,7 @@ func (e *GameEngine) doPreparePsi(player *Player, args []string) *CommandResult 
 
 	return &CommandResult{
 		Messages:      []string{fmt.Sprintf("You focus your mind on %s... (type PROJECT to release, or PROJECT <target>)", disc.Name)},
-		RoomBroadcast: []string{fmt.Sprintf("%s closes %s eyes in concentration.", player.FirstName, player.Possessive())},
+		RoomBroadcast: []string{fmt.Sprintf("%s closes %s eyes in concentration.", e.playerDisplayName(player), player.Possessive())},
 	}
 }
 
@@ -325,7 +325,7 @@ func (e *GameEngine) doProjectPsi(ctx context.Context, player *Player, args []st
 
 	// Check roundtime.
 	if disc.RoundSec > 0 && player.RoundTimeExpiry.After(time.Now()) {
-		remaining := player.RoundTimeExpiry.Sub(time.Now()).Seconds()
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
 
 		return &CommandResult{
 			Messages: []string{
@@ -395,7 +395,7 @@ func (e *GameEngine) doProjectPsi(ctx context.Context, player *Player, args []st
 			RoomBroadcast: []string{
 				fmt.Sprintf(
 					"%s concentrates intensely but nothing happens.",
-					player.FirstName,
+					e.playerDisplayName(player),
 				),
 			},
 		}
@@ -426,7 +426,7 @@ func (e *GameEngine) doProjectPsi(ctx context.Context, player *Player, args []st
 		result.RoomBroadcast = []string{
 			fmt.Sprintf(
 				"%s concentrates and a shimmering barrier appears.",
-				player.FirstName,
+				e.playerDisplayName(player),
 			),
 		}
 
@@ -467,7 +467,7 @@ func (e *GameEngine) doProjectPsi(ctx context.Context, player *Player, args []st
 			result.RoomBroadcast = []string{
 				fmt.Sprintf(
 					"%s concentrates intensely.",
-					player.FirstName,
+					e.playerDisplayName(player),
 				),
 			}
 		}
@@ -483,7 +483,7 @@ func (e *GameEngine) doProjectPsi(ctx context.Context, player *Player, args []st
 		result.RoomBroadcast = []string{
 			fmt.Sprintf(
 				"%s concentrates intensely.",
-				player.FirstName,
+				e.playerDisplayName(player),
 			),
 		}
 	}
@@ -515,7 +515,7 @@ func (e *GameEngine) projectImmobilize(player *Player, args []string) *CommandRe
 		name := FormatMonsterName(def, e.monAdjs)
 		return &CommandResult{
 			Messages:      []string{fmt.Sprintf("You project Immobilize at %s! Invisible force bands wrap around it, freezing it in place.", name)},
-			RoomBroadcast: []string{fmt.Sprintf("%s concentrates and %s freezes in place.", player.FirstName, name)},
+			RoomBroadcast: []string{fmt.Sprintf("%s concentrates and %s freezes in place.", e.playerDisplayName(player), name)},
 		}
 	}
 
@@ -524,8 +524,8 @@ func (e *GameEngine) projectImmobilize(player *Player, args []string) *CommandRe
 	if found != nil {
 		found.Immobilized = true
 		return &CommandResult{
-			Messages:      []string{fmt.Sprintf("You project Immobilize at %s! Invisible force bands wrap around them.", found.FirstName)},
-			RoomBroadcast: []string{fmt.Sprintf("%s concentrates and %s freezes in place.", player.FirstName, found.FirstName)},
+			Messages:      []string{fmt.Sprintf("You project Immobilize at %s! Invisible force bands wrap around them.", e.playerDisplayName(found))},
+			RoomBroadcast: []string{fmt.Sprintf("%s concentrates and %s freezes in place.", e.playerDisplayName(player), e.playerDisplayName(found))},
 			TargetName:    found.FirstName,
 			TargetMsg:     []string{"Invisible force bands wrap around you, making it impossible to move!"},
 		}
@@ -559,7 +559,7 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 		// Try player target
 		found := e.findPlayerInRoom(player, targetName)
 		if found != nil {
-			return &CommandResult{Messages: []string{fmt.Sprintf("You can't project %s at %s. Psionic attacks against players are not yet implemented.", disc.Name, found.FirstName)}}
+			return &CommandResult{Messages: []string{fmt.Sprintf("You can't project %s at %s. Psionic attacks against players are not yet implemented.", disc.Name, e.playerDisplayName(found))}}
 		}
 		return &CommandResult{Messages: []string{fmt.Sprintf("You don't see '%s' here.", targetName)}}
 	}
@@ -575,7 +575,7 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 	if resist > 0 && rand.Intn(100) < resist {
 		return &CommandResult{
 			Messages:      []string{fmt.Sprintf("You project %s at a %s, but it resists!", disc.Name, name)},
-			RoomBroadcast: []string{fmt.Sprintf("%s concentrates at a %s, but it resists!", player.FirstName, name)},
+			RoomBroadcast: []string{fmt.Sprintf("%s concentrates at a %s, but it resists!", e.playerDisplayName(player), name)},
 		}
 	}
 
@@ -590,7 +590,7 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 	if dmg <= 0 {
 		return &CommandResult{
 			Messages:      []string{fmt.Sprintf("You project %s at a %s, but it seems unaffected!", disc.Name, name)},
-			RoomBroadcast: []string{fmt.Sprintf("%s concentrates at a %s!", player.FirstName, name)},
+			RoomBroadcast: []string{fmt.Sprintf("%s concentrates at a %s!", e.playerDisplayName(player), name)},
 		}
 	}
 
@@ -621,7 +621,7 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 
 		return &CommandResult{
 			Messages:      messages,
-			RoomBroadcast: []string{fmt.Sprintf("%s focuses psychic energy at a %s!", player.FirstName, name), deathMsg},
+			RoomBroadcast: []string{fmt.Sprintf("%s focuses psychic energy at a %s!", e.playerDisplayName(player), name), deathMsg},
 		}
 	}
 
@@ -662,7 +662,7 @@ func (e *GameEngine) projectDamage(player *Player, disc *PsiDiscipline, args []s
 		RoomBroadcast: []string{
 			fmt.Sprintf(
 				"%s focuses psychic energy at a %s!",
-				player.FirstName,
+				e.playerDisplayName(player),
 				name,
 			),
 		},
@@ -689,7 +689,7 @@ func (e *GameEngine) projectBuff(player *Player, disc *PsiDiscipline) *CommandRe
 	}
 	return &CommandResult{
 		Messages:      []string{msg},
-		RoomBroadcast: []string{fmt.Sprintf("%s concentrates intensely.", player.FirstName)},
+		RoomBroadcast: []string{fmt.Sprintf("%s concentrates intensely.", e.playerDisplayName(player))},
 	}
 }
 
@@ -719,14 +719,14 @@ func (e *GameEngine) projectTeleport(ctx context.Context, player *Player, args [
 	lookResult := e.doLook(player)
 	result := &CommandResult{
 		Messages:      append([]string{"You project Teleportation! The world blurs around you..."}, lookResult.Messages...),
-		RoomBroadcast: []string{fmt.Sprintf("%s appears in a flash of psionic energy.", player.FirstName)},
+		RoomBroadcast: []string{fmt.Sprintf("%s appears in a flash of psionic energy.", e.playerDisplayName(player))},
 		RoomName:      lookResult.RoomName,
 		RoomDesc:      lookResult.RoomDesc,
 		Exits:         lookResult.Exits,
 		Items:         lookResult.Items,
 	}
 	result.OldRoom = oldRoom
-	result.OldRoomMsg = []string{fmt.Sprintf("%s vanishes in a flash of psionic energy!", player.FirstName)}
+	result.OldRoomMsg = []string{fmt.Sprintf("%s vanishes in a flash of psionic energy!", e.playerDisplayName(player))}
 	return result
 }
 
@@ -762,12 +762,12 @@ func (e *GameEngine) projectManipulateLock(player *Player, args []string) *Comma
 			e.notifyRoomChange(RoomChange{RoomNumber: player.RoomNumber, Type: "item_state", ItemRef: ri.Ref, NewState: "CLOSED"})
 			return &CommandResult{
 				Messages:      []string{fmt.Sprintf("You concentrate on %s... The lock clicks open!", displayName)},
-				RoomBroadcast: []string{fmt.Sprintf("%s stares intently at %s.", player.FirstName, displayName)},
+				RoomBroadcast: []string{fmt.Sprintf("%s stares intently at %s.", e.playerDisplayName(player), displayName)},
 			}
 		}
 		return &CommandResult{
 			Messages:      []string{fmt.Sprintf("You concentrate on %s but the lock resists your mental force.", displayName)},
-			RoomBroadcast: []string{fmt.Sprintf("%s stares intently at %s.", player.FirstName, displayName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s stares intently at %s.", e.playerDisplayName(player), displayName)},
 		}
 	}
 	return &CommandResult{Messages: []string{"You don't see anything locked here."}}

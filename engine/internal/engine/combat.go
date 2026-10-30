@@ -2441,17 +2441,18 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 	monWeaponName := e.monsterWeaponName(def)
 	monVerb, monDmgNoun := monsterAttackVerb(def, e.items)
 
-	playerMsgs = append(
-		playerMsgs,
-		fmt.Sprintf(
-			"%s%s %s %s with its %s.",
-			capArt,
-			name,
-			monVerb,
-			player.FirstName,
-			monWeaponName,
-		),
-	)
+	/*
+		roomMsgs = append(
+			playerMsgs,
+			fmt.Sprintf(
+				"%s%s %s %s with its %s.",
+				capArt,
+				name,
+				monVerb,
+				e.playerDisplayName(player),
+				monWeaponName,
+			),
+		)  */
 
 	// Weather modifier for monsters too.
 	wMod := e.weatherMod(inst.RoomNumber)
@@ -2663,11 +2664,12 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 		// --------------------------------------------------------
 
 		monBroadcast := fmt.Sprintf(
-			"%s%s %s %s. %s %s.",
+			"%s%s %s %s with its %s. %s %s.",
 			capArt,
 			name,
 			monVerb,
-			player.FirstName,
+			e.playerDisplayName(player),
+			monWeaponName,
 			hitLabel,
 			simplifiedDamageTier(dmg),
 		)
@@ -2756,11 +2758,12 @@ func (e *GameEngine) monsterAttackPlayer(inst *MonsterInstance, def *gameworld.M
 		roomMsgs = append(
 			roomMsgs,
 			fmt.Sprintf(
-				"%s%s %s %s. Miss.",
+				"%s%s %s %s with its %s. Miss.",
 				capArt,
 				name,
 				monVerb,
-				player.FirstName,
+				e.playerDisplayName(player),
+				monWeaponName,
 			),
 		)
 	}
@@ -3484,7 +3487,7 @@ func (e *GameEngine) doFlee(player *Player) *CommandResult {
 	if rand.Intn(100) >= fleeChance {
 		return &CommandResult{
 			Messages:      []string{"You try to flee but can't get away!"},
-			RoomBroadcast: []string{fmt.Sprintf("%s tries to flee but fails!", player.FirstName)},
+			RoomBroadcast: []string{fmt.Sprintf("%s tries to flee but fails!", e.playerDisplayName(player))},
 		}
 	}
 
@@ -3512,11 +3515,11 @@ func (e *GameEngine) doFlee(player *Player) *CommandResult {
 	result.OldRoom = oldRoom
 
 	result.OldRoomMsg = []string{
-		fmt.Sprintf("%s flees %s!", player.FirstName, dirName),
+		fmt.Sprintf("%s flees %s!", e.playerDisplayName(player), dirName),
 	}
 
 	result.RoomBroadcast = []string{
-		fmt.Sprintf("%s arrives, looking panicked.", player.FirstName),
+		fmt.Sprintf("%s arrives, looking panicked.", e.playerDisplayName(player)),
 	}
 
 	return result
