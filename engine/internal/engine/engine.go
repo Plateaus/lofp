@@ -1937,7 +1937,7 @@ func (e *GameEngine) ProcessCommand(ctx context.Context, player *Player, input s
 	case "COMMAND":
 		return e.doCommandCreature(player, args)
 	case "MASTER":
-		return &CommandResult{Messages: []string{"[Spell mastery coming soon.]"}}
+		return e.doMasterSpell(ctx, player, args)
 	case "NOCK", "LOAD":
 		return e.doLoadWeapon(ctx, player, args)
 	case "SPECIALIZE":
@@ -11050,7 +11050,7 @@ func (e *GameEngine) doDisband(player *Player) *CommandResult {
 	player.GroupMembers = nil
 	player.IsGroupLeader = false
 	return &CommandResult{
-		Messages:      []string{fmt.Sprintf("You disband your group.")},
+		Messages:      []string{"You disband your group."},
 		RoomBroadcast: []string{fmt.Sprintf("%s disbands their group.", e.playerDisplayName(player))},
 	}
 }
@@ -13381,12 +13381,28 @@ func (e *GameEngine) doPositionWithScripts(ctx context.Context, player *Player, 
 }
 
 func (e *GameEngine) doHide(ctx context.Context, player *Player) *CommandResult {
+	// Check existing roundtime.
+	if time.Now().Before(player.RoundTimeExpiry) {
+		remaining := time.Until(player.RoundTimeExpiry).Seconds()
+
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("[Wait %.0f seconds...]", remaining),
+			},
+		}
+	}
+
 	if player.Hidden {
 		return &CommandResult{Messages: []string{"You are already hidden."}}
 	}
 	if player.Joined {
 		return &CommandResult{Messages: []string{"You can't hide while in combat!"}}
 	}
+
+	player.RoundTimeExpiry = time.Now().Add(
+		time.Duration(5) * time.Second,
+	)
+
 	// Stealth skill check: base 25% + stealth*5 + AGI/10
 	stealthSkill := player.Skills[33]
 	hideChance := 25 + stealthSkill*5 + player.EffectiveStat(StatAgility)/10
@@ -13568,7 +13584,7 @@ func (e *GameEngine) doBalance(player *Player) *CommandResult {
 }
 
 func (e *GameEngine) doSpellList(player *Player) *CommandResult {
-	if player.KnownSpells == nil || len(player.KnownSpells) == 0 {
+	if len(player.KnownSpells) == 0 {
 		return &CommandResult{Messages: []string{"You don't know any spells."}}
 	}
 
@@ -13582,12 +13598,25 @@ func (e *GameEngine) doSpellList(player *Player) *CommandResult {
 
 	for _, id := range ids {
 		spell := FindSpellByID(id)
-		if spell != nil {
-			msgs = append(msgs, fmt.Sprintf(
-				"  %3d  %s (%s, Level %d)",
-				id, spell.Name, spell.School, spell.Level,
-			))
+		if spell == nil {
+			continue
 		}
+
+		masteryRank := player.SpellMasteryRank(spell.ID)
+
+		masteryText := ""
+		if masteryRank > 0 {
+			masteryText = fmt.Sprintf(", Mastery %d", masteryRank)
+		}
+
+		msgs = append(msgs, fmt.Sprintf(
+			"  %3d  %s (%s, Level %d%s)",
+			id,
+			spell.Name,
+			spell.School,
+			spell.Level,
+			masteryText,
+		))
 	}
 
 	return &CommandResult{Messages: msgs}
@@ -15280,14 +15309,32 @@ func organizationName(org int) string {
 	return ""
 }
 
-// playerBPSpent calculates total build points spent on skills.
+// playerBPSpent calculates total build points spent on skills
+// and spell mastery.
 func playerBPSpent(player *Player) int {
 	total := 0
+
+	// Skills.
 	for skillID, rank := range player.Skills {
 		for r := 0; r < rank; r++ {
 			total += skillBPCost(skillID, r)
 		}
 	}
+
+	// Spell mastery.
+	// First rank costs 8 BP; each additional rank costs 4 BP.
+	for _, rank := range player.SpellMastery {
+		if rank <= 0 {
+			continue
+		}
+
+		total += 8
+
+		if rank > 1 {
+			total += (rank - 1) * 4
+		}
+	}
+
 	return total
 }
 
@@ -15936,6 +15983,145 @@ func (e *GameEngine) doTurnPage(ctx context.Context, player *Player, args []stri
 	}
 
 	return nil // fall through to item interaction
+}
+
+func (e *GameEngine) doMasterSpell(ctx context.Context, player *Player, args []string) *CommandResult {
+	if len(args) == 0 {
+		return &CommandResult{
+			Messages: []string{"Master what spell?"},
+		}
+	}
+
+	// Spell mastery can only be trained somewhere that teaches Spellcraft.
+	room := e.rooms[player.RoomNumber]
+	canTrainSpellcraft := false
+	for _, training := range room.TrainingSkills {
+		if training.SkillID == 23 {
+			canTrainSpellcraft = true
+			break
+		}
+	}
+
+	if !canTrainSpellcraft {
+		return &CommandResult{
+			Messages: []string{"You cannot train in spell mastery here."},
+		}
+	}
+
+	// Find the requested spell.
+	spellName := strings.Join(args, " ")
+	spell := FindSpellByName(spellName)
+
+	if spell == nil {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("There is no spell called %q.", spellName),
+			},
+		}
+	}
+
+	// You must know the spell before you can master it.
+	if !player.KnownSpells[spell.ID] && !player.IsGM {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf("You haven't learned %s.", spell.Name),
+			},
+		}
+	}
+
+	// Current and maximum mastery.
+	currentRank := player.SpellMasteryRank(spell.ID)
+	maxRank := maxSpellMastery(spell)
+
+	if currentRank >= maxRank {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You have already fully mastered %s.",
+					spell.Name,
+				),
+			},
+		}
+	}
+
+	// Spell mastery requires twice the spell's level in Spellcraft.
+	requiredSpellcraft := spell.Level * 2
+	spellcraft := player.Skills[23]
+
+	if spellcraft < requiredSpellcraft {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You need %d levels of Spellcraft to master %s.",
+					requiredSpellcraft,
+					spell.Name,
+				),
+			},
+		}
+	}
+
+	// First rank costs 8 BP; each additional rank costs 4 BP.
+	cost := 8
+	if currentRank > 0 {
+		cost = 4
+	}
+
+	if player.BuildPoints < cost && !player.IsGM {
+		return &CommandResult{
+			Messages: []string{
+				fmt.Sprintf(
+					"You need %d build points to increase your mastery of %s.",
+					cost,
+					spell.Name,
+				),
+			},
+		}
+	}
+
+	// Initialize mastery storage if this character has never mastered a spell.
+	if player.SpellMastery == nil {
+		player.SpellMastery = make(map[int]int)
+	}
+
+	// Spend the build points.
+	if !player.IsGM {
+		player.BuildPoints -= cost
+	}
+
+	// Increase mastery.
+	player.SpellMastery[spell.ID] = currentRank + 1
+
+	e.SavePlayer(ctx, player)
+
+	newRank := player.SpellMastery[spell.ID]
+	manaCost := e.spellManaCost(player, spell)
+
+	messages := []string{
+		fmt.Sprintf(
+			"You increase your mastery of %s to rank %d.",
+			spell.Name,
+			newRank,
+		),
+		fmt.Sprintf(
+			"Mana cost: %d. Maximum mastery: %d.",
+			manaCost,
+			maxRank,
+		),
+	}
+
+	if newRank >= maxRank {
+		messages = append(
+			messages,
+			fmt.Sprintf(
+				"You have fully mastered %s.",
+				spell.Name,
+			),
+		)
+	}
+
+	return &CommandResult{
+		Messages: messages,
+	}
 }
 
 func (e *GameEngine) awardExperience(player *Player, amount int) []string {

@@ -441,16 +441,16 @@ export default function MainMenu({ onNewCharacter, onSelectCharacter, onVersionN
           {!loading && backendUp && user?.account?.emailVerified !== false && (
             <button
               onClick={onNewCharacter}
-              disabled={players.length >= 3}
+              disabled={players.length >= 5}
               className={`w-full py-4 bg-[#111] border-2 border-dashed rounded-lg font-mono text-lg transition-colors ${
                 players.length >= 3
                   ? 'border-[#333] text-gray-600 cursor-not-allowed'
                   : 'border-[#444] hover:border-amber-600 text-gray-400 hover:text-amber-400 cursor-pointer'
               }`}
             >
-              {players.length >= 3
-                ? 'Character Limit Reached (3/3)'
-                : `+ Create New Character (${players.length}/3)`}
+              {players.length >= 5
+                ? 'Character Limit Reached (5/5)'
+                : `+ Create New Character (${players.length}/5)`}
             </button>
           )}
 

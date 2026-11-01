@@ -187,8 +187,9 @@ type Player struct {
 	BuildPoints  int `bson:"buildPoints,omitempty" json:"buildPoints,omitempty"`
 
 	// Skills
-	Skills      map[int]int  `bson:"skills" json:"skills"`                               // skill# -> level
-	KnownSpells map[int]bool `bson:"knownSpells,omitempty" json:"knownSpells,omitempty"` // spell# -> known
+	Skills       map[int]int  `bson:"skills" json:"skills"`                               // skill# -> level
+	KnownSpells  map[int]bool `bson:"knownSpells,omitempty" json:"knownSpells,omitempty"` // spell# -> known
+	SpellMastery map[int]int  `json:"spellMastery,omitempty"`
 
 	// Internal variables (INTNUM0-99, flags, etc.)
 	IntNums map[int]int `bson:"intNums" json:"intNums"`

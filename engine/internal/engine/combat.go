@@ -4165,6 +4165,11 @@ func (e *GameEngine) monsterCheckAggro(player *Player, roomNum int) {
 			continue
 		}
 
+		// Commanded creatures never acquire autonomous targets.
+		if inst.CommanderID != "" {
+			continue
+		}
+
 		def := e.monsters[inst.DefNumber]
 		if def == nil || def.Strategy < 301 {
 			continue

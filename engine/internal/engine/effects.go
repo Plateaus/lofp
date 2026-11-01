@@ -34,6 +34,8 @@ const (
 	CharmEffect
 	ResistWeatherEffect
 	InvisibilityEffect
+	HasteEffect
+	SlowEffect
 )
 
 type EffectSource int

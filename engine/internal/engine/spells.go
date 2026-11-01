@@ -152,7 +152,7 @@ func init() {
 		{ID: 519, Name: "Sunray", School: "Druidic", Level: 13, ManaCost: 18, CastTime: 3, Effect: "damage", DmgMin: 12, DmgMax: 35, DmgType: "heat"},
 		{ID: 520, Name: "Night Vision", School: "Druidic", Level: 1, ManaCost: 2, CastTime: 2, Effect: "buff", Duration: 45 * time.Minute, Family: "nightvision", StatusType: NightVisionBuff, StatusMsg: "Your eyes adjust to the darkness."},
 		{ID: 521, Name: "Camouflage", School: "Druidic", Level: 7, ManaCost: 8, CastTime: 3, Effect: "buff", Duration: 45 * time.Minute},
-		{ID: 523, Name: "Earth Spike", School: "Druidic", Level: 5, ManaCost: 7, CastTime: 3, Effect: "damage", DmgMin: 5, DmgMax: 18, DmgType: "crushing", StatusMsg: "The earth beneath %s's feet erupts into a spike that impales %s!"},
+		{ID: 523, Name: "Earth Spike", School: "Druidic", Level: 5, ManaCost: 7, CastTime: 3, Effect: "damage", DmgMin: 5, DmgMax: 18, DmgType: "crushing", StatusMsg: "A jagged spike of earth erupts beneath %s, impaling it!"},
 		{ID: 524, Name: "Earth Wave", School: "Druidic", Level: 12, ManaCost: 16, CastTime: 3, Effect: "damage", DmgMin: 10, DmgMax: 30, DmgType: "crushing", StatusMsg: "The ground shakes violently as a wave of earth crashes down on %s!"},
 	}
 
@@ -505,8 +505,10 @@ func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResul
 
 		// Finish preparation below, but remember the component message.
 		player.PreparedSpell = spell.ID
-		player.RoundTimeExpiry =
-			time.Now().Add(time.Duration(spell.CastTime) * time.Second)
+
+		castTime := e.spellCastTime(player, spell)
+
+		player.RoundTimeExpiry = time.Now().Add(time.Duration(castTime) * time.Second)
 
 		return &CommandResult{
 			Messages: []string{
@@ -519,8 +521,7 @@ func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResul
 					spell.Name,
 				),
 				fmt.Sprintf(
-					"[Round: %d sec]",
-					spell.CastTime,
+					"[Round: %d sec]", castTime,
 				),
 			},
 			RoomBroadcast: []string{
@@ -534,13 +535,13 @@ func (e *GameEngine) doPrepareSpell(player *Player, args []string) *CommandResul
 	// ---------------------------------------------------------
 
 	player.PreparedSpell = spell.ID
-	player.RoundTimeExpiry =
-		time.Now().Add(time.Duration(spell.CastTime) * time.Second)
+	castTime := e.spellCastTime(player, spell)
+	player.RoundTimeExpiry = time.Now().Add(time.Duration(castTime) * time.Second)
 
 	return &CommandResult{
 		Messages: []string{
 			fmt.Sprintf("You prepare the %s spell.", spell.Name),
-			fmt.Sprintf("[Round: %d sec]", spell.CastTime),
+			fmt.Sprintf("[Round: %d sec]", castTime),
 		},
 		RoomBroadcast: []string{
 			fmt.Sprintf("%s prepares a spell.", e.playerDisplayName(player)),
@@ -705,10 +706,10 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	}
 
 	// Mana cost = spell level (from LEGENDS.DOC)
-	manaCost := spell.Level
-	if manaCost < 1 {
-		manaCost = 1
-	}
+	// Base mana cost is the spell's level.
+	// Spell mastery reduces the cost by 2 per rank,
+	// to a minimum of half the original cost, rounded down.
+	manaCost := e.spellManaCost(player, spell)
 
 	if player.Mana < manaCost {
 		player.PreparedSpell = 0
@@ -903,9 +904,8 @@ func (e *GameEngine) doCastSpell(ctx context.Context, player *Player, args []str
 	// If casting broke invisibility, that message comes first.
 	result.Messages = withReveal(result.Messages)
 
-	player.RoundTimeExpiry = time.Now().Add(
-		time.Duration(spell.CastTime) * time.Second,
-	)
+	castTime := e.spellCastTime(player, spell)
+	player.RoundTimeExpiry = time.Now().Add(time.Duration(castTime) * time.Second)
 
 	e.SavePlayer(ctx, player)
 
@@ -1261,21 +1261,16 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 		displayName := article + name
 
 		duration := spell.Duration
+		duration = e.spellDuration(player, spell, duration)
 
 		// Determine which monster immunity applies to this status.
 		switch spell.StatusType {
 
 		case RestrainedEffect:
-			duration = durationByImmunity(
-				duration,
-				monsterImmunity(def, gameworld.ImmunityEnsnare),
-			)
+			duration = durationByImmunity(duration, monsterImmunity(def, gameworld.ImmunityEnsnare))
 
 		case FearEffect:
-			duration = durationByImmunity(
-				duration,
-				monsterImmunity(def, gameworld.ImmunityNervousSystem),
-			)
+			duration = durationByImmunity(duration, monsterImmunity(def, gameworld.ImmunityNervousSystem))
 		}
 
 		// Immune to the effect.
@@ -1379,7 +1374,7 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 			EffectSourceSpell,
 			spell.StatusType,
 			spell.DefBonus,
-			spell.Duration,
+			e.spellDuration(player, spell, spell.Duration),
 			spell.Ticks,
 		)
 
@@ -1433,6 +1428,23 @@ func (e *GameEngine) castDebuff(player *Player, spell *SpellDef, args []string, 
 	return &CommandResult{
 		Messages: []string{"You don't see that here."},
 	}
+}
+
+func (e *GameEngine) spellDuration(player *Player, spell *SpellDef, baseDuration time.Duration) time.Duration {
+	if player == nil || spell == nil || baseDuration <= 0 {
+		return baseDuration
+	}
+
+	rank := e.effectiveSpellMastery(player, spell)
+	if rank <= 0 {
+		return baseDuration
+	}
+
+	// Each rank of mastery increases duration by 10% of
+	// the spell's base duration.
+	bonus := (baseDuration * time.Duration(rank)) / 10
+
+	return baseDuration + bonus
 }
 
 func monsterImmunity(def *gameworld.MonsterDef, immunityType int) int {
@@ -1538,6 +1550,8 @@ func (e *GameEngine) castStatusSpell(player *Player, spell *SpellDef, args []str
 	if duration == 0 {
 		duration = 30 * time.Minute
 	}
+
+	duration = e.spellDuration(player, spell, duration)
 
 	// Check existing effects on the TARGET, not the caster.
 	if !prepareSpellFamilyEffect(target, spell) {
@@ -1711,6 +1725,9 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		dmg = rand.Intn(spell.DmgMax-spell.DmgMin+1) + spell.DmgMin
 	}
 
+	//apply mastery bonus
+	dmg = e.applySpellMasteryDamage(player, spell, dmg)
+
 	// ------------------------------------------------------------
 	// MAGIC RESISTANCE
 	// ------------------------------------------------------------
@@ -1811,14 +1828,6 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 		name,
 	)
 
-	if spell.StatusMsg != "" {
-		flavorSelf = fmt.Sprintf(
-			spell.StatusMsg,
-			e.playerDisplayName(player),
-			article+name,
-		)
-	}
-
 	flavorDmg := fmt.Sprintf(
 		"%s %s to %s. [%d Damage]",
 		damageSeverity(dmg),
@@ -1911,6 +1920,14 @@ func (e *GameEngine) castDamageSpell(player *Player, spell *SpellDef, args []str
 			damageSeverity(dmg),
 			randomBodyPart(def.BodyType),
 			dmg,
+		)
+	}
+
+	if spell.StatusMsg != "" {
+		flavorSelf = fmt.Sprintf(
+			spell.StatusMsg,
+			e.playerDisplayName(player),
+			article+name,
 		)
 	}
 
@@ -3323,4 +3340,116 @@ func (e *GameEngine) dispelRandomMonsterSpellEffect(target *MonsterInstance, dis
 	}
 
 	return &chosen, true
+}
+
+func (p *Player) SpellMasteryRank(spellID int) int {
+	if p == nil || p.SpellMastery == nil {
+		return 0
+	}
+
+	return p.SpellMastery[spellID]
+}
+
+func maxSpellMastery(spell *SpellDef) int {
+	if spell == nil {
+		return 0
+	}
+
+	// Full mastery = spell level + 1.
+	return spell.Level + 1
+}
+
+func minimumSpellMana(spell *SpellDef) int {
+	if spell == nil {
+		return 0
+	}
+
+	// Half the original mana cost, rounded down.
+	// Original mana cost is the spell's level.
+	return spell.Level / 2
+}
+
+func (e *GameEngine) effectiveSpellMastery(player *Player, spell *SpellDef) int {
+	if player == nil || spell == nil {
+		return 0
+	}
+
+	rank := player.SpellMasteryRank(spell.ID)
+	if rank <= 0 {
+		return 0
+	}
+
+	// Mastery benefits are suppressed while the caster
+	// is affected by a time-altering spell.
+	_, hasHaste := player.HasStatEffect(HasteEffect)
+	_, hasSlow := player.HasStatEffect(SlowEffect)
+
+	if hasHaste || hasSlow {
+		return 0
+	}
+
+	return rank
+}
+
+func (e *GameEngine) spellManaCost(player *Player, spell *SpellDef) int {
+	if spell == nil {
+		return 0
+	}
+
+	base := spell.Level
+	if base < 1 {
+		base = 1
+	}
+
+	rank := e.effectiveSpellMastery(player, spell)
+
+	if rank <= 0 {
+		return base
+	}
+
+	cost := base - (rank * 2)
+
+	minCost := base / 2
+	if minCost < 1 {
+		minCost = 1
+	}
+
+	if cost < minCost {
+		cost = minCost
+	}
+
+	return cost
+}
+
+func (e *GameEngine) spellCastTime(player *Player, spell *SpellDef) int {
+	if spell == nil {
+		return 0
+	}
+
+	castTime := spell.CastTime
+
+	// Historical rule specifically says mastery reduces
+	// three-second casting time to two seconds.
+	if e.effectiveSpellMastery(player, spell) > 0 &&
+		castTime == 3 {
+		return 2
+	}
+
+	return castTime
+}
+
+func (e *GameEngine) applySpellMasteryDamage(player *Player, spell *SpellDef, damage int) int {
+	if player == nil || spell == nil {
+		return damage
+	}
+
+	rank := e.effectiveSpellMastery(player, spell)
+
+	if rank <= 0 {
+		return damage
+	}
+
+	// Reconstruction based on the historical description of
+	// approximately 1.5 points/rank. We're choosing +2/rank.
+	return damage + (rank * 2)
 }
